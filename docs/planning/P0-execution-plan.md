@@ -111,7 +111,7 @@ P0 只建：父 POM + `common-starter` 各子模块骨架 + `agent-gateway` 最�
 - [x] `CLAUDE.md` 版本矩阵齐全
 - [x] `mvn clean install` 全量编译通过（JDK 21，7 模块 BUILD SUCCESS）
 - [x] `agent-gateway` 启动成功且**注册到 Nacos**（`nacos registry ... agent-gateway 172.26.144.1:9080 register finished`）
-- [ ] Nacos `dev`/`test` 命名空间 + 共享配置发布（待执行 `docs/deploy/nacos-init.sh`，需用户确认）
+- [x] Nacos `dev`/`test` 命名空间 + 3 个共享配置占位发布（`docs/deploy/nacos-init.sh` 已执行并验证，适配 Nacos 3.x 控制台 API）
 - [x] 根 `.gitignore` 生效，无 target/密钥误提交
 - [~] `docker compose up` 中间件健康：本机复用模式，MySQL/Redis/RabbitMQ 端口 OPEN；**MinIO 未运行**（P2 前需启动）
 - 备注：本机 8080 被 Nacos console 占用，网关端口定为 **9080**
