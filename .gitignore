@@ -1,0 +1,42 @@
+# ===== IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+
+# ===== Build 产物 =====
+backend/**/target/
+frontend/node_modules/
+frontend/dist/
+node_modules/
+*.class
+
+# ===== 环境与密钥（禁止入库）=====
+.env
+*.env
+application-local.yml
+**/application-local.yml
+*.pem
+*.key
+*.p12
+
+# ===== 日志 =====
+*.log
+logs/
+**/logs/
+
+# ===== Docker 本地数据卷 =====
+docker/data/
+docker/mysql-data/
+docker/redis-data/
+docker/minio-data/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Maven Wrapper jar =====
+.mvn/wrapper/maven-wrapper.jar

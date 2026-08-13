@@ -1,0 +1,27 @@
+server:
+  port: 9080
+
+spring:
+  application:
+    name: agent-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+  endpoint:
+    health:
+      show-details: always
