@@ -48,8 +48,8 @@
 backend/
 ├── pom.xml                  # 父 POM：dependencyManagement 统一版本，packaging=pom
 ├── agent-gateway/           # 网关（P0 仅骨架 + 注册 Nacos 验证）
-├── common-starter/          # 聚合父模块
-│   ├── common-web-starter/          # 全局异常/统一返回R<T>/JSR303/跨域
+├── common/                  # 聚合父模块
+│   ├── common-code/                # 全局异常/统一返回R<T>/JSR303/跨域
 │   ├── common-redis-starter/        # RedisTemplate + 分布式锁（P0 骨架）
 │   ├── common-mybatisplus-starter/  # MyBatis-Plus + 分页 + 多租户插件位
 │   ├── common-model-starter/        # 多模型抽象接口（P1 实现 DeepSeek）
@@ -61,15 +61,15 @@ backend/
 └── task-job-service/        # P4
 ```
 
-P0 只建：父 POM + `common-starter` 各子模块骨架 + `agent-gateway` 最小可启动服务。
+P0 只建：父 POM + `common` 各子模块骨架 + `agent-gateway` 最小可启动服务。
 
 **验收**: `mvn clean install` 全量编译通过（不含 P1+ 模块）
 
-## 4. common-starter 骨架内容（P0 建空壳，P1 补逻辑）
+## 4. common 骨架内容（P0 建空壳，P1 补逻辑）
 
 | Starter | P0 交付 | P1 补全 |
 |---|---|---|
-| common-web-starter | 统一返回 `R<T>`、全局异常处理器、参数校验 | 日志审计切面、操作日志 |
+| common-code | 统一返回 `R<T>`、全局异常处理器、参数校验 | 日志审计切面、操作日志 |
 | common-redis-starter | 配置类 + 自动装配骨架 | 分布式锁、上下文缓存 |
 | common-mybatisplus-starter | 配置 + 分页插件 | 多租户插件、逻辑删除 |
 | common-model-starter | `ChatClientFactory` 接口 + 模型枚举 | DeepSeek/Qwen/Claude 实现、故障切换、token 统计 |
@@ -131,3 +131,19 @@ P0 只建：父 POM + `common-starter` 各子模块骨架 + `agent-gateway` 最�
 | MySQL 5.7 与 MyBatis-Plus 3.5.x 兼容 | 低风险，P1 再实测 |
 | 端口冲突（8848/3306/6379 等） | 环境盘点先查占用 |
 | 包名/groupId 后期难改 | D0 开工前必须定 |
+
+## 11. P0 结论与 P1 交接（2026-08-13）
+
+**P0 状态：✅ 完成**。交付物已提交并同步双 remote（`gitee` + `github`），commit 见 `git log`。
+
+**P0 期间发现的环境事实（P1 起必须沿用）：**
+- 本机 Nacos 3.2.2 为**前后端分离部署**：核心服务 8848 + 控制台独立 8080。初始化/运维脚本必须走 3.x 控制台 API（`/v3/console/...`），详见 `docs/deploy/README.md`。这也是 8080 被占用的原因，网关端口定为 **9080**。
+- Nacos 初始化脚本 `docs/deploy/nacos-init.sh` 已适配并实测：dev/test 命名空间 + 3 个占位配置（datasource/redis/model-keys），密钥全部 `${ENV_VAR}` 占位。
+- 本机 Nacos 中 `research` 命名空间属于其他项目（AgentScope），**禁止改动**。
+
+**P0 遗留事项（进入 P1 时注意）：**
+- MinIO 本机未启动（9000/9001 关闭），P2（file/RAG）前需启动，P1 暂不依赖。
+- 网关 discovery locator 已开（`agent-gateway` 9080 已注册），P1 将补路由规则与鉴权。
+
+**P1 交接范围（待新会话设计执行点并经用户确认）：**
+`agent-gateway`（路由）→ `tenant-service`（租户/用户/权限）→ `agent-core-service`（单 Agent + 状态机 + 任务持久化 + MQ 编排）→ `tool-service`（工具注册/执行），DeepSeek 接入，最小前端。数据库建库脚本 `finaudit`（MySQL 5.7）。

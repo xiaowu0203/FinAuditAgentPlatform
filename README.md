@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · 财务费用智能审核 Agent 平台
 
-> 文档完善中（P0 基建阶段）· 详细文档见 `docs/`
+> **当前进度：P0 基建 ✅ 完成 ｜ P1 核心闭环 🚧 规划中** · 详细文档见 `docs/`
 
 ## 项目简介
 
@@ -20,11 +20,26 @@
 
 ## 技术栈
 
-JDK 21 · Spring Boot 3.5.0 · Spring Cloud 2025.0.0 · Spring Cloud Alibaba 2025.0.0.0 · Spring AI 1.1.2 · MyBatis-Plus · MySQL 5.7 · Redis · Nacos · RabbitMQ · MinIO · Milvus（P2）· Vue3
+JDK 21 · Spring Boot 3.5.0 · Spring Cloud 2025.0.0 · Spring Cloud Alibaba 2025.0.0.0 · Spring AI 1.1.2 · MyBatis-Plus 3.5.12 · MySQL 5.7 · Redis · Nacos 3.2.2 · RabbitMQ · MinIO · Milvus（P2）· Vue3
+
+## 当前状态
+
+| 阶段 | 状态 | 内容 |
+|---|---|---|
+| P0 基建 | ✅ 完成 | 多模块骨架、common × 5、网关注册 Nacos、双 remote 同步、Nacos 初始化 |
+| P1 核心闭环 | 🚧 规划中 | 单 Agent + 工具集 + 任务持久化 + MQ + DeepSeek + 最小前端 |
 
 ## 快速启动
 
-> 见 `docs/deploy/`（环境启动教程，P0 后补全）
+```bash
+# 1. 配置环境变量（密钥不入库）
+cp .env.example .env
+# 2. 初始化 Nacos（dev/test 命名空间 + 占位配置）
+bash docs/deploy/nacos-init.sh
+# 3. 启动服务（backend/agent-gateway 等）
+```
+
+> 详细环境说明见 `docs/deploy/`。
 
 ## 目录结构
 

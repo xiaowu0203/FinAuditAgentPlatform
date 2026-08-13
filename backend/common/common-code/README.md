@@ -1,4 +1,4 @@
-# common-web-starter
+# common-code
 
 Web 通用能力自动装配（Servlet Web 环境）。
 
@@ -11,7 +11,7 @@ Web 通用能力自动装配（Servlet Web 环境）。
 ```xml
 <dependency>
   <groupId>com.finaudit</groupId>
-  <artifactId>common-web-starter</artifactId>
+  <artifactId>common-code</artifactId>
 </dependency>
 ```
 

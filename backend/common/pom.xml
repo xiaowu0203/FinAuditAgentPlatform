@@ -6,19 +6,21 @@
 
     <parent>
         <groupId>com.finaudit</groupId>
-        <artifactId>common-starter</artifactId>
+        <artifactId>finaudit-backend</artifactId>
         <version>0.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>common-model-starter</artifactId>
-    <name>common-model-starter</name>
-    <description>多模型统一封装：抽象接口 + 配置（P1 接入 DeepSeek/Qwen/Claude）</description>
+    <artifactId>common</artifactId>
+    <packaging>pom</packaging>
+    <name>common</name>
+    <description>通用能力自定义 Starter 聚合模块</description>
 
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-autoconfigure</artifactId>
-        </dependency>
-    </dependencies>
+    <modules>
+        <module>common-code</module>
+        <module>common-redis-starter</module>
+        <module>common-mybatisplus-starter</module>
+        <module>common-model-starter</module>
+        <module>common-trace-starter</module>
+    </modules>
 </project>

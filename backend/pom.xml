@@ -19,7 +19,7 @@
     <description>FinAuditAgentPlatform 后端微服务根工程</description>
 
     <modules>
-        <module>common-starter</module>
+        <module>common</module>
         <module>agent-gateway</module>
     </modules>
 

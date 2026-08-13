@@ -40,8 +40,8 @@ backend/                微服务多模块 Maven 工程
 ├── rag-service         知识库/RAG（含 file 能力）
 ├── tool-service        工具执行/注册
 ├── task-job-service    定时任务
-└── common-starter      自定义 Starter 聚合
-    ├── common-web-starter
+└── common              自定义 Starter 聚合
+    ├── common-code
     ├── common-redis-starter
     ├── common-mybatisplus-starter
     ├── common-model-starter
@@ -56,7 +56,7 @@ docker-compose.yml      开源环境一键启动
 ## 5. 代码规范
 
 1. 分层命名：`controller / service / mapper / entity / dto / vo`
-2. 统一返回 `R<T>`、全局异常、JSR303 参数校验（由 common-web-starter 提供）
+2. 统一返回 `R<T>`、全局异常、JSR303 参数校验（由 common-code 提供）
 3. 金额计算**必须 Decimal**，严禁 float/double
 4. 每个 Starter 必须带模块 README + 关键类注释
 5. Controller 只做参数装配与返回，业务放 Service

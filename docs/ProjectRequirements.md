@@ -141,7 +141,7 @@ agent-distributed-project
 │   ├── agent-core-service  # Agent核心调度、多智能体编排、任务管理
 │   ├── rag-service         # 知识库、向量检索RAG服务
 │   ├── tool-service        # 工具统一执行、注册中心服务
-│   ├── common-starter      # 自定义公共Starter（redis/mybatisplus/model/trace等）
+│   ├── common              # 自定义公共Starter（redis/mybatisplus/model/code/trace等）
 │   ├── file-service        # MinIO文件存储服务
 │   └── task-job-service    # 定时任务服务
 ├── docs                    # 全套项目文档

@@ -6,13 +6,13 @@
 
     <parent>
         <groupId>com.finaudit</groupId>
-        <artifactId>common-starter</artifactId>
+        <artifactId>common</artifactId>
         <version>0.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>common-web-starter</artifactId>
-    <name>common-web-starter</name>
+    <artifactId>common-code</artifactId>
+    <name>common-code</name>
     <description>Web 通用能力：统一返回 R&lt;T&gt; / 全局异常 / 参数校验</description>
 
     <dependencies>
