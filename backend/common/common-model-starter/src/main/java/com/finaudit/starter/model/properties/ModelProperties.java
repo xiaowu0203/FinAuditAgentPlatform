@@ -20,6 +20,8 @@ public class ModelProperties {
     private String baseUrl;
     /** 请求超时（秒） */
     private int timeoutSeconds = 60;
+    /** 备用模型类型（默认模型故障时切换；可为 null，P1 未实现 Qwen/Claude 时保持空） */
+    private ModelType fallbackType;
 
     public ModelType getType() {
         return type;
@@ -59,5 +61,13 @@ public class ModelProperties {
 
     public void setTimeoutSeconds(int timeoutSeconds) {
         this.timeoutSeconds = timeoutSeconds;
+    }
+
+    public ModelType getFallbackType() {
+        return fallbackType;
+    }
+
+    public void setFallbackType(ModelType fallbackType) {
+        this.fallbackType = fallbackType;
     }
 }
