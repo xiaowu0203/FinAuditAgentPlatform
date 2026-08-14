@@ -16,10 +16,21 @@
     <description>API 网关：鉴权、限流、路由、跨域（鉴权/限流 P1 起）</description>
 
     <dependencies>
-        <!-- WebFlux 网关，勿引入 common-code -->
+        <!-- WebFlux 网关，勿引入 common-code（2025.0.0 起换新构件名） -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-gateway</artifactId>
+            <artifactId>spring-cloud-starter-gateway-server-webflux</artifactId>
+        </dependency>
+        <!-- JWT 校验（与 tenant-service 共用签发/解析） -->
+        <dependency>
+            <groupId>com.finaudit</groupId>
+            <artifactId>common-jwt-starter</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- 响应式 Redis：每请求做 token 黑名单/会话作废校验（网关是 WebFlux，勿用阻塞式 starter） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
         </dependency>
         <dependency>
             <groupId>com.alibaba.cloud</groupId>
