@@ -1,0 +1,61 @@
+server:
+  port: 9201
+
+spring:
+  application:
+    name: agent-core-service
+  # 配置文件导入，从Nacos远程拉取公共配置
+  config:
+    import:
+      # 可选导入Nacos数据源公共配置，找不到不启动报错
+      - optional:nacos:common-datasource.yaml
+      # 可选导入Nacos Redis公共配置，找不到不启动报错
+      - optional:nacos:common-redis.yaml
+      # 可选导入Nacos 模型Key公共配置，找不到不启动报错
+      - optional:nacos:common-model-keys.properties
+
+  # Spring Cloud Nacos 配置与注册发现
+  cloud:
+    nacos:
+      # Nacos 远程配置中心配置
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+        namespace: dev
+      # Nacos服务注册/发现配置
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+
+  # RabbitMQ消息队列连接配置
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    # 消息消费者监听配置
+    listener:
+      simple:
+        # 消费者初始并发线程数
+        concurrency: 1
+        # 消费者最大并发线程数
+        max-concurrency: 1
+        # 消息确认模式：auto自动ACK，消息处理完成自动告知MQ删除消息
+        acknowledge-mode: auto
+        # 消费失败是否重新入队：false 失败直接丢弃，不重复消费
+        default-requeue-rejected: false
+
+# MyBatis-Plus 持久层框架配置
+mybatis-plus:
+  configuration:
+    # 开启数据库下划线字段自动映射实体类驼峰属性（user_name -> userName）
+    map-underscore-to-camel-case: true
+    # SQL日志输出实现，使用Slf4j统一日志框架打印执行SQL
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+# 日志级别配置
+logging:
+  level:
+    com.finaudit: info
