@@ -24,7 +24,7 @@
 
 | 服务 | 端口 | 文档 |
 |---|---|---|
+| `agent-gateway` | 9080 | [网关（路由/鉴权/注入头/401）](./gateway.md) |
 | `agent-core-service` | 9201 | [任务 API（提交/详情/步骤/分页/续跑）](./agent-core.md) |
 | `tool-service` | 9202 | [工具 API（列表/注册/调试直调）](./tool-service.md) |
-| `agent-gateway` | 9080 | P1.4 后补 |
-| `tenant-service` | 待定 | P1.4 后补 |
+| `tenant-service` | 9203 | [租户/用户/角色/认证 API](./tenant-service.md) |

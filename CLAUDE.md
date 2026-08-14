@@ -16,6 +16,7 @@
 | Spring Cloud Alibaba | 2025.0.0.0 |
 | Spring AI | 1.1.2 |
 | MyBatis-Plus | 3.5.12（`mybatis-plus-spring-boot3-starter`） |
+| jjwt | 0.12.6（JWT 签发/解析，网关与 tenant-service 共用） |
 | Nacos | 3.2.2（本机已有） |
 | RabbitMQ | 3-management（本机已有） |
 | MySQL | 5.7（本机已有，勿升级） |
@@ -36,14 +37,15 @@
 
 ```
 backend/                微服务多模块 Maven 工程
-├── agent-gateway       网关
-├── tenant-service      租户/用户/权限
+├── agent-gateway       网关（路由/鉴权/转发头注入）
+├── tenant-service      租户/用户/权限/JWT 签发
 ├── agent-core-service  Agent 调度/多智能体/任务
 ├── rag-service         知识库/RAG（含 file 能力）
 ├── tool-service        工具执行/注册
 ├── task-job-service    定时任务
 └── common              自定义 Starter 聚合
     ├── common-code
+    ├── common-jwt-starter
     ├── common-redis-starter
     ├── common-mybatisplus-starter
     ├── common-model-starter

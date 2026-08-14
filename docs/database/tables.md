@@ -132,4 +132,4 @@
 | sys_user_role | admin 绑定 admin 角色 |
 | tool_registry | 预置 `amount_verify`（金额核验工具，含 JSON Schema） |
 
-> ⚠️ admin 密码哈希当前为占位符 `__ADMIN_BCRYPT_PLACEHOLDER__`，P1.4 引入 `BCryptPasswordEncoder` 后生成真实哈希回填本脚本并重灌，或执行 `UPDATE sys_user SET password='...' WHERE username='admin'`。
+> ✅ P1.4 起 admin 密码为真实 BCrypt 哈希（`admin123` 明文仅存在于脚本注释，生产必改）；本机已执行定向 `UPDATE`，新环境整脚本执行即生效。

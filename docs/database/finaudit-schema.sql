@@ -184,11 +184,9 @@ INSERT INTO sys_role (id, tenant_id, role_code, role_name) VALUES
     (1, 1, 'admin',   '管理员'),
     (2, 1, 'auditor', '审核员');
 
--- admin 密码: admin123（BCrypt 哈希）
--- TODO(P1.4): 用 BCryptPasswordEncoder 生成真实哈希替换下方占位符后执行，
---             并同步更新 docs/database/tables.md。
+-- admin 密码: admin123（BCrypt 哈希，P1.4 起为真实哈希；明文仅存在于本注释与 .env.example 约定，生产必改）
 INSERT INTO sys_user (id, tenant_id, username, password, real_name, status) VALUES
-    (1, 1, 'admin', '__ADMIN_BCRYPT_PLACEHOLDER__', '系统管理员', 1);
+    (1, 1, 'admin', '$2a$10$Cl.mMuDniwH4biiUNXY1lOKre0Ucg91fbnPfGg8R8nHvKBNaUc4Lq', '系统管理员', 1);
 
 INSERT INTO sys_user_role (id, tenant_id, user_id, role_id) VALUES
     (1, 1, 1, 1);
