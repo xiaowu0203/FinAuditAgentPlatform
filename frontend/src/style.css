@@ -1,0 +1,55 @@
+/* 全局基础样式 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color: #303133;
+  background: #f0f2f5;
+}
+
+/* 通用工具类 */
+.mb {
+  margin-bottom: 16px;
+}
+
+.muted {
+  color: #909399;
+}
+
+.error-text {
+  color: #f56c6c;
+}
+
+.json-block {
+  margin: 0;
+  padding: 8px 12px;
+  background: #f5f7fa;
+  border-radius: 4px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.json-block.compact {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.pager {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
