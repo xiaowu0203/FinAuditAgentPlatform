@@ -21,6 +21,8 @@
     <modules>
         <module>common</module>
         <module>agent-gateway</module>
+        <module>agent-core-service</module>
+        <module>tool-service</module>
     </modules>
 
     <properties>
@@ -34,6 +36,7 @@
         <spring-ai.version>1.1.2</spring-ai.version>
         <mybatis-plus.version>3.5.12</mybatis-plus.version>
         <redisson.version>3.47.0</redisson.version>
+        <springdoc.version>2.8.13</springdoc.version>
     </properties>
 
     <dependencyManagement>
@@ -79,6 +82,12 @@
                 <groupId>org.redisson</groupId>
                 <artifactId>redisson-spring-boot-starter</artifactId>
                 <version>${redisson.version}</version>
+            </dependency>
+            <!-- Springdoc OpenAPI（Swagger UI，适配 Boot 3.5.x） -->
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>${springdoc.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

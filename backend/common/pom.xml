@@ -22,5 +22,7 @@
         <module>common-mybatisplus-starter</module>
         <module>common-model-starter</module>
         <module>common-trace-starter</module>
+        <module>common-mq-starter</module>
+        <module>common-swagger-starter</module>
     </modules>
 </project>
