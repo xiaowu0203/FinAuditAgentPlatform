@@ -29,6 +29,8 @@
 - groupId / 根包名：`com.finaudit`
 - 微服务：`com.finaudit.<module>`（如 `com.finaudit.gateway`、`com.finaudit.tenant`）
 - 公共 Starter：`com.finaudit.starter.<name>`（如 `com.finaudit.starter.web`）
+- 数据模型统一归 `pojo` 父包：`pojo.entity` / `pojo.dto` / `pojo.vo` 三个独立包，**dto 与 vo 禁止混包**（请求体→dto，响应体→vo）
+- 枚举统一放模块级 `enums` 包（与 `pojo` 同级）
 
 ## 4. 目录结构（强制）
 
@@ -45,7 +47,9 @@ backend/                微服务多模块 Maven 工程
     ├── common-redis-starter
     ├── common-mybatisplus-starter
     ├── common-model-starter
-    └── common-trace-starter
+    ├── common-trace-starter
+    ├── common-mq-starter
+    └── common-swagger-starter
 frontend/               Vue3 前端
 docs/                   全套文档
 docker-compose.yml      开源环境一键启动
@@ -60,7 +64,10 @@ docker-compose.yml      开源环境一键启动
 3. 金额计算**必须 Decimal**，严禁 float/double
 4. 每个 Starter 必须带模块 README + 关键类注释
 5. Controller 只做参数装配与返回，业务放 Service
-6. 禁止在代码里硬编码密钥/数据库密码
+6. 实体转换封装在实体类：新增用静态工厂 `from(...)`、更新用实例方法 `apply(...)`，**业务层禁止手写 set 组装实体**（转换发生在目标类，如 `ToolRegistry.from(request, tenantId)`、`AgentTask.from(request, tenantId)`、`AgentTaskStep.from(plan, tenantId, taskId, stepNo)`）
+7. 禁止在代码里硬编码密钥/数据库密码
+8. **实体数据访问收敛到实体自己的 Service**：每个实体的查询/更新**只允许出现在该实体对应的 Service 内**（Mapper 仅被其专属 Service 持有）；编排器 / Controller / MQ 消费者等外部组件需要数据时，**注入对应实体的 Service**，禁止直接持有不属于本类的 Mapper 或把其他实体的查询/更新实现写在外部类里（如 `AgentOrchestrator` 不得持有 `AgentTaskMapper`，步骤数据须经 `AgentTaskStepService`）
+9. **批量新增与自定义 SQL 统一 XML 写法**：Mapper 接口加 `@Mapper`，**只声明方法签名**，SQL 一律写在 `src/main/resources/mapper/<XxxMapper>.xml`（namespace 为接口全限定名，`<insert id>` 与接口方法同名），**禁止 `@Insert` 注解内联 SQL**；**批量新增用单条多行 INSERT**（`<foreach>` 拼 VALUES），禁止 for 循环逐行 insert；JSON 列显式指定 `typeHandler=...JacksonTypeHandler`，`id` 自增、`created_at`/`updated_at` 走数据库默认值，`deleted` 显式写 0
 
 ## 6. Git 规范
 
