@@ -2,6 +2,7 @@ package com.finaudit.toolservice.mq;
 
 import com.finaudit.starter.mq.MqTopology;
 import com.finaudit.starter.mq.message.ToolExecuteMessage;
+import com.finaudit.starter.web.tenant.TenantContextHolder;
 import com.finaudit.toolservice.service.ToolExecutionService;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -29,6 +30,7 @@ public class ToolExecuteConsumer {
      */
     @RabbitHandler
     public void onToolExecute(ToolExecuteMessage msg) {
-        toolExecutionService.executeAndPublish(msg);
+        // 在租户上下文下执行工具（多租户拦截器据此过滤）
+        TenantContextHolder.runWith(msg.tenantId(), () -> toolExecutionService.executeAndPublish(msg));
     }
 }

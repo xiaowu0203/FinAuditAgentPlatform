@@ -1,0 +1,35 @@
+package com.finaudit.tenant.pojo.vo;
+
+import com.finaudit.tenant.pojo.entity.SysUser;
+import io.swagger.v3.oas.annotations.media.Schema;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * 用户详情（含角色）。
+ *
+ * @param id        用户 ID
+ * @param tenantId  租户 ID
+ * @param username  登录名
+ * @param realName  真实姓名
+ * @param phone     手机号
+ * @param status    状态（1启用 0禁用）
+ * @param createdAt 创建时间
+ * @param roles     角色列表
+ */
+public record UserDetailVO(
+        @Schema(description = "用户 ID") Long id,
+        @Schema(description = "租户 ID") Long tenantId,
+        @Schema(description = "登录名") String username,
+        @Schema(description = "真实姓名") String realName,
+        @Schema(description = "手机号") String phone,
+        @Schema(description = "状态: 1启用 0禁用") Integer status,
+        @Schema(description = "创建时间") LocalDateTime createdAt,
+        @Schema(description = "角色列表") List<RoleVO> roles) {
+
+    public static UserDetailVO from(SysUser user, List<RoleVO> roles) {
+        return new UserDetailVO(user.getId(), user.getTenantId(), user.getUsername(),
+                user.getRealName(), user.getPhone(), user.getStatus(), user.getCreatedAt(), roles);
+    }
+}

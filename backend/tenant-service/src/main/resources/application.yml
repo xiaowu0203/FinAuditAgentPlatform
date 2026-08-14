@@ -1,0 +1,46 @@
+server:
+  port: 9203
+
+spring:
+  application:
+    name: tenant-service
+  # 配置文件导入，从Nacos远程拉取公共配置
+  config:
+    import:
+      # 可选导入Nacos数据源公共配置，找不到不启动报错
+      - optional:nacos:common-datasource.yaml
+      # 可选导入Nacos Redis 公共配置（会话黑名单/作废版本读写；与网关校验侧 key 保持一致）
+      - optional:nacos:common-redis.yaml
+
+  # Spring Cloud Nacos 配置与注册发现
+  cloud:
+    nacos:
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+        namespace: dev
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+
+# MyBatis-Plus 持久层框架配置
+mybatis-plus:
+  configuration:
+    # 开启数据库下划线字段自动映射实体类驼峰属性（user_name -> userName）
+    map-underscore-to-camel-case: true
+    # SQL日志输出实现，使用Slf4j统一日志框架打印执行SQL
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+# JWT 配置（secret 走环境变量，HS256 需 ≥32 字节）
+finaudit:
+  jwt:
+    secret: ${FINAUDIT_JWT_SECRET}
+    expire-hours: 24
+    issuer: finaudit
+
+# 日志级别配置
+logging:
+  level:
+    com.finaudit: info

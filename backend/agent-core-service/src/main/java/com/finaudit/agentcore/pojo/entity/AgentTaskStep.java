@@ -50,7 +50,11 @@ public class AgentTaskStep {
     @Schema(description = "步骤入参（JSON）")
     private Map<String, Object> inputParams;
 
-    @TableField(typeHandler = JacksonTypeHandler.class)
+    /**
+     * `output` 是 jsqlparser 5.1 保留字，多租户拦截器解析 SQL 时会失败；
+     * 用反引号引用后按普通标识符处理（MySQL 原生接受反引号，无需改表结构）
+     */
+    @TableField(value = "`output`", typeHandler = JacksonTypeHandler.class)
     @Schema(description = "步骤输出（JSON）")
     private Map<String, Object> output;
 

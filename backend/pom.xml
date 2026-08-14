@@ -21,6 +21,7 @@
     <modules>
         <module>common</module>
         <module>agent-gateway</module>
+        <module>tenant-service</module>
         <module>agent-core-service</module>
         <module>tool-service</module>
     </modules>
@@ -37,6 +38,7 @@
         <mybatis-plus.version>3.5.12</mybatis-plus.version>
         <redisson.version>3.47.0</redisson.version>
         <springdoc.version>2.8.13</springdoc.version>
+        <jjwt.version>0.12.6</jjwt.version>
     </properties>
 
     <dependencyManagement>
@@ -88,6 +90,22 @@
                 <groupId>org.springdoc</groupId>
                 <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
                 <version>${springdoc.version}</version>
+            </dependency>
+            <!-- JJWT（JWT 签发/解析，网关 + tenant-service 共用） -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-api</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>${jjwt.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

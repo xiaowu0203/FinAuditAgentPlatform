@@ -3,6 +3,7 @@ package com.finaudit.agentcore.mq;
 import com.finaudit.agentcore.service.AgentOrchestrator;
 import com.finaudit.starter.mq.MqTopology;
 import com.finaudit.starter.mq.message.ToolResultMessage;
+import com.finaudit.starter.web.tenant.TenantContextHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
@@ -28,6 +29,7 @@ public class ToolResultConsumer {
     public void onToolResult(ToolResultMessage msg) {
         log.info("收到工具结果消息: taskId={}, stepId={}, toolCode={}, success={}",
                 msg.taskId(), msg.stepId(), msg.toolCode(), msg.success());
-        orchestrator.onToolResult(msg);
+        // 在租户上下文下推进状态机（多租户拦截器据此过滤）
+        TenantContextHolder.runWith(msg.tenantId(), () -> orchestrator.onToolResult(msg));
     }
 }

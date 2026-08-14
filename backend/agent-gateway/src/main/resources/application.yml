@@ -4,8 +4,15 @@ server:
 spring:
   application:
     name: agent-gateway
+  # Redis 连接（与 Nacos common-redis.yaml 保持一致；网关未接 Nacos config，故直写）
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
   cloud:
     nacos:
+      # Nacos注册中心地址
       discovery:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
         username: ${NACOS_USERNAME:nacos}
@@ -13,15 +20,72 @@ spring:
     gateway:
       server:
         webflux:
+          # 关闭基于服务发现自动生成路由，使用下方手动配置路由
+          # 优势：便于统一做鉴权、白名单、限流、路由规则管控
           discovery:
             locator:
-              enabled: true
+              enabled: false
+          # 手动定义网关路由规则
+          routes:
+            # tenant-service：认证相关接口路由
+            # 路由唯一ID
+            - id: tenant-service-auth
+              # lb代表负载均衡，转发到nacos中的tenant-service服务
+              uri: lb://tenant-service
+              predicates:
+                # 匹配路径：认证登录相关接口
+                - Path=/api/v1/auth/**
 
+            # tenant-service：租户、用户、角色管理接口路由
+            - id: tenant-service-mgmt
+              uri: lb://tenant-service
+              predicates:
+                - Path=/api/v1/users/**,/api/v1/tenants/**,/api/v1/roles/**
+
+
+            # agent-core-service：智能体任务相关接口
+            - id: agent-core-service
+              uri: lb://agent-core-service
+              predicates:
+                - Path=/api/v1/tasks/**
+
+
+            # tool-service：工具能力相关接口
+            - id: tool-service
+              uri: lb://tool-service
+              predicates:
+                - Path=/api/v1/tools/**
+
+          # 全局跨域配置，解决前端浏览器跨域请求问题
+          globalcors:
+            add-to-simple-url-handler-mapping: true
+            cors-configurations:
+              # 匹配全部请求路径
+              '[/**]':
+                # 开发/联调阶段全部放开；生产环境务必改为指定业务域名，禁止*
+                # P1.5 前端联调期放开；生产按域名收敛
+                allowedOrigins: "*"
+                # 开发/联调阶段全部放开；生产环境务必改为指定业务域名，禁止*
+                allowedMethods: "*"
+                # 允许所有请求头
+                allowedHeaders: "*"
+                # 允许源为*时不能开启cookie凭证，故设置false
+                allowCredentials: false
+
+# JWT配置，网关做token鉴权校验，密钥必须和tenant‑service认证服务保持一致
+# HS256算法要求密钥长度≥32字符；使用环境变量注入，缺失环境变量应用启动直接失败
+finaudit:
+  jwt:
+    secret: ${FINAUDIT_JWT_SECRET}
+
+# SpringBoot Actuator监控端点配置
 management:
   endpoints:
     web:
       exposure:
+        # 对外暴露的监控端点：健康、服务信息、gateway网关路由信息
         include: health,info,gateway
   endpoint:
+    # 健康检查接口展示完整详细信息，生产可按需关闭
     health:
       show-details: always

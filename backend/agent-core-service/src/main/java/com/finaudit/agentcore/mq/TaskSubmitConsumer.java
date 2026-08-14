@@ -3,6 +3,7 @@ package com.finaudit.agentcore.mq;
 import com.finaudit.agentcore.service.AgentOrchestrator;
 import com.finaudit.starter.mq.MqTopology;
 import com.finaudit.starter.mq.message.TaskSubmitMessage;
+import com.finaudit.starter.web.tenant.TenantContextHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
@@ -27,7 +28,7 @@ public class TaskSubmitConsumer {
     @RabbitHandler
     public void onTaskSubmit(TaskSubmitMessage msg) {
         log.info("收到任务提交消息: taskId={}, tenantId={}", msg.taskId(), msg.tenantId());
-        // 执行任务
-        orchestrator.start(msg.taskId());
+        // 在租户上下文下执行任务（多租户拦截器据此过滤）
+        TenantContextHolder.runWith(msg.tenantId(), () -> orchestrator.start(msg.taskId()));
     }
 }
