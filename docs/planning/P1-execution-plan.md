@@ -1,6 +1,6 @@
 # P1 核心闭环 · 执行点文档（占位）
 
-> 版本: v0.5 ｜ 状态: **P1.4 租户鉴权完成（含 P1.4f 端到端验证 + 方案B 会话作废）**（P1.5 前端待进行）｜ 前置依赖: P0 已完成
+> 版本: v0.7 ｜ 状态: **P1 完成（P1.5e 五服务联调验收通过）** ｜ 前置依赖: P0 已完成
 > 目标: 单 Agent 可用闭环：任务提交 → Agent 拆解执行 → 工具联动 → 结果落库，网关 + MQ + 任务持久化 + DeepSeek + 租户鉴权隔离
 
 ---
@@ -43,11 +43,13 @@
 - [x] **P1.4e 种子密码 + 配置 + 文档**：`admin123` 真实 BCrypt 哈希回填 `finaudit-schema.sql` + 本机库定向 UPDATE；`.env.example` 加 `FINAUDIT_JWT_SECRET`；新增 `docs/api/tenant-service.md` / `docs/api/gateway.md` / `docs/architecture/tenant-auth.md`
 - [x] **P1.4f 端到端验证**：全量构建 + 4 服务启动；登录（直连 + 经网关，roles 正确）；网关鉴权（无 token 401 / 带 token 注入身份头）；`/auth/me`；用户/租户/角色 CRUD；**跨租户隔离**（租户2 `acme` 登录 → 任务列表为空 → 提交任务仅租户2 可见，租户1 列表无该任务）；**MQ 回归**（任务 SUCCESS，2 步，批量 INSERT 步骤 + 拦截器 + 消费线程租户上下文三者打通，步骤 `output` 正确落库返回）；错误路径（错密码/禁用用户 → 400 统一口径）。踩过的三个坑（拦截器顺序、多行 INSERT `@InterceptorIgnore`、`output` 保留字反引号）见 [`docs/architecture/tenant-auth.md`](../architecture/tenant-auth.md) §7
 - [x] **P1.4g 方案B 会话作废（JWT + Redis 黑名单）**：`JwtTokenProvider` 每次签发带唯一 `jti`（`AuthClaims` 新增 `jti`/`iatSeconds`）；网关 `AuthGlobalFilter` 每请求 `MGET` 校验 `blacklist:{jti}`（登出）与 `blackver:{userId}`（用户级踢下线），命中 401、Redis 异常 fail-open；tenant-service `POST /auth/logout` 写黑名单（TTL=`expireHours*3600`），用户禁用/删除自动升级 `blackver`；写入侧 `StringRedisTemplate` 与网关读取侧 `ReactiveStringRedisTemplate` 序列化对齐（详见 [`docs/architecture/tenant-auth.md`](../architecture/tenant-auth.md) §6）。验证：登录→登出→旧 token 401→重登可用；禁用用户→其全部已签发 token 立即失效
+- [x] **P1.5 最小前端（TS，全部页面）**：Vue3 + Vite 6 + Element Plus + Pinia + axios + TS，登录 / 任务工作台 / 任务列表 / 任务详情四页，axios 封装（Bearer 注入 + `code!=0`/401 双路径跳登录）、路由登录守卫、PENDING/RUNNING 轮询、续跑按钮（仅 PENDING/RUNNING，对齐后端契约）。`vue-tsc` + `vite build` 通过。详见 [`docs/planning/P1.5-frontend-plan.md`](./P1.5-frontend-plan.md)
+- [x] **P1.5e P1 完整联调验收（P1 完成定义）**：gateway + tenant + agent-core + tool + 前端全链路，验收清单 6 项全部通过（登录→提交→轮询→SUCCESS→详情见步骤/结果；FAILED + errorMsg + resume 400；登出 401 跳登录；跨租户隔离；localStorage 保持；后端不可达明确提示）
+- [x] **P1 收尾加固（v0.7）**：① 动态工具目录注入规划——`TaskPlanner` 经 Feign 直连 tool-service `GET /api/v1/tools` 拉取启用工具注入 LLM 规划 prompt（失败降级内置 `amount_verify`，闭环可用）；② 服务间 Feign 契约统一——客户端接口 + 跨服务 DTO 集中 common-code（`com.finaudit.starter.web.feign`，命名 `工程名+Feign`），新增 common-feign-starter 做请求头/token 透传，tool-service 统一单一控制器入口、租户走 `X-Tenant-Id` 头（服务间复用对外接口，不拆 `/internal`）；③ LLM 审核输出质量——编排注入任务入参 + 前序步骤结果、规划约束（TOOL→LLM、LLM 仅一次）；④ 前端步骤 Markdown 渲染（marked + dompurify）+ 提交样板字段丰富
 
 ### 待进行
 
-- [ ] 最小前端（P1.5：登录 / 任务工作台 / 列表 / 详情）
-- [ ] 完整联调验收（P1 完成定义）：gateway + tenant + agent-core + tool + 前端
+- [ ] **P2 规划**（P1 已全部完成）
 
 ## 3. P1 环境前提
 
