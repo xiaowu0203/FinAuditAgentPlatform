@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.finaudit.agentcore.domain.TaskPlanStep;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
+import com.finaudit.starter.web.feign.ToolServiceFeign;
+import com.finaudit.starter.web.feign.dto.ToolInfo;
 import com.finaudit.starter.model.ModelType;
 import com.finaudit.starter.model.client.AiClient;
 import com.finaudit.starter.model.client.ChatClientFactory;
@@ -14,6 +16,7 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 任务规划器：用 LLM 把任务拆解为有序步骤（结构化 JSON）。
@@ -26,9 +29,17 @@ public class TaskPlanner {
 
     private final AiClient modelClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ToolServiceFeign toolServiceFeign;
 
-    public TaskPlanner(ChatClientFactory modelFactory) {
+    /** 工具目录拉取失败时的降级工具（保证 LLM 仍能规划出 amount_verify，闭环可用） */
+    private static final ToolInfo DEFAULT_AMOUNT_VERIFY = new ToolInfo(
+            "amount_verify", "金额核验工具",
+            "加总明细金额并与申报总额比对，返回是否一致及差额。入参 items:[{name,amount}] + claimedTotal。",
+            null);
+
+    public TaskPlanner(ChatClientFactory modelFactory, ToolServiceFeign toolServiceFeign) {
         this.modelClient = modelFactory.getClient(ModelType.DEEPSEEK);
+        this.toolServiceFeign = toolServiceFeign;
     }
 
     /**
@@ -36,13 +47,32 @@ public class TaskPlanner {
      */
     public List<TaskPlanStep> plan(AgentTask task) {
         try {
+            // 动态拉取工具目录（经 Feign 读 tool-service；失败降级内置工具，保证闭环）
+            List<ToolInfo> tools;
+            try {
+                tools = toolServiceFeign.listEnabled(task.getTenantId()).getData();
+            } catch (Exception e) {
+                log.warn("获取工具目录失败，降级内置工具: {}", e.getMessage());
+                tools = List.of(DEFAULT_AMOUNT_VERIFY);
+            }
+            log.info("规划拉取工具目录 {} 个：{}", tools.size(),
+                    tools.stream().map(ToolInfo::toolCode).collect(Collectors.joining(",")));
+            String toolBlock = tools.stream()
+                    .map(t -> "- " + t.toolCode() + "（" + t.toolName() + "）：" + t.description()
+                            + (t.inputSchema() == null ? "" : "\n  入参 Schema：" + toJson(t.inputSchema())))
+                    .collect(Collectors.joining("\n"));
             String system = """
-                    你是财务审核 Agent 的任务规划器。将报销审核任务拆解为有序的执行步骤，
+                    你是财务审核 Agent 的任务规划器。将报销审核任务拆解为有序执行步骤，步骤要最小化、无冗余。
                     只能输出一个 JSON 数组，不要输出任何其他内容，不要用代码块包裹。
                     数组元素结构：{"stepName":"步骤名","stepType":"LLM或TOOL","toolName":"TOOL步骤的工具编码","inputParams":{工具入参}}
-                    可用的工具编码：amount_verify（金额核验，入参含 items 明细列表与 claimedTotal 申报总额）。
-                    TOOL 步骤必须带 inputParams；LLM 步骤可省略 toolName 与 inputParams。
-                    """;
+                    可用工具（TOOL 步骤的 toolName 只能填以下编码，且必须带对应 inputParams）：
+                    %s
+                    设计原则：
+                    1. 能调用工具完成核验时，先规划 TOOL 步骤，最后放一个 LLM 步骤汇总审核结论；
+                    2. LLM 步骤只允许一个，放在最后做汇总结论；除非工具入参确需前置整理，才允许额外一个前置 LLM；
+                    3. 禁止添加与汇总步骤职责重叠的前置"提取/核对/初步分析"LLM 步骤；
+                    4. TOOL 步骤必须带 inputParams；LLM 步骤可省略 toolName 与 inputParams。
+                    """.formatted(toolBlock);
             String user = "任务标题：" + task.getTitle() + "\n任务入参：\n" + toJson(task.getInputParams());
             // 调用 LLM 模型
             String reply = modelClient.chat(system, user);

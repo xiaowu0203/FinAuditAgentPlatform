@@ -194,6 +194,6 @@ INSERT INTO sys_user_role (id, tenant_id, user_id, role_id) VALUES
 -- 内置金额核验工具（P1 首个落地工具，金额一律 Decimal）
 INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, input_schema, enabled, version) VALUES
     (1, 1, 'amount_verify', '金额核验工具',
-     '加总明细金额并与申报总额比对，返回是否一致及差额。入参 items:[{name,amount}] + claimedTotal。',
-     '{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"}},"required":["name","amount"]}},"claimedTotal":{"type":"number"}},"required":["items","claimedTotal"]}',
+     '加总明细金额并与申报总额比对，返回是否一致及差额。入参 items:[{name,amount}] + claimedTotal；items 元素可含 amountType/quantity/unitPrice/date 等辅助字段（仅核验 amount）。',
+     '{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":"string"},"quantity":{"type":"number"},"unitPrice":{"type":"number"},"date":{"type":"string"}},"required":["name","amount"]}},"claimedTotal":{"type":"number"}},"required":["items","claimedTotal"]}',
      1, '1.0');

@@ -1,5 +1,6 @@
 package com.finaudit.agentcore.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.finaudit.agentcore.enums.StepStatus;
 import com.finaudit.agentcore.domain.TaskPlanStep;
 import com.finaudit.agentcore.enums.TaskStatus;
@@ -41,6 +42,8 @@ public class AgentOrchestrator {
 
     /** TOOL 步骤最大重试次数 */
     private static final int MAX_RETRY = 3;
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final AgentTaskService taskService;
     private final AgentTaskStepService stepService;
@@ -170,12 +173,29 @@ public class AgentOrchestrator {
      */
     private void executeLlmStep(AgentTask task, AgentTaskStep step) {
         try {
-            // 组装系统提示词、用户任务上下文
-            String context = step.getInputParams() == null
-                    ? "（无额外上下文）"
-                    : String.valueOf(step.getInputParams());
-            String system = "你是财务审核 Agent，基于任务上下文输出审核分析结论，简洁专业。";
-            String user = "任务标题：" + task.getTitle() + "\n上下文：" + context;
+            // 组装审核上下文：任务入参 + 前序步骤结果（尤其 TOOL 核验结果）+ 当前步骤入参，
+            // 避免 LLM 步骤因看不到数据而误判"入参不完整"
+            StringBuilder ctx = new StringBuilder();
+            ctx.append("【任务入参】\n").append(toJsonText(task.getInputParams())).append("\n");
+            List<AgentTaskStep> done = stepService.listByTask(task.getId()).stream()
+                    .filter(s -> StepStatus.SUCCESS.name().equals(s.getStatus()))
+                    .toList();
+            if (!done.isEmpty()) {
+                ctx.append("【前序步骤结果】\n");
+                for (AgentTaskStep s : done) {
+                    ctx.append("- 步骤").append(s.getStepNo()).append(" ").append(s.getStepName())
+                            .append(" 输出: ").append(s.getOutput() == null ? "（无）" : toJsonText(s.getOutput()))
+                            .append("\n");
+                }
+            }
+            if (step.getInputParams() != null) {
+                ctx.append("【当前步骤入参】\n").append(toJsonText(step.getInputParams())).append("\n");
+            }
+            String system = """
+                    你是财务审核 Agent。基于任务入参与前序步骤结果，给出确定性、可执行的审核结论。
+                    金额核验等工具已给出量化结果（match/total/diff）时，以该结果为准下结论，不要以"缺少单据/发票/审批材料"为由拒绝给出结论；
+                    若入参确实不足，明确指出缺少的具体字段，而非笼统索要材料。输出简洁专业。""";
+            String user = "任务标题：" + task.getTitle() + "\n" + ctx;
             // 发起模型调用
             String text = modelClient.chat(system, user);
             // 保存模型输出结果，步骤置成功
@@ -190,6 +210,20 @@ public class AgentOrchestrator {
             stepService.markFailed(step, e.getMessage());
             // 整个任务标记失败终止流程
             failTask(task, "LLM 步骤[" + step.getStepName() + "] 失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 对象 → JSON 文本（用于 LLM 步骤上下文），序列化失败时原样输出。
+     */
+    private String toJsonText(Object obj) {
+        if (obj == null) {
+            return "null";
+        }
+        try {
+            return OBJECT_MAPPER.writeValueAsString(obj);
+        } catch (Exception e) {
+            return String.valueOf(obj);
         }
     }
 

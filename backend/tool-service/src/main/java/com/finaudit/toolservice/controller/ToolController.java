@@ -20,6 +20,11 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 工具统一入口：单一控制器、统一 {@code /api/v1/tools} 前缀。
+ * <p>对外经网关 + JWT 鉴权；服务间 Feign 调用复用同一批接口（如 {@code GET /api/v1/tools}），
+ * 走 Nacos 服务名直连，租户经 {@code X-Tenant-Id} 请求头显式传递（对外由网关注入，对内由调用方声明）。</p>
+ */
 @Tag(name = "工具", description = "工具列表 / 注册 / 调试直调")
 @RestController
 @RequestMapping("/api/v1/tools")
@@ -32,7 +37,7 @@ public class ToolController {
     }
 
     @GetMapping
-    @Operation(summary = "工具列表", description = "按租户ID查询工具列表")
+    @Operation(summary = "工具列表", description = "按租户ID查询工具列表（对外/对内共用）")
     @ApiResponse(responseCode = "200", description = "操作成功，body 为 R 包装的 ToolRegistry 列表")
     public R<List<ToolRegistry>> list(@RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId) {
         return R.success(registryService.listEnabled(tenantId));
