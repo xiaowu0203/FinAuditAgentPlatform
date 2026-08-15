@@ -24,6 +24,7 @@
 | MinIO | latest（本机已有） |
 | Milvus | P2 引入 |
 | Redisson | 3.47.0 |
+| AWS SDK v2 | 2.53.1（common-oss-starter：MinIO/腾讯云 COS 统一 S3 客户端） |
 
 ## 3. 包名规范
 
@@ -51,7 +52,8 @@ backend/                微服务多模块 Maven 工程
     ├── common-model-starter
     ├── common-trace-starter
     ├── common-mq-starter
-    └── common-swagger-starter
+    ├── common-swagger-starter
+    └── common-oss-starter
 frontend/               Vue3 前端
 docs/                   全套文档
 docker-compose.yml      开源环境一键启动
