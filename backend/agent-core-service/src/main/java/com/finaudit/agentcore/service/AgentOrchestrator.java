@@ -1,7 +1,9 @@
 package com.finaudit.agentcore.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.finaudit.agentcore.enums.StepStatus;
+import com.finaudit.agentcore.domain.AuditConclusion;
 import com.finaudit.agentcore.domain.TaskPlanStep;
 import com.finaudit.agentcore.enums.TaskStatus;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
@@ -11,6 +13,7 @@ import com.finaudit.starter.mq.message.ToolResultMessage;
 import com.finaudit.starter.model.ModelType;
 import com.finaudit.starter.model.client.AiClient;
 import com.finaudit.starter.model.client.ChatClientFactory;
+import com.finaudit.starter.model.client.StructuredChatReply;
 import com.finaudit.starter.web.exception.BizException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -194,12 +197,14 @@ public class AgentOrchestrator {
             String system = """
                     你是财务审核 Agent。基于任务入参与前序步骤结果，给出确定性、可执行的审核结论。
                     金额核验等工具已给出量化结果（match/total/diff）时，以该结果为准下结论，不要以"缺少单据/发票/审批材料"为由拒绝给出结论；
-                    若入参确实不足，明确指出缺少的具体字段，而非笼统索要材料。输出简洁专业。""";
+                    若入参确实不足，明确指出缺少的具体字段，而非笼统索要材料。
+                    按下方 JSON Schema 输出结构化审核结论；decision 只能取 APPROVE（通过）/ REJECT（驳回）/ NEED_INFO（需补充材料）三者之一。""";
             String user = "任务标题：" + task.getTitle() + "\n" + ctx;
-            // 发起模型调用
-            String text = modelClient.chat(system, user);
-            // 保存模型输出结果，步骤置成功
-            stepService.markSuccess(step, Map.of("content", text));
+            // 结构化输出：审核结论按 AuditConclusion 反序列化后落库（形状由 Schema 约束）
+            StructuredChatReply<AuditConclusion> reply = modelClient.chatStructured(
+                    system, user, AuditConclusion.class);
+            stepService.markSuccess(step,
+                    OBJECT_MAPPER.convertValue(reply.data(), new TypeReference<Map<String, Object>>() {}));
             // 刷新任务已完成步骤数量
             refreshFinishedSteps(task.getId());
             // 自动推进执行下一个步骤
