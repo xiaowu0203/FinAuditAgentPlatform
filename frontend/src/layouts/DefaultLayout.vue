@@ -9,7 +9,11 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
-const activeMenu = computed(() => (route.path.startsWith('/tasks') ? '/tasks' : '/dashboard'))
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/tasks')) return '/tasks'
+  if (route.path.startsWith('/reimbursements')) return '/reimbursements'
+  return '/dashboard'
+})
 const pageTitle = computed(() => (route.meta.title as string | undefined) || '')
 const displayName = computed(() => auth.user?.realName || auth.user?.username || '未登录')
 
@@ -39,6 +43,10 @@ async function handleCommand(command: string) {
         <el-menu-item index="/tasks">
           <el-icon><List /></el-icon>
           <span>任务列表</span>
+        </el-menu-item>
+        <el-menu-item index="/reimbursements">
+          <el-icon><Tickets /></el-icon>
+          <span>报销单</span>
         </el-menu-item>
       </el-menu>
     </el-aside>

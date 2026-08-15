@@ -1,6 +1,6 @@
 # P2 单据闭环与审核工具 · 执行点文档
 
-> 版本: v0.2 ｜ 状态: **P2a 已落地，P2b 待开工** ｜ 前置依赖: P1 完成、MinIO 本机启动
+> 版本: v0.3 ｜ 状态: **P2a 后端已落地、前端归 P2a 待推进；P2b 审核工具、P2c 财务规则配置待开工** ｜ 前置依赖: P1 完成、MinIO 本机启动
 > 目标: 把审核业务从「纯 JSON 文本任务」升级为「真实报销单闭环」——图片上传、四类审核工具、财务规则可视化配置，为 P3 多 Agent 流水线铺垫数据与工具底座。
 
 ---
@@ -9,7 +9,7 @@
 
 | 阶段 | 内容 | 说明 |
 |---|---|---|
-| **P2a 单据闭环** | MinIO 文件能力 + 报销单/附件实体 + 前端图片上传页 | 任务入参从纯 JSON 文本 → 真实报销单数据（文件 ID 引用） |
+| **P2a 单据闭环** | MinIO 文件能力 + 报销单/附件实体 + 前端上传/提交页 + 前端任务跳转 | 任务入参从纯 JSON 文本 → 真实报销单数据（文件 ID 引用）；**后端已落地，前端归 P2a 待推进** |
 | **P2b 审核工具做厚** | OCR / 预算查询 / 规则校验 / 重复报销检测 | amount_verify 从唯一工具 → 五类之一 |
 | **P2c 财务规则配置** | 规则表 + 配置页 + Nacos 动态刷新 | 差旅标准/限额/时效可视化配置，改规则不发布服务 |
 
@@ -38,8 +38,8 @@
 - [x] **MinIO 文件能力**：按 D4 落地，**P2a-重构后拆出 file-service（9205）**：`POST /api/v1/files/upload`（multipart → MinIO，元数据落 `file_record`，业务附件仅存 `file_record` 引用）
 - [x] **报销单/附件实体**：`expense_reimbursement` / `expense_attachment`（见 §5，归属 agent-core；`expense_attachment` 去 fileName/objectName 加 file_record_id），实体 `from/apply` 转换，数据访问收敛到各自 Service（CLAUDE.md §5.8）
 - [x] **报销单提交接口**：`POST /api/v1/reimbursements`（明细 + `fileRecordIds`）→ **agent-core 服务内直调 `AgentTaskService.createTask`**（同事务，消灭跨服务 Feign 孤儿窗口；`input_params` 携带报销单快照 + 附件 file 引用，`task_id` 反写回报销单）
-- [ ] **前端上传/提交页**：图片多文件上传（进度条）+ 报销明细表单 + 内置模板（后端已就绪，本轮只做后端，前端单独推进）
-- [ ] **任务入参升级**：前端任务列表可跳报销单（后端 `TaskVO.inputParams.reimbId` 已暴露并 E2E 验证，前端跳转单独推进）
+- [x] **前端上传/提交页**（归 P2a）：图片多文件上传（进度条）+ 报销明细表单 + 内置模板（`npm run build` 通过）
+- [x] **前端任务跳转**（归 P2a）：前端任务列表可跳报销单（后端 `TaskVO.inputParams.reimbId` 已暴露并 E2E 验证）
 
 ### P2b 审核工具做厚（tool-service）
 - [ ] **`ocr_extract` 票据识别**：OCR 抽取金额/日期/商户/税号，识别失败自动重试 ≤3 → 仍失败推送人工录入（`ocr_status=FAILED`）；多厂商兜底（D6 定）

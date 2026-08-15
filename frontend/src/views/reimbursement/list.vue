@@ -1,36 +1,32 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { getTaskPage, resumeTask } from '@/api/task'
-import { TASK_STATUS_MAP, isActive, reimbIdOf } from '@/utils/task'
-import type { TaskStatus, TaskVO } from '@/types'
+import { getReimbursementPage } from '@/api/reimbursement'
+import { TASK_STATUS_MAP } from '@/utils/task'
+import type { ReimbStatus, ReimbursementVO } from '@/types'
 
 const router = useRouter()
 const loading = ref(false)
-const records = ref<TaskVO[]>([])
+const records = ref<ReimbursementVO[]>([])
 const total = ref(0)
-const query = reactive<{ pageNum: number; pageSize: number; status: TaskStatus | '' }>({
+const query = reactive<{ pageNum: number; pageSize: number; status: ReimbStatus | '' }>({
   pageNum: 1,
   pageSize: 10,
   status: '',
 })
 
-let timer: number | undefined
-
 async function load(page?: number) {
   if (page) query.pageNum = page
   loading.value = true
   try {
-    const result = await getTaskPage({
+    const result = await getReimbursementPage({
       pageNum: query.pageNum,
       pageSize: query.pageSize,
       ...(query.status ? { status: query.status } : {}),
     })
     records.value = result.records || []
     total.value = result.total || 0
-    syncPolling()
   } catch {
     // 拦截器已提示
   } finally {
@@ -38,38 +34,18 @@ async function load(page?: number) {
   }
 }
 
-/** 当前页存在进行中任务则轮询刷新，全部终态后停止 */
-function syncPolling() {
-  const active = records.value.some((r) => isActive(r.status))
-  if (active && !timer) {
-    timer = window.setInterval(() => load(), 2500)
-  } else if (!active && timer) {
-    window.clearInterval(timer)
-    timer = undefined
-  }
-}
-
-async function handleResume(row: TaskVO) {
-  try {
-    await resumeTask(row.id)
-    ElMessage.success('已触发续跑')
-    load()
-  } catch {
-    // 拦截器已提示
-  }
+function goDetail(id: number) {
+  router.push(`/reimbursements/${id}`)
 }
 
 onMounted(() => load())
-onBeforeUnmount(() => {
-  if (timer) window.clearInterval(timer)
-})
 </script>
 
 <template>
   <el-card>
     <template #header>
       <div class="list-header">
-        <span>任务列表</span>
+        <span>我的报销单</span>
         <div class="filters">
           <el-select
             v-model="query.status"
@@ -80,37 +56,42 @@ onBeforeUnmount(() => {
           >
             <el-option v-for="(v, k) in TASK_STATUS_MAP" :key="k" :label="v.label" :value="k" />
           </el-select>
-          <el-button type="primary" :icon="Plus" @click="router.push('/dashboard')">提交任务</el-button>
+          <el-button type="primary" :icon="Plus" @click="router.push('/reimbursements/create')">
+            提交报销
+          </el-button>
         </div>
       </div>
     </template>
 
-    <el-table v-loading="loading" :data="records" empty-text="暂无任务">
-      <el-table-column prop="taskNo" label="任务编号" min-width="160" show-overflow-tooltip />
+    <el-table v-loading="loading" :data="records" empty-text="暂无报销单">
+      <el-table-column prop="reimbNo" label="报销单号" min-width="170" show-overflow-tooltip />
       <el-table-column prop="title" label="标题" min-width="140" show-overflow-tooltip />
+      <el-table-column label="费用类型" width="100">
+        <template #default="{ row }">{{ row.expenseType }}</template>
+      </el-table-column>
+      <el-table-column label="申报金额" width="120">
+        <template #default="{ row }">￥{{ Number(row.totalAmount).toFixed(2) }}</template>
+      </el-table-column>
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
-          <el-tag :type="TASK_STATUS_MAP[row.status as TaskStatus].tag">{{ TASK_STATUS_MAP[row.status as TaskStatus].label }}</el-tag>
+          <el-tag :type="TASK_STATUS_MAP[row.status as ReimbStatus].tag">
+            {{ TASK_STATUS_MAP[row.status as ReimbStatus].label }}
+          </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="进度" width="100">
-        <template #default="{ row }">{{ row.finishedSteps }} / {{ row.totalSteps }}</template>
-      </el-table-column>
+      <el-table-column prop="claimDate" label="报销日期" width="120" />
       <el-table-column prop="createdAt" label="创建时间" width="170" />
-      <el-table-column label="操作" width="170" fixed="right">
+      <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="router.push(`/tasks/${row.id}`)">详情</el-button>
+          <el-button link type="primary" size="small" @click="goDetail(row.id)">详情</el-button>
           <el-button
-            v-if="reimbIdOf(row) != null"
+            v-if="row.taskId"
             link
             type="primary"
             size="small"
-            @click="router.push(`/reimbursements/${reimbIdOf(row)}`)"
+            @click="router.push(`/tasks/${row.taskId}`)"
           >
-            报销单
-          </el-button>
-          <el-button v-if="isActive(row.status)" link type="warning" size="small" @click="handleResume(row)">
-            续跑
+            任务
           </el-button>
         </template>
       </el-table-column>
@@ -141,5 +122,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.pager {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

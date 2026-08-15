@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · 财务费用智能审核 Agent 平台
 
-> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2a 单据闭环后端 ✅（服务边界重构完成）** · 详细文档见 `docs/`
+> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2a 单据闭环 ✅（后端 + 前端）** · 详细文档见 `docs/`
 
 ## 项目简介
 
@@ -22,7 +22,9 @@
 
 ### 规划中（P2+，见 `docs/planning/future-roadmap.md`）
 
-- **P2a 单据闭环（后端 ✅，服务边界重构完成）**：新增 `file-service`（9205）承载纯文件资源（上传/下载/预览，唯一持有 `common-oss-starter`）；报销单 CRUD/提交/任务生成/审核流程全部归属 `agent-core-service`（提交服务内直调建任务，同事务消灭跨服务孤儿窗口；读附件一律 `FileServiceFeign` 远程调用，禁止直连 OSS）；`rag-service`（9204）回归 RAG 专用空骨架（P4 填 Milvus）；前端上传/提交页 + P2b 审核工具推进中
+- **P2a 单据闭环 ✅（后端 + 前端）**：新增 `file-service`（9205）承载纯文件资源（上传/下载/预览，唯一持有 `common-oss-starter`）；报销单 CRUD/提交/任务生成/审核流程全部归属 `agent-core-service`（提交服务内直调建任务，同事务消灭跨服务孤儿窗口；读附件一律 `FileServiceFeign` 远程调用，禁止直连 OSS）；`rag-service`（9204）回归 RAG 专用空骨架（P4 填 Milvus）；前端上传/提交页 + 任务跳报销单已完成
+- **P2b 审核工具做厚**：OCR / 预算查询 / 规则校验 / 重复报销检测四类工具（金额全 Decimal）
+- **P2c 财务规则配置**：finance_rule 表 + 配置页 + Nacos 动态刷新，改规则不发布服务
 - **P3** 多 Agent 协同流水线（规则引擎驱动）+ 审批工单 + 人机协同审计留痕
 - **P4** RAG 企业知识库（Milvus）、监控大盘与量化评估
 
@@ -36,8 +38,9 @@ JDK 21 · Spring Boot 3.5.0 · Spring Cloud 2025.0.0 · Spring Cloud Alibaba 202
 |---|---|---|
 | P0 基建 | ✅ 完成 | 多模块骨架、common × 8、网关注册 Nacos、双 remote 同步、Nacos 初始化 |
 | P1 核心闭环 | ✅ 完成 | 任务状态机 + 断点续跑 + MQ 编排 + DeepSeek + 多租户鉴权 + 最小前端，五服务联调验收通过 |
-| P2a 单据闭环 | ✅ 后端完成（重构） | file-service（9205）纯文件 + agent-core 报销域（服务内直调建任务）+ rag-service 回归 RAG 空骨架，编译/单测/E2E 通过 |
-| P2b 审核工具与前端 | 🚧 规划中 | OCR/预算/规则/重复检测四类工具 + 前端上传/提交页 + 财务规则配置 |
+| P2a 单据闭环 | ✅ 完成（后端 + 前端） | file-service（9205）纯文件 + agent-core 报销域（服务内直调建任务）+ rag-service 回归 RAG 空骨架，编译/单测/E2E 通过；前端上传/提交页 + 任务跳报销单已落地 |
+| P2b 审核工具做厚 | 🚧 规划中 | OCR/预算/规则/重复检测四类工具（金额全 Decimal） |
+| P2c 财务规则配置 | 🚧 规划中 | finance_rule 表 + 配置页 + Nacos 动态刷新，改规则不发布服务 |
 
 ## 快速启动
 
