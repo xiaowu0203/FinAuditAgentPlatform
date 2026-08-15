@@ -25,6 +25,9 @@ public class TaskVO {
     @Schema(description = "任务标题")
     private String title;
 
+    @Schema(description = "业务类型（REIMBURSEMENT 报销审核 / GENERIC 通用分析）")
+    private String taskType;
+
     @Schema(description = "任务入参（JSON）")
     private Map<String, Object> inputParams;
 
@@ -52,6 +55,7 @@ public class TaskVO {
         vo.setTenantId(task.getTenantId());
         vo.setTaskNo(task.getTaskNo());
         vo.setTitle(task.getTitle());
+        vo.setTaskType(task.getTaskType());
         vo.setInputParams(task.getInputParams());
         vo.setStatus(task.getStatus());
         vo.setTotalSteps(task.getTotalSteps());

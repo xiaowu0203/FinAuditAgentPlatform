@@ -1,6 +1,6 @@
 -- =====================================================================
 -- FinAuditAgentPlatform 数据库初始化脚本
--- 版本: P1.1 ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
+-- 版本: P2a-重构（拆 file-service + 报销域迁 agent-core） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
 -- 说明: 可直接整体执行；DROP TABLE IF EXISTS 保证幂等（会清空重灌）。
 --       本机执行: mysql -uroot -p < docs/database/finaudit-schema.sql
 -- =====================================================================
@@ -9,6 +9,9 @@ CREATE DATABASE IF NOT EXISTS finaudit DEFAULT CHARACTER SET utf8mb4 COLLATE utf
 USE finaudit;
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS expense_attachment;
+DROP TABLE IF EXISTS file_record;
+DROP TABLE IF EXISTS expense_reimbursement;
 DROP TABLE IF EXISTS tool_execution_log;
 DROP TABLE IF EXISTS tool_registry;
 DROP TABLE IF EXISTS agent_task_step;
@@ -93,6 +96,7 @@ CREATE TABLE agent_task (
     tenant_id     BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
     task_no       VARCHAR(40)   NOT NULL COMMENT '任务编号，如 T20260813120000123456',
     title         VARCHAR(128)  NOT NULL COMMENT '任务标题',
+    task_type     VARCHAR(20)   NOT NULL DEFAULT 'GENERIC' COMMENT '业务类型：REIMBURSEMENT 报销审核 / GENERIC 通用分析（P2a 新增，规划器按业务注入提示词/工具）',
     input_params  JSON          NOT NULL COMMENT '任务入参（原始输入，含明细金额等）',
     status        VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '任务状态',
     total_steps   INT           NOT NULL DEFAULT 0 COMMENT '总步骤数',
@@ -172,6 +176,77 @@ CREATE TABLE tool_execution_log (
     KEY idx_task (task_id),
     KEY idx_tool (tool_code)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '工具执行日志表';
+
+-- ---------------------------------------------------------------------
+-- 9. 报销单表（P2a 单据闭环）
+--    status 对齐任务状态机: PENDING -> RUNNING -> SUCCESS / FAILED（预留 MANUAL_REVIEW）
+--    items 存提交明细，仅作存储不参与 WHERE 过滤（MySQL 5.7 JSON 检索限制）
+-- ---------------------------------------------------------------------
+CREATE TABLE expense_reimbursement (
+    id           BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id    BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    reimb_no     VARCHAR(40)   NOT NULL COMMENT '报销单号，如 R2026081512345678',
+    title        VARCHAR(128)  NOT NULL COMMENT '报销标题',
+    expense_type VARCHAR(32)   NOT NULL COMMENT '费用类型: TRAVEL/ENTERTAINMENT/OFFICE',
+    applicant_id BIGINT        NOT NULL COMMENT '申请人用户ID',
+    dept_name    VARCHAR(64)   NOT NULL COMMENT '部门',
+    total_amount DECIMAL(12,2) NOT NULL COMMENT '申报总金额（Decimal 强制）',
+    task_id      BIGINT        DEFAULT NULL COMMENT '关联 agent_task.id（提交后反写）',
+    status       VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '审核状态（对齐任务状态机）',
+    claim_date   DATE          NOT NULL COMMENT '报销日期',
+    remark       VARCHAR(512)  DEFAULT NULL COMMENT '备注',
+    items        JSON          NOT NULL COMMENT '报销明细 [{name,amount,amountType,quantity,unitPrice,date}]',
+    created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted      TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_reimb_no (reimb_no),
+    KEY idx_tenant_status (tenant_id, status),
+    KEY idx_applicant (tenant_id, applicant_id),
+    KEY idx_task (task_id),
+    KEY idx_created_at (created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '报销单表';
+
+-- ---------------------------------------------------------------------
+-- 10. 报销业务附件表（P2a-重构）
+--    仅存 file_record 引用 + 业务字段（fileType/ocrStatus/ocrResult）；
+--    文件元数据（fileName/objectName）在 file-service 的 file_record，经 FileServiceFeign 联取
+-- ---------------------------------------------------------------------
+CREATE TABLE expense_attachment (
+    id            BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id     BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    reimb_id      BIGINT        DEFAULT NULL COMMENT '报销单ID（提交绑定时回填）',
+    file_record_id BIGINT       NOT NULL COMMENT 'file_record.id（文件元数据在 file-service）',
+    file_type     VARCHAR(32)   NOT NULL DEFAULT 'OTHER' COMMENT '附件类型: INVOICE/ITINERARY/CONTRACT/OTHER（P2a 默认 OTHER，分类归 P2b OCR）',
+    ocr_status    VARCHAR(16)   NOT NULL DEFAULT 'PENDING' COMMENT 'OCR状态: PENDING/SUCCESS/FAILED',
+    ocr_result    JSON          DEFAULT NULL COMMENT 'OCR抽取结果',
+    created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted       TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    KEY idx_reimb (reimb_id),
+    KEY idx_file_record (file_record_id),
+    KEY idx_tenant (tenant_id),
+    KEY idx_ocr_status (ocr_status)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '报销业务附件表';
+
+-- ---------------------------------------------------------------------
+-- 11. 文件元数据表（file-service：纯二进制资源，无财务业务字段）
+--    object_name 为对象存储 key（含租户前缀，防跨租户碰撞）；业务附件经 file_record_id 引用本表
+-- ---------------------------------------------------------------------
+CREATE TABLE file_record (
+    id           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id    BIGINT       NOT NULL DEFAULT 1 COMMENT '租户ID',
+    file_name    VARCHAR(255) NOT NULL COMMENT '原始文件名',
+    object_name  VARCHAR(255) NOT NULL COMMENT '对象存储 key（含租户前缀 {tenantId}/{yyyyMM}/{uuid}{ext}）',
+    content_type VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream' COMMENT 'MIME 类型',
+    size         BIGINT       NOT NULL DEFAULT 0 COMMENT '字节大小',
+    created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted      TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    KEY idx_tenant (tenant_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '文件元数据表（file-service）';
 
 -- =====================================================================
 -- Seed 数据（默认租户 + 管理员 + 角色 + 内置金额核验工具）

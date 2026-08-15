@@ -1,6 +1,6 @@
 # P2 单据闭环与审核工具 · 执行点文档
 
-> 版本: v0.1 ｜ 状态: **规划完成，待开工** ｜ 前置依赖: P1 完成、MinIO 本机启动
+> 版本: v0.2 ｜ 状态: **P2a 已落地，P2b 待开工** ｜ 前置依赖: P1 完成、MinIO 本机启动
 > 目标: 把审核业务从「纯 JSON 文本任务」升级为「真实报销单闭环」——图片上传、四类审核工具、财务规则可视化配置，为 P3 多 Agent 流水线铺垫数据与工具底座。
 
 ---
@@ -22,26 +22,27 @@
 | D1 | OCR 引入时机 | **P2b**（非占位、非后置），需第三方 key + 多厂商兜底/熔断降级 |
 | D2 | 单据提交形态 | **图片上传**（依赖 MinIO，P2a 前启动 9000/9001） |
 | D3 | 财务规则载体 | **后台可视化配置 + Nacos 动态刷新**（规则存表，保存后发布到 Nacos，服务 @RefreshScope 生效） |
+| D4 | 文件能力载体 | **新增 file-service 承载纯文件资源**（上传/下载/预览收敛 file-service，唯一持有 `common-oss-starter`；报销域迁 agent-core 服务内直调建任务，读附件一律 `FileServiceFeign`；rag-service 回归 RAG 专用空骨架，P4 填 Milvus）。**P2a 重构已落地** |
+| D5 | 任务业务分派 | **`agent_task` 增 `task_type`（REIMBURSEMENT/GENERIC）**：报销单提交显式标记 REIMBURSEMENT，通用任务缺省 GENERIC；`TaskPlanner` 按业务注入提示词指令段 + 按业务收敛工具集（财务工具仅 REIMBURSEMENT 注入），避免报销与通用任务共用同一份写死「财务审核」提示词导致规划漂移，并为 P3 多 Agent 角色化铺垫分派字段。**P2a 已落地** |
 
 ## 3. 待确认决策（P2 开工前定）
 
-| # | 决策 | 备选 | 倾向 |
+| # | 决策 | 备选 | 结论 |
 |---|---|---|---|
-| D4 | 文件能力载体 | A) 新建 `rag-service` 骨架先承载 file（符合 CLAUDE.md 目录「rag 含 file 能力」，微服务数达上限 6 内）；B) 抽 `common-minio-starter` + 上传接口暂挂 tool-service | A：一次归位，避免后续迁移；RAG/Milvus 检索留 P4 补齐 |
-| D5 | OCR 厂商选型 | 百度 / 阿里 / 本地轻量；统一封装进 OCR 工具 Starter | 待定：需账号 key（环境变量 `FINAUDIT_OCR_API_KEY`），优先选本机可用/免费额度方案 |
-| D6 | 部门归属 | 先 `dept_name` 字符串，独立部门表后置 | 字符串（预算按 dept_name 分组即可） |
+| D6 | OCR 厂商选型 | 百度 / 阿里 / 本地轻量；统一封装进 OCR 工具 Starter | 待定：需账号 key（环境变量 `FINAUDIT_OCR_API_KEY`），优先选本机可用/免费额度方案 |
+| D7 | 部门归属 | 先 `dept_name` 字符串，独立部门表后置 | 字符串（预算按 dept_name 分组即可） |
 
 ## 4. 执行点进度（待进行）
 
 ### P2a 单据闭环
-- [ ] **MinIO 文件能力**：按 D4 落地（common-minio-starter 或 rag-service 骨架）；`POST /api/v1/files/upload`（multipart → MinIO，返回 object key + 元数据落 `expense_attachment`）
-- [ ] **报销单/附件实体**：`expense_reimbursement` / `expense_attachment`（见 §5），实体 `from/apply` 转换，数据访问收敛到各自 Service（CLAUDE.md §5.8）
-- [ ] **报销单提交接口**：`POST /api/v1/reimbursements`（明细 + 附件 ID 列表）→ 生成 `agent_task`（`input_params` 携带报销单 JSON + 附件 file 引用，`task_id` 反写回报销单）
-- [ ] **前端上传/提交页**：图片多文件上传（进度条）+ 报销明细表单 + 内置模板
-- [ ] **任务入参升级**：agent-core 任务详情返回报销单关联信息，前端任务列表可跳报销单
+- [x] **MinIO 文件能力**：按 D4 落地，**P2a-重构后拆出 file-service（9205）**：`POST /api/v1/files/upload`（multipart → MinIO，元数据落 `file_record`，业务附件仅存 `file_record` 引用）
+- [x] **报销单/附件实体**：`expense_reimbursement` / `expense_attachment`（见 §5，归属 agent-core；`expense_attachment` 去 fileName/objectName 加 file_record_id），实体 `from/apply` 转换，数据访问收敛到各自 Service（CLAUDE.md §5.8）
+- [x] **报销单提交接口**：`POST /api/v1/reimbursements`（明细 + `fileRecordIds`）→ **agent-core 服务内直调 `AgentTaskService.createTask`**（同事务，消灭跨服务 Feign 孤儿窗口；`input_params` 携带报销单快照 + 附件 file 引用，`task_id` 反写回报销单）
+- [ ] **前端上传/提交页**：图片多文件上传（进度条）+ 报销明细表单 + 内置模板（后端已就绪，本轮只做后端，前端单独推进）
+- [ ] **任务入参升级**：前端任务列表可跳报销单（后端 `TaskVO.inputParams.reimbId` 已暴露并 E2E 验证，前端跳转单独推进）
 
 ### P2b 审核工具做厚（tool-service）
-- [ ] **`ocr_extract` 票据识别**：OCR 抽取金额/日期/商户/税号，识别失败自动重试 ≤3 → 仍失败推送人工录入（`ocr_status=FAILED`）；多厂商兜底（D5 定）
+- [ ] **`ocr_extract` 票据识别**：OCR 抽取金额/日期/商户/税号，识别失败自动重试 ≤3 → 仍失败推送人工录入（`ocr_status=FAILED`）；多厂商兜底（D6 定）
 - [ ] **`budget_query` 预算核算**：查 `budget` 部门当月剩余预算，返回占用/剩余额度
 - [ ] **`rule_check` 财务规则校验**：加载 `finance_rule`（本地缓存 + Nacos 刷新），校验差旅标准/补贴限额/报销时效/大额阈值，返回命中规则 + 是否超标
 - [ ] **`duplicate_check` 重复报销检测**：按（申请人 + 商户 + 金额 + 日期区间）查历史报销单，返回疑似重复
@@ -60,18 +61,24 @@
 |---|---|---|
 | reimb_no | VARCHAR(40) UNIQUE | 报销单号，如 `R2026081512345678` |
 | title / expense_type | VARCHAR | 标题 / 费用类型（TRAVEL/ENTERTAINMENT/OFFICE） |
-| applicant_id / dept_name | BIGINT / VARCHAR(64) | 申请人用户ID / 部门字符串（D6） |
+| applicant_id / dept_name | BIGINT / VARCHAR(64) | 申请人用户ID / 部门字符串（D7） |
 | total_amount | DECIMAL(12,2) | 申报总金额（**Decimal 强制**） |
 | task_id | BIGINT | 关联 `agent_task.id`（提交后反写） |
 | status | VARCHAR(20) | 审核状态（对齐任务状态机） |
 | claim_date / remark | DATE / VARCHAR(512) | 报销日期 / 备注 |
 
-**`expense_attachment` 附件**
+**`file_record` 文件元数据（file-service，纯二进制资源）**
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| file_name / object_name | VARCHAR(255) | 原始文件名 / 对象存储 key（含租户前缀） |
+| content_type / size | VARCHAR(128) / BIGINT | MIME 类型 / 字节大小 |
+
+**`expense_attachment` 报销业务附件（agent-core，仅存引用 + 业务字段）**
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | reimb_id | BIGINT | 报销单 ID |
-| file_name / object_name | VARCHAR | MinIO 文件名 / object key |
-| file_type | VARCHAR(32) | INVOICE / ITINERARY / CONTRACT / OTHER |
+| file_record_id | BIGINT | file_record.id 引用（索引 idx_file_record） |
+| file_type | VARCHAR(32) | INVOICE / ITINERARY / CONTRACT / OTHER（P2a 默认 OTHER，分类归 P2b OCR） |
 | ocr_status / ocr_result | VARCHAR(16) / JSON | PENDING/SUCCESS/FAILED + OCR 抽取结果 |
 
 **`budget` 部门预算**

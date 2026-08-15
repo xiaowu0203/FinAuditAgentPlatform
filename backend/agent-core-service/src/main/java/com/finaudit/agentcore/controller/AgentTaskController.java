@@ -39,7 +39,7 @@ public class AgentTaskController {
         this.orchestrator = orchestrator;
     }
 
-    @Operation(summary = "提交任务", description = "创建一条财务审核任务，返回任务详情")
+    @Operation(summary = "提交任务", description = "创建一条 Agent 任务（taskType 缺省 GENERIC 通用分析；报销单走 POST /reimbursements 自动标记 REIMBURSEMENT），返回任务详情")
     @ApiResponse(responseCode = "200", description = "操作成功，body 为 R 包装的 TaskVO")
     @PostMapping
     public R<TaskVO> submit(@Valid @RequestBody TaskSubmitRequest request,

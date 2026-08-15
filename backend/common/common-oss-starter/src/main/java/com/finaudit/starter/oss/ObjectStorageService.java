@@ -62,6 +62,12 @@ public interface ObjectStorageService {
     /** 指定桶只读预签名 URL */
     String presignGetUrl(String bucket, String key);
 
+    /**
+     * 指定桶只读预签名 URL，带响应内容处置头（下载传 {@code attachment; filename="..."}；
+     * 预览传 null 走 {@link #presignGetUrl(String, String)}。SDK 会对 header 值做 URL 编码，中文/空格安全）。
+     */
+    String presignGetUrl(String bucket, String key, String responseContentDisposition);
+
     /** 默认桶可写预签名 URL（前端直传，默认有效期） */
     default String presignPutUrl(String key, String contentType) {
         return presignPutUrl(defaultBucket(), key, contentType);

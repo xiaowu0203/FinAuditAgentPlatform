@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import com.finaudit.agentcore.enums.TaskStatus;
+import com.finaudit.agentcore.enums.TaskType;
 import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Getter;
@@ -38,6 +39,9 @@ public class AgentTask {
 
     @Schema(description = "任务标题")
     private String title;
+
+    @Schema(description = "业务类型（REIMBURSEMENT 报销审核 / GENERIC 通用分析；P3 角色化分派依据）")
+    private String taskType;
 
     @TableField(typeHandler = JacksonTypeHandler.class)
     @Schema(description = "任务入参（JSON）")
@@ -83,6 +87,7 @@ public class AgentTask {
         task.setTenantId(tenantId);
         task.setTaskNo(generateTaskNo());
         task.setTitle(request.title());
+        task.setTaskType(request.taskType() == null ? TaskType.GENERIC.name() : request.taskType().name());
         task.setInputParams(request.inputParams());
         task.setStatus(TaskStatus.PENDING.name());
         task.setTotalSteps(0);

@@ -24,6 +24,8 @@
         <module>tenant-service</module>
         <module>agent-core-service</module>
         <module>tool-service</module>
+        <module>rag-service</module>
+        <module>file-service</module>
     </modules>
 
     <properties>

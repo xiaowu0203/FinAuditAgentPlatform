@@ -1,6 +1,7 @@
 package com.finaudit.agentcore.service;
 
 import com.finaudit.agentcore.domain.TaskPlanStep;
+import com.finaudit.agentcore.enums.TaskType;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
 import com.finaudit.starter.model.ModelType;
 import com.finaudit.starter.model.client.AiClient;
@@ -11,16 +12,20 @@ import com.finaudit.starter.web.feign.ToolServiceFeign;
 import com.finaudit.starter.web.feign.dto.ToolInfo;
 import com.finaudit.starter.web.result.R;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -43,6 +48,7 @@ class TaskPlannerTest {
         AgentTask task = new AgentTask();
         task.setTenantId(1L);
         task.setTitle("报销审核");
+        task.setTaskType(TaskType.REIMBURSEMENT.name());
         task.setInputParams(Map.of(
                 "items", List.of(Map.of("name", "打车费", "amount", 100)),
                 "claimedTotal", 100));
@@ -98,5 +104,39 @@ class TaskPlannerTest {
         assertEquals(2, steps.size());
         assertEquals("金额核验", steps.get(0).stepName());
         assertEquals("amount_verify", steps.get(0).toolName());
+    }
+
+    @Test
+    void filterTools_convergesByBusiness() {
+        List<ToolInfo> tools = List.of(new ToolInfo("amount_verify", "金额核验工具", "desc", null));
+
+        assertEquals(1, TaskPlanner.filterTools(TaskType.REIMBURSEMENT, tools).size());
+        assertEquals(0, TaskPlanner.filterTools(TaskType.GENERIC, tools).size());
+    }
+
+    @Test
+    void plan_reimbursementTask_injectsFinanceTools() {
+        stubToolCatalog();
+        when(aiClient.chatWithUsage(anyString(), anyString())).thenReturn(new ChatReply("[]", TokenUsage.ZERO));
+
+        newPlanner().plan(taskWithInputs());
+
+        ArgumentCaptor<String> systemCaptor = ArgumentCaptor.forClass(String.class);
+        verify(aiClient).chatWithUsage(systemCaptor.capture(), anyString());
+        assertTrue(systemCaptor.getValue().contains("amount_verify"));
+    }
+
+    @Test
+    void plan_genericTask_filtersFinanceTools() {
+        stubToolCatalog();
+        when(aiClient.chatWithUsage(anyString(), anyString())).thenReturn(new ChatReply("[]", TokenUsage.ZERO));
+
+        AgentTask task = taskWithInputs();
+        task.setTaskType(TaskType.GENERIC.name());
+        newPlanner().plan(task);
+
+        ArgumentCaptor<String> systemCaptor = ArgumentCaptor.forClass(String.class);
+        verify(aiClient).chatWithUsage(systemCaptor.capture(), anyString());
+        assertFalse(systemCaptor.getValue().contains("amount_verify"));
     }
 }

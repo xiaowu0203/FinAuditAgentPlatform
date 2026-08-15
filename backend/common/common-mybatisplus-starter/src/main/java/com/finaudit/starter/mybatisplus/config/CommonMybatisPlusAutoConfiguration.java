@@ -1,11 +1,17 @@
 package com.finaudit.starter.mybatisplus.config;
 
 import com.baomidou.mybatisplus.annotation.DbType;
+import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.finaudit.starter.web.tenant.TenantContextHolder;
+import jakarta.annotation.PostConstruct;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.LongValue;
 import org.slf4j.Logger;
@@ -24,6 +30,21 @@ import org.springframework.context.annotation.Bean;
 public class CommonMybatisPlusAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(CommonMybatisPlusAutoConfiguration.class);
+
+    /**
+     * 注册 jsr310 时间序列化到 MyBatis-Plus JSON 类型处理器。
+     * <p>默认 {@link JacksonTypeHandler} 内部 ObjectMapper 未注册 JavaTimeModule，
+     * JSON 列携带 {@link java.time.LocalDate}（如 agent_task.input_params 报销单快照）
+     * 会抛 {@code Java 8 date/time type not supported}。此处统一注册，全服务 JSON 列生效。</p>
+     */
+    @PostConstruct
+    public void registerJacksonJsr310() {
+        ObjectMapper mapper = JsonMapper.builder()
+                .addModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .build();
+        JacksonTypeHandler.setObjectMapper(mapper);
+    }
 
     /**
      * MyBatis‑Plus 核心拦截器Bean
