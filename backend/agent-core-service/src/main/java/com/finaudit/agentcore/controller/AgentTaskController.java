@@ -43,8 +43,9 @@ public class AgentTaskController {
     @ApiResponse(responseCode = "200", description = "操作成功，body 为 R 包装的 TaskVO")
     @PostMapping
     public R<TaskVO> submit(@Valid @RequestBody TaskSubmitRequest request,
-                            @RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId) {
-        return R.success(taskService.createTask(request, tenantId));
+                            @RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId,
+                            @RequestHeader(name = "X-User-Id", required = false) Long userId) {
+        return R.success(taskService.createTask(request, tenantId, userId));
     }
 
     @Operation(summary = "任务详情", description = "按任务 ID 查询任务状态与概要信息")

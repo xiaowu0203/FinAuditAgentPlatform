@@ -81,10 +81,13 @@ public class AgentTask {
 
     /**
      * 由提交请求构造新任务（初始状态 PENDING，步骤数 0，自动生成任务号）。
+     *
+     * @param createdBy 创建人用户 ID（网关注入的 X-User-Id；报销单提交为申请人 applicantId）
      */
-    public static AgentTask from(TaskSubmitRequest request, Long tenantId) {
+    public static AgentTask from(TaskSubmitRequest request, Long tenantId, Long createdBy) {
         AgentTask task = new AgentTask();
         task.setTenantId(tenantId);
+        task.setCreatedBy(createdBy);
         task.setTaskNo(generateTaskNo());
         task.setTitle(request.title());
         task.setTaskType(request.taskType() == null ? TaskType.GENERIC.name() : request.taskType().name());

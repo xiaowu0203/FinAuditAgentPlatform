@@ -101,6 +101,10 @@ public class TaskPlanner {
                 return fallback(task.getInputParams());
             }
             log.info("LLM 规划成功，共 {} 步", steps.size());
+            // TODO(P3 工具幻觉)：此处未校验 TOOL 步骤 toolName 是否真实存在于工具目录。
+            // 实测 GENERIC 任务工具被 filterTools 过滤后目录为空时，LLM 虚构编码（如 expense_checker）致任务 FAILED。
+            // 修复方案见 docs/planning/future-roadmap.md「工具幻觉」登记项：P3 规划拆分 Agent 后按业务绑定工具集 +
+            // 规划层校验步骤工具编码，勿在此处加临时 hack。
             return steps;
         } catch (Exception e) {
             log.warn("LLM 拆解失败，回退内置模板: {}", e.getMessage());

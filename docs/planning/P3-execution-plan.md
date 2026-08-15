@@ -123,6 +123,7 @@ P3+:  PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING
 | 多级审批链（资金类一级→二级） | `audit_ticket.audit_level` + 审批流 | P5+ |
 | 触发条件扩展（发票存疑/对公/跨部门分摊） | 触发规则配置化 | P4/P5 |
 | 幻觉拦截 → 正式评估体系 | 存疑标记 → P4 幻觉检测规则 + 大盘 | P4 |
+| 工具幻觉：目录为空时 LLM 虚构工具编码 | TaskPlanner 规划层校验 TOOL 步骤编码；RuleBasedFlowEngine 按业务绑定工具集，杜绝 LLM 自由选 | P3 |
 | 部门实体表（替代 dept_name 字符串） | P2 D6 | P5 |
 
 ## 9. 风险与预案

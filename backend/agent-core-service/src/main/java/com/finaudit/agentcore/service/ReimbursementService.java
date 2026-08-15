@@ -87,8 +87,10 @@ public class ReimbursementService {
         // 6. 构造Agent任务快照入参，仅存储文件ID，OSS路径不在任务快照中透传
         Map<String, Object> inputParams = buildInputParams(request, reimb, total, files);
 
-        // 7. 创建审核任务（显式标记业务类型 REIMBURSEMENT，规划器按业务注入财务提示词/工具），同事务内同步调用
-        TaskVO task = taskService.createTask(new TaskSubmitRequest(request.title(), inputParams, TaskType.REIMBURSEMENT), tenantId);
+        // 7. 创建审核任务（显式标记业务类型 REIMBURSEMENT，规划器按业务注入财务提示词/工具），同事务内同步调用；
+        //    申请人即任务创建人，落 agent_task.created_by
+        TaskVO task = taskService.createTask(new TaskSubmitRequest(request.title(), inputParams, TaskType.REIMBURSEMENT),
+                tenantId, applicantId);
 
         // 8. 将生成的审核任务ID回填至报销单，建立单据与任务关联关系
         reimb.applyTaskId(task.getId());

@@ -33,11 +33,13 @@ public class AgentTaskService {
 
     /**
      * 提交任务：类型转换并落库（初始状态 PENDING），发布任务提交事件。
+     *
+     * @param createdBy 创建人用户 ID（由请求头 X-User-Id 传入；为空时 created_by 不落值）
      */
     @Transactional
-    public TaskVO createTask(TaskSubmitRequest request, Long tenantId) {
+    public TaskVO createTask(TaskSubmitRequest request, Long tenantId, Long createdBy) {
         // 类型转换，初始化状态为已提交待执行
-        AgentTask task = AgentTask.from(request, tenantId);
+        AgentTask task = AgentTask.from(request, tenantId, createdBy);
         // 落库
         taskMapper.insert(task);
         // 发布任务提交事件
