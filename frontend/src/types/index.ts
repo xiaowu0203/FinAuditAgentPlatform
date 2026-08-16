@@ -115,6 +115,12 @@ export interface ReimbursementItemVO {
   quantity?: number | null
   unitPrice?: number | null
   date?: string | null
+  /** P2c 差旅/补贴评估字段 */
+  city?: string | null
+  hotelDays?: number | null
+  hotelAmount?: number | null
+  transportAmount?: number | null
+  subsidyAmount?: number | null
 }
 
 /** 报销附件（业务字段 + file-service 元数据 + 预签名 URL） */
@@ -144,6 +150,45 @@ export interface ReimbursementSubmitRequest {
   deptName: string
   claimDate: string
   remark?: string
-  items: { name: string; amount: number; amountType?: string; quantity?: number; unitPrice?: number; date?: string }[]
+  items: {
+    name: string
+    amount: number
+    amountType?: string
+    quantity?: number
+    unitPrice?: number
+    date?: string
+    /** P2c 差旅/补贴评估字段 */
+    city?: string
+    hotelDays?: number
+    hotelAmount?: number
+    transportAmount?: number
+    subsidyAmount?: number
+  }[]
   fileRecordIds: number[]
+}
+
+/** 财务规则类型（P2c 四类全结构化） */
+export type RuleType = 'AMOUNT_LIMIT' | 'REIMBURSE_EXPIRE' | 'TRAVEL_STANDARD' | 'SUBSIDY_LIMIT'
+
+/** 财务规则（配置管理响应；published=1 生效 / 0 草稿） */
+export interface RuleVO {
+  id: number
+  ruleCode: string
+  ruleName: string
+  ruleType: RuleType
+  ruleConfig: Record<string, unknown>
+  enabled: number
+  published: number
+  version: string
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+/** 财务规则新增/修改请求 */
+export interface RuleSaveRequest {
+  ruleCode: string
+  ruleName: string
+  ruleType: RuleType
+  ruleConfig: Record<string, unknown>
+  enabled?: number
 }

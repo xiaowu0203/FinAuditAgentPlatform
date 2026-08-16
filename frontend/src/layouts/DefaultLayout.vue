@@ -12,6 +12,7 @@ const auth = useAuthStore()
 const activeMenu = computed(() => {
   if (route.path.startsWith('/tasks')) return '/tasks'
   if (route.path.startsWith('/reimbursements')) return '/reimbursements'
+  if (route.path.startsWith('/rules')) return '/rules'
   return '/dashboard'
 })
 const pageTitle = computed(() => (route.meta.title as string | undefined) || '')
@@ -47,6 +48,10 @@ async function handleCommand(command: string) {
         <el-menu-item index="/reimbursements">
           <el-icon><Tickets /></el-icon>
           <span>报销单</span>
+        </el-menu-item>
+        <el-menu-item index="/rules">
+          <el-icon><Setting /></el-icon>
+          <span>规则配置</span>
         </el-menu-item>
       </el-menu>
     </el-aside>

@@ -51,6 +51,12 @@ const router = createRouter({
           component: () => import('@/views/reimbursement/detail.vue'),
           meta: { title: '报销单详情' },
         },
+        {
+          path: 'rules',
+          name: 'RuleConfig',
+          component: () => import('@/views/rule/list.vue'),
+          meta: { title: '规则配置' },
+        },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

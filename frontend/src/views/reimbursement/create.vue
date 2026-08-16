@@ -10,11 +10,22 @@ import type { ExpenseType, ReimbursementSubmitRequest } from '@/types'
 
 const router = useRouter()
 
-/** 内置模板：一键填充示例明细与基础字段（对齐 amount_verify 核验用例） */
-const TEMPLATE_ITEMS: Array<{ name: string; amount: number; amountType: string; quantity: number; unitPrice: number }> = [
-  { name: '高铁票', amount: 553, amountType: '交通费', quantity: 1, unitPrice: 553 },
-  { name: '住宿费', amount: 458, amountType: '住宿费', quantity: 1, unitPrice: 458 },
-  { name: '打车费', amount: 50, amountType: '交通费', quantity: 2, unitPrice: 25 },
+/** 内置模板：一键填充示例明细与基础字段（对齐 amount_verify 核验用例；差旅字段演示 P2c 差旅标准评估） */
+const TEMPLATE_ITEMS: Array<{
+  name: string
+  amount: number
+  amountType: string
+  quantity: number
+  unitPrice: number
+  city?: string
+  hotelDays?: number
+  hotelAmount?: number
+  transportAmount?: number
+  subsidyAmount?: number
+}> = [
+  { name: '高铁票', amount: 553, amountType: '交通费', quantity: 1, unitPrice: 553, city: '北京', transportAmount: 553 },
+  { name: '住宿费', amount: 458, amountType: '住宿费', quantity: 1, unitPrice: 458, city: '北京', hotelDays: 1, hotelAmount: 458 },
+  { name: '打车费', amount: 50, amountType: '交通费', quantity: 2, unitPrice: 25, city: '北京', transportAmount: 50 },
 ]
 
 interface ItemRow {
@@ -24,6 +35,12 @@ interface ItemRow {
   quantity: number | undefined
   unitPrice: number | undefined
   date: string
+  /** P2c 差旅/补贴评估字段（费用类型 TRAVEL 时展示） */
+  city?: string
+  hotelDays?: number
+  hotelAmount?: number
+  transportAmount?: number
+  subsidyAmount?: number
 }
 
 const form = reactive({
@@ -50,7 +67,14 @@ function fillTemplate() {
 }
 
 function addItem() {
-  items.value.push({ name: '', amount: undefined, amountType: '', quantity: undefined, unitPrice: undefined, date: '' })
+  items.value.push({
+    name: '',
+    amount: undefined,
+    amountType: '',
+    quantity: undefined,
+    unitPrice: undefined,
+    date: '',
+  })
 }
 
 function removeItem(index: number) {
@@ -113,6 +137,11 @@ async function handleSubmit() {
       ...(it.quantity != null ? { quantity: it.quantity } : {}),
       ...(it.unitPrice != null ? { unitPrice: it.unitPrice } : {}),
       ...(it.date ? { date: it.date } : {}),
+      ...(it.city?.trim() ? { city: it.city.trim() } : {}),
+      ...(it.hotelDays != null ? { hotelDays: it.hotelDays } : {}),
+      ...(it.hotelAmount != null ? { hotelAmount: it.hotelAmount } : {}),
+      ...(it.transportAmount != null ? { transportAmount: it.transportAmount } : {}),
+      ...(it.subsidyAmount != null ? { subsidyAmount: it.subsidyAmount } : {}),
     })),
     fileRecordIds: uploadedIds.value,
   }
@@ -183,14 +212,24 @@ async function handleSubmit() {
 
     <el-divider content-position="left">报销明细（总金额由服务端按明细求和）</el-divider>
 
-    <div v-for="(it, index) in items" :key="index" class="item-row">
-      <el-input v-model="it.name" placeholder="名称" style="width: 160px" />
-      <el-input-number v-model="it.amount" :min="0.01" :precision="2" :controls="false" placeholder="金额" style="width: 140px" />
-      <el-input v-model="it.amountType" placeholder="金额类型" style="width: 120px" />
-      <el-input-number v-model="it.quantity" :min="0" :precision="0" :controls="false" placeholder="数量" style="width: 110px" />
-      <el-input-number v-model="it.unitPrice" :min="0" :precision="2" :controls="false" placeholder="单价" style="width: 130px" />
-      <el-date-picker v-model="it.date" type="date" value-format="YYYY-MM-DD" placeholder="发生日期" style="width: 150px" />
-      <el-button :icon="Delete" circle plain type="danger" @click="removeItem(index)" />
+    <div v-for="(it, index) in items" :key="index" class="item-block">
+      <div class="item-row">
+        <el-input v-model="it.name" placeholder="名称" style="width: 160px" />
+        <el-input-number v-model="it.amount" :min="0.01" :precision="2" :controls="false" placeholder="金额" style="width: 140px" />
+        <el-input v-model="it.amountType" placeholder="金额类型" style="width: 120px" />
+        <el-input-number v-model="it.quantity" :min="0" :precision="0" :controls="false" placeholder="数量" style="width: 110px" />
+        <el-input-number v-model="it.unitPrice" :min="0" :precision="2" :controls="false" placeholder="单价" style="width: 130px" />
+        <el-date-picker v-model="it.date" type="date" value-format="YYYY-MM-DD" placeholder="发生日期" style="width: 150px" />
+        <el-button :icon="Delete" circle plain type="danger" @click="removeItem(index)" />
+      </div>
+      <div v-if="form.expenseType === 'TRAVEL'" class="item-row travel-row">
+        <span class="travel-label">差旅</span>
+        <el-input v-model="it.city" placeholder="城市" style="width: 110px" />
+        <el-input-number v-model="it.hotelDays" :min="0" :precision="0" :controls="false" placeholder="住宿天数" style="width: 120px" />
+        <el-input-number v-model="it.hotelAmount" :min="0" :precision="2" :controls="false" placeholder="住宿金额" style="width: 130px" />
+        <el-input-number v-model="it.transportAmount" :min="0" :precision="2" :controls="false" placeholder="交通金额" style="width: 130px" />
+        <el-input-number v-model="it.subsidyAmount" :min="0" :precision="2" :controls="false" placeholder="补贴金额" style="width: 130px" />
+      </div>
     </div>
     <el-button class="mb" :icon="Plus" @click="addItem">添加明细</el-button>
 
@@ -226,11 +265,26 @@ async function handleSubmit() {
   justify-content: space-between;
 }
 
+.item-block {
+  margin-bottom: 10px;
+}
+
 .item-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
+}
+
+.travel-row {
+  padding-left: 10px;
+  border-left: 3px solid #e4e7ed;
+}
+
+.travel-label {
+  color: #909399;
+  font-size: 12px;
+  width: 30px;
 }
 
 .mb {
