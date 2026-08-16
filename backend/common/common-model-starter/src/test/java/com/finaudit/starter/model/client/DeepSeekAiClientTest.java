@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -38,6 +40,34 @@ class DeepSeekAiClientTest {
         log.info("=== Token 用量: {} ===", reply.usage());
         assertNotNull(reply.text());
         assertFalse(reply.text().isBlank());
+    }
+
+    @Test
+    void chatStructured_returnsParsedBean() {
+        String apiKey = System.getenv("FINAUDIT_MODEL_API_KEY");
+        Assumptions.assumeTrue(apiKey != null && !apiKey.isBlank(),
+                "未设置 FINAUDIT_MODEL_API_KEY，跳过真实调用验证");
+
+        ModelProperties props = new ModelProperties();
+        props.setApiKey(apiKey);
+        props.setBaseUrl(System.getenv("FINAUDIT_MODEL_BASE_URL"));
+        props.setModelName(System.getenv("FINAUDIT_MODEL_NAME"));
+
+        DeepSeekAiClient client = new DeepSeekAiClient(props);
+        StructuredChatReply<ActorFilms> reply = client.chatStructured(
+                "你是一个影视信息助手。",
+                "列出演员 Tom Hanks 主演的 3 部电影，只输出结果。",
+                ActorFilms.class);
+
+        log.info("=== DeepSeek 结构化回复: {} ===", reply.text());
+        log.info("=== 解析结果: {} ===", reply.data());
+        log.info("=== Token 用量: {} ===", reply.usage());
+        assertNotNull(reply.data());
+        assertNotNull(reply.data().actor());
+        assertFalse(reply.data().movies().isEmpty());
+    }
+
+    record ActorFilms(String actor, List<String> movies) {
     }
 
     @Test

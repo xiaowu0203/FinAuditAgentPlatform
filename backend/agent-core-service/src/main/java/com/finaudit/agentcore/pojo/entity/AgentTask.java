@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import com.finaudit.agentcore.enums.TaskStatus;
+import com.finaudit.agentcore.enums.TaskType;
 import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Getter;
@@ -38,6 +39,9 @@ public class AgentTask {
 
     @Schema(description = "任务标题")
     private String title;
+
+    @Schema(description = "业务类型（REIMBURSEMENT 报销审核 / GENERIC 通用分析；P3 角色化分派依据）")
+    private String taskType;
 
     @TableField(typeHandler = JacksonTypeHandler.class)
     @Schema(description = "任务入参（JSON）")
@@ -77,12 +81,16 @@ public class AgentTask {
 
     /**
      * 由提交请求构造新任务（初始状态 PENDING，步骤数 0，自动生成任务号）。
+     *
+     * @param createdBy 创建人用户 ID（网关注入的 X-User-Id；报销单提交为申请人 applicantId）
      */
-    public static AgentTask from(TaskSubmitRequest request, Long tenantId) {
+    public static AgentTask from(TaskSubmitRequest request, Long tenantId, Long createdBy) {
         AgentTask task = new AgentTask();
         task.setTenantId(tenantId);
+        task.setCreatedBy(createdBy);
         task.setTaskNo(generateTaskNo());
         task.setTitle(request.title());
+        task.setTaskType(request.taskType() == null ? TaskType.GENERIC.name() : request.taskType().name());
         task.setInputParams(request.inputParams());
         task.setStatus(TaskStatus.PENDING.name());
         task.setTotalSteps(0);

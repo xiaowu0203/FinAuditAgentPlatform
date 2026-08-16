@@ -1,0 +1,41 @@
+server:
+  port: 9204
+
+spring:
+  application:
+    name: rag-service
+  # 配置文件导入，从Nacos远程拉取公共配置
+  config:
+    import:
+      # 可选导入Nacos数据源公共配置，找不到不启动报错
+      - optional:nacos:common-datasource.yaml
+      # 可选导入Nacos Redis公共配置，找不到不启动报错
+      - optional:nacos:common-redis.yaml
+
+  # Spring Cloud Nacos 配置与注册发现
+  cloud:
+    nacos:
+      # Nacos 远程配置中心配置
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+        namespace: dev
+      # Nacos服务注册/发现配置
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+
+# RAG 专用基础设施（P4 填充）；文件/报销能力已迁移 file-service 与 agent-core，本服务不再配置 oss
+finaudit:
+  swagger:
+    enabled: true
+    title: rag-service API
+    description: RAG 语义检索基础设施（P4 填充）
+    version: 0.1.0
+
+# 日志级别配置
+logging:
+  level:
+    com.finaudit: info

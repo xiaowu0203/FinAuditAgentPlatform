@@ -11,8 +11,16 @@ import java.util.Arrays;
  */
 public enum ToolCode {
 
-    /** 金额核验工具 */
-    AMOUNT_VERIFY("amount_verify");
+    /** 金额核验工具（P1） */
+    AMOUNT_VERIFY("amount_verify"),
+    /** 票据识别（OCR，P2b） */
+    OCR_EXTRACT("ocr_extract"),
+    /** 预算核算（P2b） */
+    BUDGET_QUERY("budget_query"),
+    /** 财务规则校验（P2b） */
+    RULE_CHECK("rule_check"),
+    /** 重复报销检测（P2b） */
+    DUPLICATE_CHECK("duplicate_check");
 
     private final String code;
 

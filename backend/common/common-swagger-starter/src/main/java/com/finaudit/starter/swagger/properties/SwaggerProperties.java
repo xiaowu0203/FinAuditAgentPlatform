@@ -1,5 +1,7 @@
 package com.finaudit.starter.swagger.properties;
 
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -15,6 +17,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * </pre>
  */
 @ConfigurationProperties(prefix = "finaudit.swagger")
+@Getter
+@Setter
 public class SwaggerProperties {
 
     /** 是否装配 OpenAPI（生产环境关闭时请同时关掉 springdoc.api-docs/swagger-ui） */
@@ -29,35 +33,4 @@ public class SwaggerProperties {
     /** 文档版本 */
     private String version = "0.1.0";
 
-    public boolean isEnabled() {
-        return enabled;
-    }
-
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-    }
-
-    public String getTitle() {
-        return title;
-    }
-
-    public void setTitle(String title) {
-        this.title = title;
-    }
-
-    public String getDescription() {
-        return description;
-    }
-
-    public void setDescription(String description) {
-        this.description = description;
-    }
-
-    public String getVersion() {
-        return version;
-    }
-
-    public void setVersion(String version) {
-        this.version = version;
-    }
 }

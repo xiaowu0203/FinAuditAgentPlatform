@@ -47,6 +47,24 @@
             <artifactId>common-swagger-starter</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.finaudit</groupId>
+            <artifactId>common-ocr-starter</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- 服务间同步调用统一能力：OpenFeign + loadbalancer（Feign 契约由 common-code 提供）；
+             请求头/token 透传（租户/用户身份、traceId）由 common-feign-starter 提供 -->
+        <dependency>
+            <groupId>com.finaudit</groupId>
+            <artifactId>common-feign-starter</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- 入参 JSON Schema 强校验（P2b 工具做厚核心一环） -->
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+        </dependency>
 
         <!-- Lombok（实体/DTO 简化 getter/setter） -->
         <dependency>

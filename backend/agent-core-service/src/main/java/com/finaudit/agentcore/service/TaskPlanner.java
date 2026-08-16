@@ -1,16 +1,18 @@
 package com.finaudit.agentcore.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.finaudit.agentcore.domain.TaskPlanStep;
+import com.finaudit.agentcore.enums.TaskType;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
-import com.finaudit.starter.web.feign.ToolServiceFeign;
-import com.finaudit.starter.web.feign.dto.ToolInfo;
 import com.finaudit.starter.model.ModelType;
 import com.finaudit.starter.model.client.AiClient;
 import com.finaudit.starter.model.client.ChatClientFactory;
+import com.finaudit.starter.model.client.StructuredChatReply;
+import com.finaudit.starter.web.feign.ToolServiceFeign;
+import com.finaudit.starter.web.feign.dto.ToolInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -19,8 +21,12 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * 任务规划器：用 LLM 把任务拆解为有序步骤（结构化 JSON）。
- * <p>解析失败回退内置模板（明细金额 → 金额核验 + 汇总），保证 P1 闭环可用。</p>
+ * 任务规划器：用 LLM 把任务拆解为有序步骤。
+ * <p>输出形状由 Spring AI {@code BeanOutputConverter} 依据 {@link TaskPlanStep} 生成的
+ * JSON Schema 约束（结构化输出），解析失败回退内置模板（明细金额 → 金额核验 + 汇总），
+ * 保证 P1 闭环可用。</p>
+ * <p>P2a 起按业务类型分派：{@link TaskType#REIMBURSEMENT} 注入财务专用提示词段 + 财务工具集，
+ * {@link TaskType#GENERIC} 走通用分析且不注入财务工具，避免不同业务共用同一份写死提示词导致规划漂移。</p>
  */
 @Component
 public class TaskPlanner {
@@ -35,7 +41,7 @@ public class TaskPlanner {
     private static final ToolInfo DEFAULT_AMOUNT_VERIFY = new ToolInfo(
             "amount_verify", "金额核验工具",
             "加总明细金额并与申报总额比对，返回是否一致及差额。入参 items:[{name,amount}] + claimedTotal。",
-            null);
+            null, "FINANCE");
 
     public TaskPlanner(ChatClientFactory modelFactory, ToolServiceFeign toolServiceFeign) {
         this.modelClient = modelFactory.getClient(ModelType.DEEPSEEK);
@@ -44,27 +50,33 @@ public class TaskPlanner {
 
     /**
      * 规划任务执行步骤。
+     * <p>按业务类型注入对应提示词指令段与工具集：报销审核走财务专用提示词 + 财务工具，
+     * 通用任务不注入财务工具（防止 LLM 在非报销业务上规划出财务工具步骤）。</p>
      */
     public List<TaskPlanStep> plan(AgentTask task) {
         try {
+            TaskType taskType = TaskType.of(task.getTaskType());
             // 动态拉取工具目录（经 Feign 读 tool-service；失败降级内置工具，保证闭环）
             List<ToolInfo> tools;
             try {
-                tools = toolServiceFeign.listEnabled(task.getTenantId()).getData();
+                List<ToolInfo> fetched = toolServiceFeign.listEnabled(task.getTenantId()).getData();
+                tools = fetched == null ? List.of() : fetched;
             } catch (Exception e) {
                 log.warn("获取工具目录失败，降级内置工具: {}", e.getMessage());
                 tools = List.of(DEFAULT_AMOUNT_VERIFY);
             }
-            log.info("规划拉取工具目录 {} 个：{}", tools.size(),
+            // 按业务类型收敛工具目录，防提示词膨胀与工具漂移
+            tools = filterTools(taskType, tools);
+            log.info("任务[{}] {} 规划拉取工具 {} 个：{}", task.getId(), taskType, tools.size(),
                     tools.stream().map(ToolInfo::toolCode).collect(Collectors.joining(",")));
             String toolBlock = tools.stream()
                     .map(t -> "- " + t.toolCode() + "（" + t.toolName() + "）：" + t.description()
                             + (t.inputSchema() == null ? "" : "\n  入参 Schema：" + toJson(t.inputSchema())))
                     .collect(Collectors.joining("\n"));
+            // 系统提示词 = 公共行为约束 + 业务指令段 + 工具目录 + 设计原则，输出形状由自动生成的 JSON Schema 接管
             String system = """
-                    你是财务审核 Agent 的任务规划器。将报销审核任务拆解为有序执行步骤，步骤要最小化、无冗余。
-                    只能输出一个 JSON 数组，不要输出任何其他内容，不要用代码块包裹。
-                    数组元素结构：{"stepName":"步骤名","stepType":"LLM或TOOL","toolName":"TOOL步骤的工具编码","inputParams":{工具入参}}
+                    你是财务审核 Agent 的任务规划器。将任务拆解为有序执行步骤，步骤要最小化、无冗余。
+                    %s
                     可用工具（TOOL 步骤的 toolName 只能填以下编码，且必须带对应 inputParams）：
                     %s
                     设计原则：
@@ -72,17 +84,23 @@ public class TaskPlanner {
                     2. LLM 步骤只允许一个，放在最后做汇总结论；除非工具入参确需前置整理，才允许额外一个前置 LLM；
                     3. 禁止添加与汇总步骤职责重叠的前置"提取/核对/初步分析"LLM 步骤；
                     4. TOOL 步骤必须带 inputParams；LLM 步骤可省略 toolName 与 inputParams。
-                    """.formatted(toolBlock);
+                    只输出符合下方 JSON Schema 的步骤数组，不要输出任何其他内容。
+                    """.formatted(businessInstruction(taskType), toolBlock);
             String user = "任务标题：" + task.getTitle() + "\n任务入参：\n" + toJson(task.getInputParams());
-            // 调用 LLM 模型
-            String reply = modelClient.chat(system, user);
-            // 解析模型返回的结果，并转换为 List<TaskPlanStep>
-            List<TaskPlanStep> steps = parse(reply);
+            // 结构化输出：Schema 注入提示词，模型回复反序列化为 List<TaskPlanStep>
+            StructuredChatReply<List<TaskPlanStep>> reply = modelClient.chatStructured(
+                    system, user, new ParameterizedTypeReference<List<TaskPlanStep>>() {
+                    });
+            List<TaskPlanStep> steps = reply.data();
             // 若结果为空，则走内置回退模板
-            if (steps.isEmpty()) {
+            if (steps == null || steps.isEmpty()) {
                 return fallback(task.getInputParams());
             }
             log.info("LLM 规划成功，共 {} 步", steps.size());
+            // TODO(P3 工具幻觉)：此处未校验 TOOL 步骤 toolName 是否真实存在于工具目录。
+            // 实测 GENERIC 任务工具被 filterTools 过滤后目录为空时，LLM 虚构编码（如 expense_checker）致任务 FAILED。
+            // 修复方案见 docs/planning/future-roadmap.md「工具幻觉」登记项：P3 规划拆分 Agent 后按业务绑定工具集 +
+            // 规划层校验步骤工具编码，勿在此处加临时 hack。
             return steps;
         } catch (Exception e) {
             log.warn("LLM 拆解失败，回退内置模板: {}", e.getMessage());
@@ -92,27 +110,32 @@ public class TaskPlanner {
     }
 
     /**
-     * 解析 LLM 返回的 JSON 数组。
-     * @param text 模型返回的文本
-     * @return 步骤列表
+     * 按业务类型收敛工具目录：报销审核保留全部（财务场景）；通用任务过滤财务专属工具，
+     * 防止 LLM 在非报销业务上规划出金额核验/OCR 等财务步骤。
+     * <p>P2b 起元数据驱动：工具场景标签来自 tool_registry（scenario），
+     * scenario=FINANCE 视为财务专用；null/blank 视为通用工具（GENERIC 任务保留）。</p>
      */
-    private List<TaskPlanStep> parse(String text) throws Exception {
-        String json = text.trim();
-        // 剥离可能的 ```json ... ``` 包裹
-        if (json.startsWith("```")) {
-            int first = json.indexOf('\n');
-            int last = json.lastIndexOf("```");
-            json = first > 0 && last > first ? json.substring(first + 1, last) : json;
+    static List<ToolInfo> filterTools(TaskType taskType, List<ToolInfo> tools) {
+        if (tools == null || tools.isEmpty() || taskType == TaskType.REIMBURSEMENT) {
+            return tools;
         }
-        int start = json.indexOf('[');
-        int end = json.lastIndexOf(']');
-        if (start < 0 || end <= start) {
-            throw new IllegalArgumentException("返回内容不含 JSON 数组: " + json);
-        }
-        List<TaskPlanStep> steps = objectMapper.readValue(
-                json.substring(start, end + 1), new TypeReference<List<TaskPlanStep>>() {
-                });
-        return steps == null ? List.of() : steps;
+        // GENERIC：仅保留非财务通用工具（无通用工具时目录为空 → 纯 LLM 分析）
+        return tools.stream()
+                .filter(t -> !t.isFinance())
+                .toList();
+    }
+
+    /** 业务指令段：按业务类型注入，让 LLM 明确业务场景与产出目标。 */
+    private static String businessInstruction(TaskType taskType) {
+        return switch (taskType) {
+            case REIMBURSEMENT -> """
+                    业务场景：报销单审核。依据报销单明细、附件引用与申报总额，逐项核对费用合规与金额一致性，
+                    汇总输出审核结论（是否通过、差异与疑点）。
+                    """;
+            case GENERIC -> """
+                    业务场景：通用任务分析。依据任务入参完成分析或核验，不要假设财务报销场景，无财务工具可用。
+                    """;
+        };
     }
 
     /**

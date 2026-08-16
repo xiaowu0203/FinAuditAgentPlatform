@@ -39,12 +39,13 @@ public class AgentTaskController {
         this.orchestrator = orchestrator;
     }
 
-    @Operation(summary = "提交任务", description = "创建一条财务审核任务，返回任务详情")
+    @Operation(summary = "提交任务", description = "创建一条 Agent 任务（taskType 缺省 GENERIC 通用分析；报销单走 POST /reimbursements 自动标记 REIMBURSEMENT），返回任务详情")
     @ApiResponse(responseCode = "200", description = "操作成功，body 为 R 包装的 TaskVO")
     @PostMapping
     public R<TaskVO> submit(@Valid @RequestBody TaskSubmitRequest request,
-                            @RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId) {
-        return R.success(taskService.createTask(request, tenantId));
+                            @RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId,
+                            @RequestHeader(name = "X-User-Id", required = false) Long userId) {
+        return R.success(taskService.createTask(request, tenantId, userId));
     }
 
     @Operation(summary = "任务详情", description = "按任务 ID 查询任务状态与概要信息")

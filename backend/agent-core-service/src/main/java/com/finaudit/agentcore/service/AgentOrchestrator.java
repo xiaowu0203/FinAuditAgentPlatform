@@ -1,9 +1,13 @@
 package com.finaudit.agentcore.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.finaudit.agentcore.enums.StepStatus;
+import com.finaudit.agentcore.domain.AuditConclusion;
 import com.finaudit.agentcore.domain.TaskPlanStep;
+import com.finaudit.agentcore.enums.ReimbursementStatus;
 import com.finaudit.agentcore.enums.TaskStatus;
+import com.finaudit.agentcore.enums.TaskType;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
 import com.finaudit.agentcore.pojo.entity.AgentTaskStep;
 import com.finaudit.agentcore.mq.TaskEventPublisher;
@@ -11,6 +15,7 @@ import com.finaudit.starter.mq.message.ToolResultMessage;
 import com.finaudit.starter.model.ModelType;
 import com.finaudit.starter.model.client.AiClient;
 import com.finaudit.starter.model.client.ChatClientFactory;
+import com.finaudit.starter.model.client.StructuredChatReply;
 import com.finaudit.starter.web.exception.BizException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,6 +56,8 @@ public class AgentOrchestrator {
     private final TaskEventPublisher eventPublisher;
     // AI大模型客户端，DeepSeek模型实例
     private final AiClient modelClient;
+    /** 报销单服务（任务终态回写审核状态，报销域数据访问收敛本服务） */
+    private final ReimbursementService reimbursementService;
 
     /**
      * 构造注入所有依赖组件
@@ -59,15 +66,17 @@ public class AgentOrchestrator {
      * @param planner 任务步骤规划器
      * @param eventPublisher MQ事件发布组件
      * @param modelFactory 大模型客户端工厂，获取DeepSeek对话实例
+     * @param reimbursementService 报销单服务（终态回写审核状态）
      */
     public AgentOrchestrator(AgentTaskService taskService, AgentTaskStepService stepService,
                              TaskPlanner planner, TaskEventPublisher eventPublisher,
-                             ChatClientFactory modelFactory) {
+                             ChatClientFactory modelFactory, ReimbursementService reimbursementService) {
         this.taskService = taskService;
         this.stepService = stepService;
         this.planner = planner;
         this.eventPublisher = eventPublisher;
         this.modelClient = modelFactory.getClient(ModelType.DEEPSEEK);
+        this.reimbursementService = reimbursementService;
     }
 
     /**
@@ -91,6 +100,8 @@ public class AgentOrchestrator {
         }
         // 修改任务状态为【执行中】
         taskService.markRunning(task);
+        // 报销单状态同步为【审核中】
+        syncReimbStatus(task, ReimbursementStatus.RUNNING);
         // 规划器生成完整步骤清单（涉及模型调用操作）
         List<TaskPlanStep> plan = planner.plan(task);
         // 将相关子步骤列表进行落库
@@ -194,12 +205,14 @@ public class AgentOrchestrator {
             String system = """
                     你是财务审核 Agent。基于任务入参与前序步骤结果，给出确定性、可执行的审核结论。
                     金额核验等工具已给出量化结果（match/total/diff）时，以该结果为准下结论，不要以"缺少单据/发票/审批材料"为由拒绝给出结论；
-                    若入参确实不足，明确指出缺少的具体字段，而非笼统索要材料。输出简洁专业。""";
+                    若入参确实不足，明确指出缺少的具体字段，而非笼统索要材料。
+                    按下方 JSON Schema 输出结构化审核结论；decision 只能取 APPROVE（通过）/ REJECT（驳回）/ NEED_INFO（需补充材料）三者之一。""";
             String user = "任务标题：" + task.getTitle() + "\n" + ctx;
-            // 发起模型调用
-            String text = modelClient.chat(system, user);
-            // 保存模型输出结果，步骤置成功
-            stepService.markSuccess(step, Map.of("content", text));
+            // 结构化输出：审核结论按 AuditConclusion 反序列化后落库（形状由 Schema 约束）
+            StructuredChatReply<AuditConclusion> reply = modelClient.chatStructured(
+                    system, user, AuditConclusion.class);
+            stepService.markSuccess(step,
+                    OBJECT_MAPPER.convertValue(reply.data(), new TypeReference<Map<String, Object>>() {}));
             // 刷新任务已完成步骤数量
             refreshFinishedSteps(task.getId());
             // 自动推进执行下一个步骤
@@ -336,6 +349,8 @@ public class AgentOrchestrator {
         result.put("steps", stepResults);
         taskService.markSuccess(task, result, steps.size());
         log.info("任务 {} 执行成功，共 {} 步", task.getTaskNo(), steps.size());
+        // 报销单状态回写：按 LLM 汇总决策细化（REJECT→FAILED、NEED_INFO→MANUAL_REVIEW，其余→SUCCESS）
+        syncReimbStatus(task, resolveSuccessStatus(extractDecision(steps)));
     }
 
     /**
@@ -346,6 +361,62 @@ public class AgentOrchestrator {
     private void failTask(AgentTask task, String error) {
         taskService.markFailed(task, error);
         log.error("任务 {} 失败: {}", task.getTaskNo(), error);
+        // 报销单状态回写【审核失败】
+        syncReimbStatus(task, ReimbursementStatus.FAILED);
+    }
+
+    /**
+     * 报销单审核状态回写（仅 REIMBURSEMENT 类任务；回写失败不阻断任务本身）。
+     * 报销域数据访问收敛：更新仅经 {@link ReimbursementService}，本类不触碰报销单 Mapper。
+     * @param task 当前任务实体
+     * @param status 目标报销单审核状态
+     */
+    private void syncReimbStatus(AgentTask task, ReimbursementStatus status) {
+        if (!TaskType.REIMBURSEMENT.name().equals(task.getTaskType())) {
+            return;
+        }
+        try {
+            reimbursementService.updateStatusByTaskId(task.getId(), status);
+        } catch (Exception e) {
+            log.warn("报销单状态回写失败（不影响任务结果）: taskId={} status={}: {}",
+                    task.getId(), status, e.getMessage());
+        }
+    }
+
+    /**
+     * 任务成功时按 LLM 汇总决策细化报销单状态：
+     * REJECT→FAILED（审核失败）、NEED_INFO→MANUAL_REVIEW（人工复核）、APPROVE/无决策→SUCCESS（审核通过）。
+     * @param decision LLM 汇总步骤的 decision 字段（可空）
+     */
+    private static ReimbursementStatus resolveSuccessStatus(String decision) {
+        if (decision == null) {
+            return ReimbursementStatus.SUCCESS;
+        }
+        String d = decision.toUpperCase();
+        if ("REJECT".equals(d)) {
+            return ReimbursementStatus.FAILED;
+        }
+        if ("NEED_INFO".equals(d)) {
+            return ReimbursementStatus.MANUAL_REVIEW;
+        }
+        return ReimbursementStatus.SUCCESS;
+    }
+
+    /**
+     * 提取最后一个 LLM 步骤输出中的 decision 字段（汇总审核结论步骤）。
+     * 无 LLM 步骤或输出缺少 decision 返回 null，由调用方兜底。
+     * 兼容低版本编译器：用类型测试 + 转型，避免 instanceof 绑定模式。
+     * @param steps 任务全部步骤（含结果）
+     */
+    private static String extractDecision(List<AgentTaskStep> steps) {
+        for (int i = steps.size() - 1; i >= 0; i--) {
+            AgentTaskStep s = steps.get(i);
+            if ("LLM".equalsIgnoreCase(s.getStepType()) && s.getOutput() instanceof Map<?, ?>) {
+                Object d = ((Map<?, ?>) s.getOutput()).get("decision");
+                return d == null ? null : d.toString();
+            }
+        }
+        return null;
     }
 
     /**

@@ -6,7 +6,8 @@
 
 | 能力 | 说明 |
 |---|---|
-| `AiClient` | 统一对话抽象：`chat(system, user)` / `chatWithUsage(...)` 返回文本 + Token 用量 |
+| `AiClient` | 统一对话抽象：`chat(system, user)` / `chatWithUsage(...)` 返回文本 + Token 用量；`chatStructured(...)` 结构化输出（按目标类型返回反序列化对象） |
+| `StructuredChatReply<T>` | 结构化回复：`data`（类型化结果）+ `text`（原始文本）+ `usage`（Token 用量） |
 | `DeepSeekAiClient` | DeepSeek 实现（Spring AI `OpenAiChatModel`，OpenAI 兼容端点） |
 | `ChatClientFactory` | 按 `ModelType` 取客户端；统一 Token 统计；DeepSeek 故障时切备用模型（P2 填充 Qwen/Claude） |
 | `ModelProperties` | `finaudit.model.*` 配置绑定 |
@@ -29,10 +30,22 @@ finaudit:
 @Autowired
 private ChatClientFactory modelFactory;
 
+// 普通文本对话
 String reply = modelFactory.getClient(ModelType.DEEPSEEK).chat(systemPrompt, userPrompt);
+
+// 结构化输出：按目标类型返回反序列化结果（形状由 Spring AI BeanOutputConverter 生成的
+// JSON Schema 注入提示词约束，模型无关；经工厂调用自动计入 Token 统计）
+public record AuditConclusion(String summary, String decision) {}
+
+StructuredChatReply<AuditConclusion> r = modelFactory.getClient(ModelType.DEEPSEEK)
+        .chatStructured(systemPrompt, userPrompt, AuditConclusion.class);
+AuditConclusion conclusion = r.data();
+
 DefaultChatClientFactory factory = (DefaultChatClientFactory) modelFactory;
 log.info("模型用量: {}", factory.usageSnapshot().summary());
 ```
+
+> 结构化输出支持泛型目标类型（如 `List<...>`），传 `new ParameterizedTypeReference<>(){}` 即可；解析失败自动重试一次（追加纠错指令），仍失败抛异常由调用方回退。
 
 ## 验证
 

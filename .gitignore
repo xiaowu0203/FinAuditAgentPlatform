@@ -23,6 +23,9 @@ application-local.yml
 *.key
 *.p12
 
+# ===== OCR 测试样本（真实发票禁止入库）=====
+docs/ocr-samples/local/
+
 # ===== 日志 =====
 *.log
 logs/

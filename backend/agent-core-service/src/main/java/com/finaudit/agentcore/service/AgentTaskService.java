@@ -11,6 +11,8 @@ import com.finaudit.agentcore.mq.TaskEventPublisher;
 import com.finaudit.starter.web.exception.BizException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 import java.util.Map;
@@ -33,15 +35,35 @@ public class AgentTaskService {
 
     /**
      * 提交任务：类型转换并落库（初始状态 PENDING），发布任务提交事件。
+     *
+     * @param createdBy 创建人用户 ID（由请求头 X-User-Id 传入；为空时 created_by 不落值）
      */
     @Transactional
-    public TaskVO createTask(TaskSubmitRequest request, Long tenantId) {
+    public TaskVO createTask(TaskSubmitRequest request, Long tenantId, Long createdBy) {
         // 类型转换，初始化状态为已提交待执行
-        AgentTask task = AgentTask.from(request, tenantId);
+        AgentTask task = AgentTask.from(request, tenantId, createdBy);
         // 落库
         taskMapper.insert(task);
-        // 发布任务提交事件
-        eventPublisher.publishTaskSubmit(task.getId(), tenantId);
+        // 发布任务提交事件：必须在事务提交【之后】发布，否则消费者可能在事务提交前
+        // 抢先消费，读不到任务行报「任务不存在」（发布先于提交的竞态，已实测复现）。
+        // 事务提交后触发 afterCommit，此时任务行（及外层报销单事务）对消费者可见；
+        // 回滚则不触发，杜绝孤儿消息。
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    eventPublisher.publishTaskSubmit(task.getId(), tenantId);
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    // 提交路径已由 afterCommit 发布；回滚无需处理
+                }
+            });
+        } else {
+            // 无事务上下文时兜底直接发布
+            eventPublisher.publishTaskSubmit(task.getId(), tenantId);
+        }
         return TaskVO.from(task);
     }
 

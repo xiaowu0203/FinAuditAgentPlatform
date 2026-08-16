@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { getTaskPage, resumeTask } from '@/api/task'
-import { TASK_STATUS_MAP, isActive } from '@/utils/task'
+import { TASK_STATUS_MAP, isActive, reimbIdOf } from '@/utils/task'
 import type { TaskStatus, TaskVO } from '@/types'
 
 const router = useRouter()
@@ -97,9 +97,18 @@ onBeforeUnmount(() => {
         <template #default="{ row }">{{ row.finishedSteps }} / {{ row.totalSteps }}</template>
       </el-table-column>
       <el-table-column prop="createdAt" label="创建时间" width="170" />
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column label="操作" width="170" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="router.push(`/tasks/${row.id}`)">详情</el-button>
+          <el-button
+            v-if="reimbIdOf(row) != null"
+            link
+            type="primary"
+            size="small"
+            @click="router.push(`/reimbursements/${reimbIdOf(row)}`)"
+          >
+            报销单
+          </el-button>
           <el-button v-if="isActive(row.status)" link type="warning" size="small" @click="handleResume(row)">
             续跑
           </el-button>

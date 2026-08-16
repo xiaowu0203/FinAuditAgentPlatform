@@ -52,6 +52,12 @@ public class ToolRegistry {
     @Schema(description = "工具版本")
     private String version;
 
+    @Schema(description = "业务场景（FINANCE/GENERIC，P2b TaskPlanner 按此收敛工具目录；缺省 FINANCE）")
+    private String scenario;
+
+    @Schema(description = "结果缓存开关（1 缓存 / 0 不缓存；有状态工具置 0，缺省 1）")
+    private Integer cacheable;
+
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
 
@@ -74,6 +80,9 @@ public class ToolRegistry {
         reg.setInputSchema(request.inputSchema());
         reg.setEnabled(ToolEnabledStatus.of(request.enabled()));
         reg.setVersion(request.version() == null ? DEFAULT_VERSION : request.version());
+        // scenario/cacheable 空值不覆盖，走 DB 默认列值（FINANCE / 1）
+        reg.setScenario(request.scenario());
+        reg.setCacheable(request.cacheable());
         return reg;
     }
 
@@ -89,6 +98,12 @@ public class ToolRegistry {
         }
         if (request.version() != null) {
             this.version = request.version();
+        }
+        if (request.scenario() != null) {
+            this.scenario = request.scenario();
+        }
+        if (request.cacheable() != null) {
+            this.cacheable = request.cacheable();
         }
     }
 }
