@@ -1,6 +1,6 @@
 # P2 单据闭环与审核工具 · 执行点文档
 
-> 版本: v0.3 ｜ 状态: **P2a 后端已落地、前端归 P2a 待推进；P2b 审核工具、P2c 财务规则配置待开工** ｜ 前置依赖: P1 完成、MinIO 本机启动
+> 版本: v0.4 ｜ 状态: **P2a 已落地；P2b 审核工具做厚进行中（Schema/迁移/OCR Starter 已开工）、P2c 财务规则配置待开工** ｜ 前置依赖: P1 完成、MinIO 本机启动
 > 目标: 把审核业务从「纯 JSON 文本任务」升级为「真实报销单闭环」——图片上传、四类审核工具、财务规则可视化配置，为 P3 多 Agent 流水线铺垫数据与工具底座。
 
 ---
@@ -29,7 +29,7 @@
 
 | # | 决策 | 备选 | 结论 |
 |---|---|---|---|
-| D6 | OCR 厂商选型 | 百度 / 阿里 / 本地轻量；统一封装进 OCR 工具 Starter | 待定：需账号 key（环境变量 `FINAUDIT_OCR_API_KEY`），优先选本机可用/免费额度方案 |
+| D6 | OCR 厂商选型 | 百度 / 阿里 / 本地轻量；统一封装进 OCR 工具 Starter | **已定（P2b）：百度 + `common-ocr-starter`**。AK/SK 走 `FINAUDIT_OCR_BAIDU_API_KEY` / `FINAUDIT_OCR_BAIDU_SECRET_KEY`；主线「智能财务票据识别（iocr finance，一次得票据分类+结构化字段）」+ `vat_invoice` 增值税细节兜底；starter 留多厂商扩展位 |
 | D7 | 部门归属 | 先 `dept_name` 字符串，独立部门表后置 | 字符串（预算按 dept_name 分组即可） |
 
 ## 4. 执行点进度（待进行）

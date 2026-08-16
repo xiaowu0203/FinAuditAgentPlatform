@@ -79,4 +79,16 @@ public class ExpenseAttachment {
         attachment.setReimbId(reimbId);
         return attachment;
     }
+
+    /**
+     * 回填 OCR 结果（P2b ocr_extract 工具写回，更新型 apply 见 CLAUDE.md §5.6）。
+     * fileType 空值保留原值（分类未产生时不覆盖）。
+     */
+    public void applyOcrResult(String ocrStatus, String fileType, Map<String, Object> ocrResult) {
+        this.ocrStatus = ocrStatus;
+        if (fileType != null && !fileType.isBlank()) {
+            this.fileType = fileType;
+        }
+        this.ocrResult = ocrResult;
+    }
 }

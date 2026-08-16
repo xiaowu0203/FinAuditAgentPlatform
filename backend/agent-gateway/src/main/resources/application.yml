@@ -68,6 +68,12 @@ spring:
               predicates:
                 - Path=/api/v1/reimbursements/**
 
+            # agent-core-service：审核数据接口（P2b 工具-facing，OCR 回写/预算/规则/重复检测）
+            - id: agent-core-audit-data
+              uri: lb://agent-core-service
+              predicates:
+                - Path=/api/v1/audit/**
+
           # 全局跨域配置，解决前端浏览器跨域请求问题
           globalcors:
             add-to-simple-url-handler-mapping: true

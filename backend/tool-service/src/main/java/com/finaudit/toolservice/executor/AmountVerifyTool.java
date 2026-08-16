@@ -28,7 +28,7 @@ public class AmountVerifyTool implements ToolExecutor {
     }
 
     /**
-     * 执行金额校验核心逻辑
+     * 执行金额校验核心逻辑（纯本地计算，不依赖租户；tenantId 仅为接口对齐）
      * @param inputParams 入参Map，包含两个key：
      *                    items：明细列表，List<Map>，单条明细必须包含amount金额字段
      *                    claimedTotal：申报总金额，支持数字/字符串/BigDecimal多种类型
@@ -37,7 +37,7 @@ public class AmountVerifyTool implements ToolExecutor {
      */
     @Override
     @SuppressWarnings("unchecked")
-    public Map<String, Object> execute(Map<String, Object> inputParams) {
+    public Map<String, Object> execute(Long tenantId, Map<String, Object> inputParams) {
         if (inputParams == null) {
             throw new BizException("入参不能为空");
         }

@@ -69,10 +69,11 @@ docker-compose.yml      开源环境一键启动
 4. 每个 Starter 必须带模块 README + 关键类注释
 5. Controller 只做参数装配与返回，业务放 Service
 6. 实体转换封装在实体类：新增用静态工厂 `from(...)`、更新用实例方法 `apply(...)`，**业务层禁止手写 set 组装实体**（转换发生在目标类，如 `ToolRegistry.from(request, tenantId)`、`AgentTask.from(request, tenantId)`、`AgentTaskStep.from(plan, tenantId, taskId, stepNo)`）
-7. 禁止在代码里硬编码密钥/数据库密码
-8. **实体数据访问收敛到实体自己的 Service**：每个实体的查询/更新**只允许出现在该实体对应的 Service 内**（Mapper 仅被其专属 Service 持有）；编排器 / Controller / MQ 消费者等外部组件需要数据时，**注入对应实体的 Service**，禁止直接持有不属于本类的 Mapper 或把其他实体的查询/更新实现写在外部类里（如 `AgentOrchestrator` 不得持有 `AgentTaskMapper`，步骤数据须经 `AgentTaskStepService`）
-9. **批量新增与自定义 SQL 统一 XML 写法**：Mapper 接口加 `@Mapper`，**只声明方法签名**，SQL 一律写在 `src/main/resources/mapper/<XxxMapper>.xml`（namespace 为接口全限定名，`<insert id>` 与接口方法同名），**禁止 `@Insert` 注解内联 SQL**；**批量新增用单条多行 INSERT**（`<foreach>` 拼 VALUES），禁止 for 循环逐行 insert；JSON 列显式指定 `typeHandler=...JacksonTypeHandler`，`id` 自增、`created_at`/`updated_at` 走数据库默认值，`deleted` 显式写 0
-10. **批量按 ID 查询禁止使用 `BaseMapper.selectBatchIds`（3.5.12 已废弃，警告为弃用状态）**：统一用 `LambdaQueryWrapper.in(实体::getId, ids)` + `selectList`；**先判空再查询**（空集合直接返回 `List.of()`，避免生成非法 `IN ()`）。如 `FileService.listByIds`、`FileService.validateAllOwned`、`SysRoleService.getByIds`
+7. 数据类一律用 Lombok 生成访问器，**禁止手写 getter/setter**：纯字段 POJO 用 `@Data`；`@ConfigurationProperties` 配置类、带自定义构造器/静态工厂的实体及 `R<T>` 用 `@Getter @Setter`；异常类用 `@Getter`。⚠️ Lombok 生成的构造器**不复制字段初始化器**，带默认值字段的配置类（如 `defaultBucket`、`timeoutSeconds`）禁止用 `@Data`，否则默认值静默丢失；lombok 依赖统一 `<optional>true</optional>`（不传递依赖）
+8. 禁止在代码里硬编码密钥/数据库密码
+9. **实体数据访问收敛到实体自己的 Service**：每个实体的查询/更新**只允许出现在该实体对应的 Service 内**（Mapper 仅被其专属 Service 持有）；编排器 / Controller / MQ 消费者等外部组件需要数据时，**注入对应实体的 Service**，禁止直接持有不属于本类的 Mapper 或把其他实体的查询/更新实现写在外部类里（如 `AgentOrchestrator` 不得持有 `AgentTaskMapper`，步骤数据须经 `AgentTaskStepService`）
+10. **批量新增与自定义 SQL 统一 XML 写法**：Mapper 接口加 `@Mapper`，**只声明方法签名**，SQL 一律写在 `src/main/resources/mapper/<XxxMapper>.xml`（namespace 为接口全限定名，`<insert id>` 与接口方法同名），**禁止 `@Insert` 注解内联 SQL**；**批量新增用单条多行 INSERT**（`<foreach>` 拼 VALUES），禁止 for 循环逐行 insert；JSON 列显式指定 `typeHandler=...JacksonTypeHandler`，`id` 自增、`created_at`/`updated_at` 走数据库默认值，`deleted` 显式写 0
+11. **批量按 ID 查询禁止使用 `BaseMapper.selectBatchIds`（3.5.12 已废弃，警告为弃用状态）**：统一用 `LambdaQueryWrapper.in(实体::getId, ids)` + `selectList`；**先判空再查询**（空集合直接返回 `List.of()`，避免生成非法 `IN ()`）。如 `FileService.listByIds`、`FileService.validateAllOwned`、`SysRoleService.getByIds`
 
 ## 6. Git 规范
 

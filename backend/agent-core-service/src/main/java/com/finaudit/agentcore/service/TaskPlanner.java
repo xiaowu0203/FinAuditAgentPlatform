@@ -18,7 +18,6 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -42,10 +41,7 @@ public class TaskPlanner {
     private static final ToolInfo DEFAULT_AMOUNT_VERIFY = new ToolInfo(
             "amount_verify", "金额核验工具",
             "加总明细金额并与申报总额比对，返回是否一致及差额。入参 items:[{name,amount}] + claimedTotal。",
-            null);
-
-    /** 财务审核业务专属工具编码（P2a 脚手架：先内置；P2b 工具注册加 scenario 标签后迁到 tool_registry 元数据驱动） */
-    private static final Set<String> FINANCE_TOOL_CODES = Set.of("amount_verify");
+            null, "FINANCE");
 
     public TaskPlanner(ChatClientFactory modelFactory, ToolServiceFeign toolServiceFeign) {
         this.modelClient = modelFactory.getClient(ModelType.DEEPSEEK);
@@ -114,17 +110,18 @@ public class TaskPlanner {
     }
 
     /**
-     * 按业务类型收敛工具目录：报销审核保留全部（当前工具均属财务域）；通用任务过滤财务专属工具，
-     * 防止 LLM 在非报销业务上规划出金额核验等财务步骤。
-     * <p>P2a 脚手架：财务工具编码先内置；P2b 工具注册加 scenario 标签后迁到 tool_registry 元数据驱动。</p>
+     * 按业务类型收敛工具目录：报销审核保留全部（财务场景）；通用任务过滤财务专属工具，
+     * 防止 LLM 在非报销业务上规划出金额核验/OCR 等财务步骤。
+     * <p>P2b 起元数据驱动：工具场景标签来自 tool_registry（scenario），
+     * scenario=FINANCE 视为财务专用；null/blank 视为通用工具（GENERIC 任务保留）。</p>
      */
     static List<ToolInfo> filterTools(TaskType taskType, List<ToolInfo> tools) {
         if (tools == null || tools.isEmpty() || taskType == TaskType.REIMBURSEMENT) {
             return tools;
         }
-        // GENERIC：仅保留非财务通用工具（当前无通用工具 → 空列表 → 纯 LLM 分析）
+        // GENERIC：仅保留非财务通用工具（无通用工具时目录为空 → 纯 LLM 分析）
         return tools.stream()
-                .filter(t -> !FINANCE_TOOL_CODES.contains(t.toolCode()))
+                .filter(t -> !t.isFinance())
                 .toList();
     }
 

@@ -80,6 +80,30 @@ public class AttachmentService {
     }
 
     /**
+     * 回写 OCR 结果（P2b ocr_extract 工具按 file_record_id 定位附件）。
+     *
+     * @param fileRecordId file_record id（附件引用）
+     * @param ocrStatus    OCR 状态（PENDING/SUCCESS/FAILED）
+     * @param fileType     票据分类映射后的附件类型（可空：分类未产生时保留原值）
+     * @param ocrResult    OCR 抽取结果（JSON）
+     * @throws com.finaudit.starter.web.exception.BizException 附件不存在时抛出
+     */
+    @Transactional
+    public void updateOcrResult(Long fileRecordId, String ocrStatus, String fileType, Map<String, Object> ocrResult) {
+        // 根据附件ID查询出附件信息
+        ExpenseAttachment attachment = attachmentMapper.selectOne(new LambdaQueryWrapper<ExpenseAttachment>()
+                .eq(ExpenseAttachment::getFileRecordId, fileRecordId)
+                .last("LIMIT 1"));
+        if (attachment == null) {
+            throw new BizException("附件不存在: fileRecordId=" + fileRecordId);
+        }
+        // 回写 OCR 结果
+        attachment.applyOcrResult(ocrStatus, fileType, ocrResult);
+        // 更新附件信息
+        attachmentMapper.updateById(attachment);
+    }
+
+    /**
      * 报销单附件 → VO 列表（1 次 Feign 批量取元数据 + 逐个取预览预签名 URL）。
      */
     public List<AttachmentVO> listVOsByReimbId(Long reimbId) {

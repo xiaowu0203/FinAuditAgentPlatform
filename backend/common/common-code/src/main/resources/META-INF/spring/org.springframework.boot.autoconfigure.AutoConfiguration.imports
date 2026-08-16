@@ -1,2 +1,1 @@
 com.finaudit.starter.web.config.CommonWebAutoConfiguration
-com.finaudit.starter.web.config.FeignClientsAutoConfiguration

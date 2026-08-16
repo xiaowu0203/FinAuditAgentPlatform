@@ -1,6 +1,8 @@
 package com.finaudit.starter.oss.properties;
 
 import com.finaudit.starter.oss.ObjectStorageProvider;
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -8,6 +10,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * <p>凭据（accessKey/secretKey）禁止入库，一律经环境变量注入。</p>
  */
 @ConfigurationProperties(prefix = "finaudit.oss")
+@Getter
+@Setter
 public class ObjectStorageProperties {
 
     /** 是否启用对象存储；关闭时自动配置不加载任何 Bean */
@@ -45,75 +49,4 @@ public class ObjectStorageProperties {
         return "us-east-1";
     }
 
-    public boolean isEnabled() {
-        return enabled;
-    }
-
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-    }
-
-    public ObjectStorageProvider getProvider() {
-        return provider;
-    }
-
-    public void setProvider(ObjectStorageProvider provider) {
-        this.provider = provider;
-    }
-
-    public String getEndpoint() {
-        return endpoint;
-    }
-
-    public void setEndpoint(String endpoint) {
-        this.endpoint = endpoint;
-    }
-
-    public String getAccessKey() {
-        return accessKey;
-    }
-
-    public void setAccessKey(String accessKey) {
-        this.accessKey = accessKey;
-    }
-
-    public String getSecretKey() {
-        return secretKey;
-    }
-
-    public void setSecretKey(String secretKey) {
-        this.secretKey = secretKey;
-    }
-
-    public String getRegion() {
-        return region;
-    }
-
-    public void setRegion(String region) {
-        this.region = region;
-    }
-
-    public String getDefaultBucket() {
-        return defaultBucket;
-    }
-
-    public void setDefaultBucket(String defaultBucket) {
-        this.defaultBucket = defaultBucket;
-    }
-
-    public boolean isPathStyle() {
-        return pathStyle;
-    }
-
-    public void setPathStyle(boolean pathStyle) {
-        this.pathStyle = pathStyle;
-    }
-
-    public int getPresignExpireMinutes() {
-        return presignExpireMinutes;
-    }
-
-    public void setPresignExpireMinutes(int presignExpireMinutes) {
-        this.presignExpireMinutes = presignExpireMinutes;
-    }
 }

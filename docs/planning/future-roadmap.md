@@ -9,7 +9,7 @@
 | 待办 | 说明 | 来源 | 状态 |
 |---|---|---|---|
 | D4 文件能力载体 | 新建 `rag-service` 骨架承载 file（符合 CLAUDE.md 目录）vs 抽 `common-minio-starter` + 上传暂挂 tool-service | P2-execution-plan §3 | 待定 |
-| D5 OCR 厂商选型 | 百度 / 阿里 / 本地轻量，统一封装 OCR Starter；需 `FINAUDIT_OCR_API_KEY` | P2-execution-plan §3 | 待定 |
+| D5 OCR 厂商选型 | **已定：百度 + `common-ocr-starter`**；AK/SK 走 `FINAUDIT_OCR_BAIDU_API_KEY` / `FINAUDIT_OCR_BAIDU_SECRET_KEY` | P2-execution-plan §3 D6 | 已定（P2b） |
 | D6 部门实体表 | 先 `dept_name` 字符串，独立部门表后置 | P2-execution-plan §3 / P3 §8 | 后置 P5 |
 
 ## 2. 开发 TODO（P3 代码必落注释）

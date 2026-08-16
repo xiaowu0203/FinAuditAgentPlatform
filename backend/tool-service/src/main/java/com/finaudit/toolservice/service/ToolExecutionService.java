@@ -77,12 +77,19 @@ public class ToolExecutionService {
 
     /**
      * 带缓存控制的工具执行逻辑
-     * 优先读取Redis缓存，存在则直接返回缓存结果；无缓存则执行工具并写入1小时缓存
+     * 优先读取Redis缓存，存在则直接返回缓存结果；无缓存则执行工具并写入1小时缓存；
+     * P2b 起：有状态工具（ocr_extract/budget_query/rule_check/duplicate_check，cacheable=0）
+     * 跳过缓存读写，避免重新执行被旧结果截断或读到过期查询。
      *
      * @param msg 工具执行请求消息
      * @return 工具执行返回结果Map
      */
     private Map<String, Object> executeWithCache(ToolExecuteMessage msg) {
+        // 缓存开关：有状态工具跳过缓存读写（P2b）
+        if (!registryService.isCacheable(msg.toolCode(), msg.tenantId())) {
+            log.debug("工具 {} cacheable=0，跳过缓存", msg.toolCode());
+            return registryService.execute(msg.toolCode(), msg.tenantId(), msg.inputParams());
+        }
         // 构建缓存Key
         String key = cacheKey(msg.toolCode(), msg.inputParams());
         // 获取缓存值

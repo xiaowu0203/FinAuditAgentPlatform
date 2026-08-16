@@ -57,7 +57,7 @@ class TaskPlannerTest {
 
     private void stubToolCatalog() {
         when(feign.listEnabled(anyLong())).thenReturn(R.success(List.of(
-                new ToolInfo("amount_verify", "金额核验工具", "加总明细金额并与申报总额比对", null))));
+                new ToolInfo("amount_verify", "金额核验工具", "加总明细金额并与申报总额比对", null, "FINANCE"))));
     }
 
     @Test
@@ -108,7 +108,7 @@ class TaskPlannerTest {
 
     @Test
     void filterTools_convergesByBusiness() {
-        List<ToolInfo> tools = List.of(new ToolInfo("amount_verify", "金额核验工具", "desc", null));
+        List<ToolInfo> tools = List.of(new ToolInfo("amount_verify", "金额核验工具", "desc", null, "FINANCE"));
 
         assertEquals(1, TaskPlanner.filterTools(TaskType.REIMBURSEMENT, tools).size());
         assertEquals(0, TaskPlanner.filterTools(TaskType.GENERIC, tools).size());

@@ -3,11 +3,13 @@ package com.finaudit.agentcore.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.finaudit.agentcore.enums.ExpenseType;
+import com.finaudit.agentcore.enums.ReimbursementStatus;
 import com.finaudit.agentcore.enums.TaskType;
 import com.finaudit.agentcore.mapper.ExpenseReimbursementMapper;
 import com.finaudit.agentcore.pojo.dto.ReimbursementItemRequest;
 import com.finaudit.agentcore.pojo.dto.ReimbursementSubmitRequest;
 import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
+import com.finaudit.agentcore.pojo.entity.ExpenseAttachment;
 import com.finaudit.agentcore.pojo.entity.ExpenseReimbursement;
 import com.finaudit.agentcore.pojo.vo.AttachmentVO;
 import com.finaudit.agentcore.pojo.vo.ReimbursementDetailVO;
@@ -16,12 +18,17 @@ import com.finaudit.agentcore.pojo.vo.ReimbursementVO;
 import com.finaudit.agentcore.pojo.vo.TaskVO;
 import com.finaudit.starter.web.exception.BizException;
 import com.finaudit.starter.web.feign.FileServiceFeign;
+import com.finaudit.starter.web.feign.dto.DuplicateCheckVO;
+import com.finaudit.starter.web.feign.dto.DuplicateItemVO;
 import com.finaudit.starter.web.feign.dto.FileRecordVO;
 import com.finaudit.starter.web.result.R;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,6 +43,8 @@ import java.util.Map;
  */
 @Service
 public class ReimbursementService {
+
+    private static final Logger log = LoggerFactory.getLogger(ReimbursementService.class);
 
     private final ExpenseReimbursementMapper reimbursementMapper;
     private final AttachmentService attachmentService;
@@ -229,5 +238,110 @@ public class ReimbursementService {
                 : reimb.getItems().stream().map(ReimbursementItemVO::from).toList();
         List<AttachmentVO> attachments = attachmentService.listVOsByReimbId(id);
         return ReimbursementDetailVO.from(reimb, items, attachments);
+    }
+
+    /**
+     * 按任务ID回写报销单审核状态（任务终态同步，报销单→任务单向关联的反向闭环）。
+     * 幂等：目标状态与当前状态相同则跳过；报销单不存在仅告警不影响调用方。
+     * 状态值含义见 {@link ReimbursementStatus}；仅 REIMBURSEMENT 类任务由编排器触发本方法。
+     * @param taskId 关联 agent_task.id（提交时反写）
+     * @param status 目标审核状态
+     */
+    public void updateStatusByTaskId(Long taskId, ReimbursementStatus status) {
+        ExpenseReimbursement reimb = reimbursementMapper.selectOne(
+                new LambdaQueryWrapper<ExpenseReimbursement>()
+                        .eq(ExpenseReimbursement::getTaskId, taskId)
+                        .last("limit 1"));
+        if (reimb == null) {
+            log.warn("任务 {} 无关联报销单，跳过状态回写", taskId);
+            return;
+        }
+        String oldStatus = reimb.getStatus();
+        if (status.name().equals(oldStatus)) {
+            return;
+        }
+        reimb.setStatus(status.name());
+        reimbursementMapper.updateById(reimb);
+        log.info("报销单 {} 审核状态回写: {} → {}", reimb.getReimbNo(), oldStatus, status);
+    }
+
+    /**
+     * 重复报销检测工具方法（P2b duplicate_check 工具委托，报销域数据收敛本类）。
+     * 风控审计Agent依赖能力：检索同一员工、同金额、前后30天内的历史报销单，匹配商户判定疑似重复单据
+     * 判定规则：
+     * 1. 同一申请人、排除当前单据、金额完全一致、报销日期前后30天区间
+     * 2. 匹配附件OCR解析出的商户名称（大小写忽略），标记疑似重复
+     * @param tenantId 租户ID（MybatisPlus多租户拦截器自动过滤，方法入参预留扩展）
+     * @param reimbId 当前待校验报销单主键ID
+     * @return 重复检测结果VO，无疑似单据返回空对象
+     * @throws BizException 报销单不存在时抛出业务异常
+     */
+    public DuplicateCheckVO queryDuplicates(Long tenantId, Long reimbId) {
+        // 查询当前待校验报销单主记录
+        ExpenseReimbursement current = reimbursementMapper.selectById(reimbId);
+        if (current == null) {
+            throw new BizException("报销单不存在: " + reimbId);
+        }
+
+        // 提取当前单据第一张有效OCR识别的商户名称
+        String currentMerchant = firstMerchant(current.getId());
+
+        // 计算日期区间：报销日期前后各30天；无报销日期则区间条件失效
+        LocalDate from = current.getClaimDate() == null ? null : current.getClaimDate().minusDays(30);
+        LocalDate to = current.getClaimDate() == null ? null : current.getClaimDate().plusDays(30);
+
+        // 批量筛选疑似候选报销单
+        List<ExpenseReimbursement> candidates = reimbursementMapper.selectList(
+                new LambdaQueryWrapper<ExpenseReimbursement>()
+                        // 同一申请人
+                        .eq(ExpenseReimbursement::getApplicantId, current.getApplicantId())
+                        // 排除自身单据
+                        .ne(ExpenseReimbursement::getId, reimbId)
+                        // 报销总金额完全相等
+                        .eq(ExpenseReimbursement::getTotalAmount, current.getTotalAmount())
+                        // 有日期才加30天区间过滤
+                        .between(from != null && to != null, ExpenseReimbursement::getClaimDate, from, to)
+                        // 最新单据排在前面
+                        .orderByDesc(ExpenseReimbursement::getId));
+
+        // 无候选单据，直接返回空结果
+        if (candidates.isEmpty()) {
+            return DuplicateCheckVO.empty();
+        }
+
+        // 遍历候选单据，匹配商户生成疑似重复条目
+        List<DuplicateItemVO> suspected = new ArrayList<>(candidates.size());
+        for (ExpenseReimbursement c : candidates) {
+            // 商户名称大小写一致则标记为高度疑似重复
+            String merchant = firstMerchant(c.getId());
+            boolean matched = currentMerchant != null && !currentMerchant.isBlank()
+                    && merchant != null && currentMerchant.equalsIgnoreCase(merchant);
+            suspected.add(new DuplicateItemVO(c.getId(), c.getReimbNo(), c.getTitle(), c.getTotalAmount(),
+                    c.getClaimDate() == null ? null : c.getClaimDate().toString(), merchant, matched));
+        }
+        return new DuplicateCheckVO(suspected);
+    }
+
+    /**
+     * 根据报销单ID，读取附件OCR结果，获取第一个非空商户名称
+     * 业务约束：报销明细无商户字段，商户信息仅能从票据OCR解析数据获取
+     * 匹配逻辑：遍历该单据全部附件，取第一条ocrResult内merchant字段，无则返回null
+     * @param reimbId 报销单主键
+     * @return 识别到的商户名称，无OCR数据/无商户字段返回null
+     */
+    private String firstMerchant(Long reimbId) {
+        // 查询该报销单全部附件
+        for (ExpenseAttachment a : attachmentService.listByReimbId(reimbId)) {
+            // 附件无OCR识别结果，跳过
+            if (a.getOcrResult() == null) {
+                continue;
+            }
+            // 读取OCR json中的商户字段
+            Object merchant = a.getOcrResult().get("merchant");
+            if (merchant != null && !merchant.toString().isBlank()) {
+                return merchant.toString();
+            }
+        }
+        return null;
     }
 }

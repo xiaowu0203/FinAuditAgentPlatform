@@ -6,7 +6,7 @@
 - 统一接口 `ObjectStorageService`：上传 / 读取 / 删除 / 存在性 / **预签名 URL**（前端直传、直读）
 - 默认桶便捷方法（不带 bucket 参数即走 `defaultBucket`）
 - 启动期自动确认默认桶存在（不存在则创建，失败仅告警不阻断启动）
-- 自动配置开关：`finaudit.oss.enabled=true` 才加载 Bean，避免无关服务拉起 S3 连接
+- 自动配置开关：`finaudit.oss.enabled=true` 才加载 Bean，避免无关服务拉起 S3 连接；生效时启动自检凭据（accessKey/secretKey、COS 的 endpoint），缺失直接失败并提示
 
 ## 使用
 ```xml
@@ -45,6 +45,9 @@ finaudit:
 ```
 
 > 凭据一律经环境变量注入（CLAUDE.md §6），禁止硬编码。
+
+**启动自检**：`finaudit.oss.enabled=true` 时，`CommonOssAutoConfiguration` 启动即校验
+`access-key / secret-key` 是否配置（COS 还需 `endpoint`），缺失直接启动失败并给出明确提示——替代运行期首个请求才暴露的 403 报错。业务工程无需自行校验。
 
 ## 完整配置项
 | 前缀 `finaudit.oss` | 默认值 | 说明 |

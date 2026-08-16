@@ -1,8 +1,11 @@
 package com.finaudit.starter.web.exception;
 
+import lombok.Getter;
+
 /**
  * 业务异常。由 {@link GlobalExceptionHandler} 统一捕获并转为 {@code R} 返回。
  */
+@Getter
 public class BizException extends RuntimeException {
 
     private final int code;
@@ -16,7 +19,4 @@ public class BizException extends RuntimeException {
         this(400, message);
     }
 
-    public int getCode() {
-        return code;
-    }
 }

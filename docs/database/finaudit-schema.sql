@@ -1,8 +1,9 @@
 -- =====================================================================
 -- FinAuditAgentPlatform 数据库初始化脚本
--- 版本: P2a-重构（拆 file-service + 报销域迁 agent-core） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
+-- 版本: P2b（审核工具做厚：budget/finance_rule 表 + tool_registry 加 scenario/cacheable） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
 -- 说明: 可直接整体执行；DROP TABLE IF EXISTS 保证幂等（会清空重灌）。
 --       本机执行: mysql -uroot -p < docs/database/finaudit-schema.sql
+--       已有数据的环境只跑增量: mysql -uroot -p < docs/database/migration-P2b.sql
 -- =====================================================================
 
 CREATE DATABASE IF NOT EXISTS finaudit DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -12,6 +13,8 @@ SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS expense_attachment;
 DROP TABLE IF EXISTS file_record;
 DROP TABLE IF EXISTS expense_reimbursement;
+DROP TABLE IF EXISTS budget;
+DROP TABLE IF EXISTS finance_rule;
 DROP TABLE IF EXISTS tool_execution_log;
 DROP TABLE IF EXISTS tool_registry;
 DROP TABLE IF EXISTS agent_task_step;
@@ -151,6 +154,8 @@ CREATE TABLE tool_registry (
     input_schema JSON         NOT NULL COMMENT '入参 JSON Schema（强校验）',
     enabled      TINYINT      NOT NULL DEFAULT 1 COMMENT '是否启用: 1启用 0禁用',
     version      VARCHAR(16)  NOT NULL DEFAULT '1.0' COMMENT '工具版本',
+    scenario     VARCHAR(16)  NOT NULL DEFAULT 'FINANCE' COMMENT '业务场景: FINANCE/GENERIC（P2b TaskPlanner 按此收敛工具目录）',
+    cacheable    TINYINT      NOT NULL DEFAULT 1 COMMENT '结果缓存: 1缓存 0不缓存（有状态工具置 0）',
     created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted      TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除',
@@ -248,8 +253,47 @@ CREATE TABLE file_record (
     KEY idx_tenant (tenant_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '文件元数据表（file-service）';
 
+-- ---------------------------------------------------------------------
+-- 12. 部门预算表（P2b 预算核算工具 budget_query）
+--    period 预算周期 YYYY-MM；used_amount 审核通过后累加（P3 审批流承接）
+-- ---------------------------------------------------------------------
+CREATE TABLE budget (
+    id           BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id    BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    dept_name    VARCHAR(64)   NOT NULL COMMENT '部门',
+    period       VARCHAR(7)    NOT NULL COMMENT '预算周期 YYYY-MM',
+    total_budget DECIMAL(14,2) NOT NULL COMMENT '预算总额',
+    used_amount  DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '已用额度（审核通过后累加）',
+    created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted      TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_dept_period (tenant_id, dept_name, period)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '部门预算表';
+
+-- ---------------------------------------------------------------------
+-- 13. 财务规则表（P2b 规则校验工具 rule_check；CRUD/发布归 P2c）
+--    rule_config 仅存储结构化规则，不参与 WHERE（MySQL 5.7 JSON 检索限制）
+-- ---------------------------------------------------------------------
+CREATE TABLE finance_rule (
+    id          BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id   BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    rule_code   VARCHAR(64)   NOT NULL COMMENT '规则编码',
+    rule_name   VARCHAR(64)   NOT NULL COMMENT '规则名称',
+    rule_type   VARCHAR(32)   NOT NULL COMMENT '规则类型: TRAVEL_STANDARD/SUBSIDY_LIMIT/REIMBURSE_EXPIRE/AMOUNT_LIMIT',
+    rule_config JSON          NOT NULL COMMENT '结构化规则（仅存储）',
+    enabled     TINYINT       NOT NULL DEFAULT 1 COMMENT '启停: 1启用 0禁用',
+    published   TINYINT       NOT NULL DEFAULT 0 COMMENT '是否已发布 Nacos: 1已发布 0未发布',
+    version     VARCHAR(16)   NOT NULL DEFAULT '1.0' COMMENT '规则版本',
+    created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted     TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_rule (tenant_id, rule_code)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '财务规则表';
+
 -- =====================================================================
--- Seed 数据（默认租户 + 管理员 + 角色 + 内置金额核验工具）
+-- Seed 数据（默认租户 + 管理员 + 角色 + 内置工具 + 预算 + 财务规则）
 -- =====================================================================
 
 INSERT INTO sys_tenant (id, tenant_code, tenant_name, status) VALUES
@@ -272,3 +316,36 @@ INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, inp
      '加总明细金额并与申报总额比对，返回是否一致及差额。入参 items:[{name,amount}] + claimedTotal；items 元素可含 amountType/quantity/unitPrice/date 等辅助字段（仅核验 amount）。',
      '{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":"string"},"quantity":{"type":"number"},"unitPrice":{"type":"number"},"date":{"type":"string"}},"required":["name","amount"]}},"claimedTotal":{"type":"number"}},"required":["items","claimedTotal"]}',
      1, '1.0');
+
+-- P2b 四个审核工具（scenario=FINANCE 供 TaskPlanner 收敛；cacheable=0 有状态查询不缓存）
+INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, input_schema, enabled, version, scenario, cacheable) VALUES
+    (2, 1, 'ocr_extract', '票据识别（OCR）',
+     '识别报销附件票据，抽取金额/日期/商户/税号并按票据类型分类回写。入参 reimbId（报销单ID）+ attachmentIds（附件 file_record id 数组，取任务入参 attachments[].id）。',
+     '{"type":"object","properties":{"reimbId":{"type":"integer"},"attachmentIds":{"type":"array","items":{"type":"integer"}}},"required":["reimbId","attachmentIds"]}',
+     1, '1.0', 'FINANCE', 0),
+    (3, 1, 'budget_query', '预算核算',
+     '查部门当月剩余预算，返回预算占用与是否超支。入参 deptName（部门）+ claimDate（报销日期 YYYY-MM-DD，据此推导预算周期）+ amount（申报金额）。',
+     '{"type":"object","properties":{"deptName":{"type":"string"},"claimDate":{"type":"string"},"amount":{"type":"number"}},"required":["deptName","claimDate","amount"]}',
+     1, '1.0', 'FINANCE', 0),
+    (4, 1, 'rule_check', '财务规则校验',
+     '按财务规则（大额限额/报销时效等）校验报销单，返回命中规则与超标标记。入参 expenseType + claimDate + items + totalAmount。',
+     '{"type":"object","properties":{"expenseType":{"type":"string"},"claimDate":{"type":"string"},"items":{"type":"array","items":{"type":"object"}},"totalAmount":{"type":"number"}},"required":["expenseType","claimDate","items","totalAmount"]}',
+     1, '1.0', 'FINANCE', 0),
+    (5, 1, 'duplicate_check', '重复报销检测',
+     '按申请人+商户+金额+日期区间查历史报销单，返回疑似重复。入参 reimbId（报销单ID，agent-core 按此读当前+历史 OCR 商户）。',
+     '{"type":"object","properties":{"reimbId":{"type":"integer"}},"required":["reimbId"]}',
+     1, '1.0', 'FINANCE', 0);
+
+-- P2b 部门预算种子（默认租户 2026-08，部分已用）
+INSERT INTO budget (id, tenant_id, dept_name, period, total_budget, used_amount) VALUES
+    (1, 1, '研发部', '2026-08', 100000.00, 32000.00),
+    (2, 1, '财务部', '2026-08', 50000.00, 8000.00),
+    (3, 1, '市场部', '2026-08', 80000.00, 45600.00),
+    (4, 1, '销售部', '2026-08', 120000.00, 102400.00);
+
+-- P2b 财务规则种子（可评估两类；TRAVEL_STANDARD/SUBSIDY_LIMIT 结构待 P2c 配置）
+INSERT INTO finance_rule (id, tenant_id, rule_code, rule_name, rule_type, rule_config, enabled, published, version) VALUES
+    (1, 1, 'amount_limit', '大额报销限额', 'AMOUNT_LIMIT',
+     '{"threshold":5000}', 1, 0, '1.0'),
+    (2, 1, 'reimburse_expire', '报销时效', 'REIMBURSE_EXPIRE',
+     '{"maxDays":30}', 1, 0, '1.0');
