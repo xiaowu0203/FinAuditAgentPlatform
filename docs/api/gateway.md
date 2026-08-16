@@ -13,6 +13,10 @@
 | `tenant-service-mgmt` | `/api/v1/users/**`, `/api/v1/tenants/**`, `/api/v1/roles/**` | `lb://tenant-service` |
 | `agent-core-service` | `/api/v1/tasks/**` | `lb://agent-core-service` |
 | `tool-service` | `/api/v1/tools/**` | `lb://tool-service` |
+| `file-service` | `/api/v1/files/**` | `lb://file-service` |
+| `agent-core-reimbursements` | `/api/v1/reimbursements/**`（P2a-重构单据闭环） | `lb://agent-core-service` |
+| `agent-core-audit-data` | `/api/v1/audit/**`（P2b 工具-facing：OCR 回写/预算/规则/重复检测） | `lb://agent-core-service` |
+| `agent-core-rules` | `/api/v1/rules/**`（P2c 规则可视化配置） | `lb://agent-core-service` |
 
 Discovery locator 已关闭，仅走上述显式路由。
 

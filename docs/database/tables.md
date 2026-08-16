@@ -1,4 +1,4 @@
-# FinAudit 数据库设计（P1）
+# FinAudit 数据库设计（P2a-重构）
 
 > 目标库：`finaudit`（MySQL 5.7 / utf8mb4 / InnoDB）。完整建库脚本见 [`finaudit-schema.sql`](./finaudit-schema.sql)。
 
@@ -9,9 +9,9 @@
 | 主键 | `id BIGINT AUTO_INCREMENT` |
 | 多租户 | 业务表均含 `tenant_id BIGINT`（默认 1），配合 `TenantLineInnerInterceptor` 自动过滤 |
 | 时间 | `created_at` / `updated_at DATETIME`，`ON UPDATE CURRENT_TIMESTAMP` |
-| 逻辑删除 | 各表 `deleted TINYINT DEFAULT 0`（0 未删 / 1 已删） |
-| 金额 | 一律 `DECIMAL(18,2)`，代码层用 `BigDecimal`，严禁 float/double |
-| JSON 列 | 入参/结果/Schema 用 `JSON` 类型，MyBatis-Plus 以 `JacksonTypeHandler` 映射 |
+| 逻辑删除 | 各表 `deleted TINYINT DEFAULT 0`（0 未删 / 1 已删）；例外：`finance_rule` 因 `uk_rule_type` 唯一索引改用 **`deleted BIGINT`（0 未删 / 主键id 已删，见 §13）** |
+| 金额 | 一律 `DECIMAL` + 代码层 `BigDecimal`，严禁 float/double（通用 `DECIMAL(18,2)`；报销单表按 P2 规格用 `DECIMAL(12,2)`） |
+| JSON 列 | 入参/结果/Schema 用 `JSON` 类型，MyBatis-Plus 以 `JacksonTypeHandler` 映射；**仅作存储，不参与 WHERE 过滤**（MySQL 5.7 限制） |
 | 字符集 | `utf8mb4`（兼容中文 + emoji） |
 
 ## 1. sys_tenant 租户表
@@ -63,6 +63,7 @@
 | tenant_id | BIGINT | 租户 ID |
 | task_no | VARCHAR(40) UK | 任务编号，如 `T20260813120000123456` |
 | title | VARCHAR(128) | 任务标题 |
+| task_type | VARCHAR(20) | 业务类型：`REIMBURSEMENT` 报销审核 / `GENERIC` 通用分析（P2a 新增，规划器按业务注入提示词/工具） |
 | input_params | JSON | 任务入参（原始输入，含明细金额等） |
 | status | VARCHAR(20) | 任务状态，见下方状态机 |
 | total_steps | INT | 总步骤数 |
@@ -122,6 +123,89 @@
 | status | VARCHAR(20) | `SUCCESS` / `FAILED` |
 | created_at | DATETIME | 索引 `idx_task(task_id)`、`idx_tool(tool_code)` |
 
+## 9. expense_reimbursement 报销单表（P2a 单据闭环）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| reimb_no | VARCHAR(40) UK | 报销单号，如 `R2026081512345678` |
+| title | VARCHAR(128) | 报销标题 |
+| expense_type | VARCHAR(32) | 费用类型：`TRAVEL` / `ENTERTAINMENT` / `OFFICE` |
+| applicant_id | BIGINT | 申请人用户 ID（来源 `X-User-Id`） |
+| dept_name | VARCHAR(64) | 部门（D6：先字符串，独立部门表后置） |
+| total_amount | DECIMAL(12,2) | 申报总金额（服务端按明细求和，不信任客户端） |
+| task_id | BIGINT | 关联 `agent_task.id`（提交后经 Feign 反写） |
+| status | VARCHAR(20) | 审核状态，对齐任务状态机 |
+| claim_date | DATE | 报销日期 |
+| remark | VARCHAR(512) | 备注 |
+| items | JSON | 报销明细 `[{name,amount,amountType,quantity,unitPrice,date,city,hotelDays,hotelAmount,transportAmount,subsidyAmount}]`（P2c 差旅/补贴评估字段均 JSON 内嵌） |
+| created_at / updated_at / deleted | | 索引 `uk_reimb_no`、`idx_tenant_status(tenant_id,status)`、`idx_applicant(tenant_id,applicant_id)`、`idx_task(task_id)` |
+
+**状态机**：`PENDING → RUNNING → SUCCESS / FAILED`（预留 `MANUAL_REVIEW`），与任务状态机对齐。
+
+## 10. expense_attachment 报销业务附件表（P2a-重构）
+
+> P2a-重构后仅存 `file_record` 引用 + 业务字段（fileType/ocrStatus/ocrResult）；文件元数据（fileName/objectName）在 file-service 的 `file_record`，业务侧经 `FileServiceFeign` 联取。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| reimb_id | BIGINT | 报销单 ID（提交报销单绑定后回填，未关联前为 NULL） |
+| file_record_id | BIGINT | **`file_record.id`（文件元数据在 file-service），索引 `idx_file_record`** |
+| file_type | VARCHAR(32) | 附件类型：`INVOICE` / `ITINERARY` / `CONTRACT` / `OTHER`（P2a 默认 `OTHER`，分类归 P2b OCR 产生） |
+| ocr_status | VARCHAR(16) | OCR 状态：`PENDING` / `SUCCESS` / `FAILED`（P2b 使用） |
+| ocr_result | JSON | OCR 抽取结果（P2b 使用） |
+| created_at / updated_at / deleted | | 索引 `idx_reimb(reimb_id)`、`idx_file_record(file_record_id)`、`idx_tenant(tenant_id)`、`idx_ocr_status(ocr_status)` |
+
+## 11. file_record 文件元数据表（file-service：纯二进制资源）
+
+> 归属 file-service，**无任何财务业务字段**；上传（multipart → 对象存储）唯一产生本表数据。业务附件经 `expense_attachment.file_record_id` 引用本表，读文件一律经 `FileServiceFeign` 远程调用。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| file_name | VARCHAR(255) | 原始文件名 |
+| object_name | VARCHAR(255) | **对象存储 key（含租户前缀 `{tenantId}/{yyyyMM}/{uuid}{ext}`，防跨租户碰撞）** |
+| content_type | VARCHAR(128) | MIME 类型，默认 `application/octet-stream` |
+| size | BIGINT | 字节大小 |
+| created_at / updated_at / deleted | | 索引 `idx_tenant(tenant_id)` |
+
+## 12. budget 部门预算表（P2b）
+
+> 归属 agent-core；`total_budget`/`used_amount` 一律 DECIMAL（金额 Decimal 强制）。审核通过后 `used_amount` 累加。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| dept_name | VARCHAR(64) | 部门 |
+| period | VARCHAR(7) | 预算周期 `YYYY-MM` |
+| total_budget | DECIMAL(14,2) | 预算总额 |
+| used_amount | DECIMAL(14,2) | 已用额度（审核通过后累加） |
+| created_at / updated_at / deleted | | 唯一键 `uk_dept_period(tenant_id, dept_name, period)` |
+
+## 13. finance_rule 财务规则表（P2b 建表 / P2c 可视化配置 + Nacos 动态刷新）
+
+> 归属 agent-core；`rule_config` 为结构化 JSON（**仅存储不参与 WHERE**，MySQL 5.7 限制）。P2c 起：
+> - `published=1` 为**生效集**（发布写 Nacos `finaudit-rules-{tenantId}`，应用端监听即时生效，改规则不重启）；`save/update/toggle` 置 `published=0`（草稿，需重新发布）。
+> - 评估数据源：优先 Nacos 已发布快照（`TenantNacosConfigHelper` 监听 + 缓存 TTL），无配置降级 DB 直查。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| rule_code | VARCHAR(64) | 规则编码（创建后不可改，UK `uk_rule(tenant_id, rule_code)`） |
+| rule_name | VARCHAR(64) | 规则名称 |
+| rule_type | VARCHAR(32) | `AMOUNT_LIMIT` / `REIMBURSE_EXPIRE` / `TRAVEL_STANDARD` / `SUBSIDY_LIMIT`；**同租户同类型唯一**（UK `uk_rule_type(tenant_id, rule_type, deleted)`，业务层 + SQL 双层兜底） |
+| rule_config | JSON | 结构化规则：`{"threshold":5000}` / `{"maxDays":30}` / `{"standards":[{city,hotelDaily,transportTotal}]}` / `{"dailyAmount":200}` |
+| enabled | TINYINT | 启停：1 启用 / 0 禁用 |
+| published | TINYINT | 是否已发布 Nacos：1 生效 / 0 草稿 |
+| version | VARCHAR(16) | 规则版本（发布自增） |
+| created_at / updated_at / deleted | | 逻辑删除，规则不物理删除；**deleted=BIGINT**（0 未删 / 主键id 已删）——删除实现必须自定义 `SET deleted=id`，禁用 MP 默认写 1，否则与 `uk_rule_type` 冲突 |
+
 ## Seed 数据（脚本内置）
 
 | 表 | 数据 |
@@ -130,6 +214,8 @@
 | sys_role | `admin`（管理员）、`auditor`（审核员） |
 | sys_user | `admin` / 密码 `admin123`（BCrypt） |
 | sys_user_role | admin 绑定 admin 角色 |
-| tool_registry | 预置 `amount_verify`（金额核验工具，含 JSON Schema） |
+| tool_registry | 预置 `amount_verify`（金额核验工具，含 JSON Schema）+ P2b 四个审核工具（ocr_extract/budget_query/rule_check/duplicate_check，scenario=FINANCE） |
+| budget | 默认租户 2026-08 四个部门预算种子 |
+| finance_rule | 四类规则种子（amount_limit/reimburse_expire/travel_standard/subsidy_limit，P2c 起 `published=1` 生效集） |
 
 > ✅ P1.4 起 admin 密码为真实 BCrypt 哈希（`admin123` 明文仅存在于脚本注释，生产必改）；本机已执行定向 `UPDATE`，新环境整脚本执行即生效。

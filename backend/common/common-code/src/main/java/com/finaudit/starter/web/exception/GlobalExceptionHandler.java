@@ -4,6 +4,7 @@ import com.finaudit.starter.web.result.R;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -36,6 +37,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ConstraintViolationException.class)
     public R<Void> handleConstraintViolation(ConstraintViolationException e) {
         return R.fail(400, e.getMessage());
+    }
+
+    @ExceptionHandler(DuplicateKeyException.class)
+    public R<Void> handleDuplicateKey(DuplicateKeyException e) {
+        log.warn("唯一约束冲突: {}", e.getMessage());
+        return R.fail(400, "数据唯一约束冲突，请检查后重试");
     }
 
     @ExceptionHandler(Exception.class)

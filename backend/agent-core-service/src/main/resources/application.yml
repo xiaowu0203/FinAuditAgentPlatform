@@ -55,6 +55,22 @@ mybatis-plus:
     # SQL日志输出实现，使用Slf4j统一日志框架打印执行SQL
     log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
 
+# P2c 规则配置：租户级 Nacos 配置操作参数 + 管理员白名单
+# namespace 须与 spring.cloud.nacos.config.namespace（dev）一致，否则发布/订阅看不到同一份配置
+finaudit:
+  nacos-config:
+    core-addr: http://127.0.0.1:8848
+    console-addr: http://127.0.0.1:8080
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    group: DEFAULT_GROUP
+    namespace: dev
+    rule-data-id: finaudit-rules-{tenantId}
+    cache-ttl-seconds: 60
+  admin:
+    # 规则配置管理管理员用户 ID 白名单（P2 无 RBAC，P5 换角色校验）
+    user-ids: [1]
+
 # 日志级别配置
 logging:
   level:

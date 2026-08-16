@@ -3,6 +3,8 @@ import type { PageResult, TaskStepVO, TaskVO } from '@/types'
 
 export interface SubmitTaskRequest {
   title: string
+  /** 业务类型：REIMBURSEMENT / GENERIC（缺省 GENERIC）；报销单走 /reimbursements 自动标记 REIMBURSEMENT */
+  taskType?: string
   inputParams: Record<string, unknown>
 }
 

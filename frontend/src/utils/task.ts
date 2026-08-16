@@ -12,3 +12,10 @@ export const TASK_STATUS_MAP: Record<TaskStatus, { label: string; tag: 'success'
 export function isActive(status: TaskStatus): boolean {
   return status === 'PENDING' || status === 'RUNNING'
 }
+
+/** 从任务取关联报销单 ID（仅 REIMBURSEMENT 业务任务，入参快照含 reimbId） */
+export function reimbIdOf(task: { taskType?: string; inputParams?: Record<string, unknown> }): number | null {
+  if (task.taskType !== 'REIMBURSEMENT') return null
+  const v = task.inputParams?.reimbId
+  return typeof v === 'number' ? v : null
+}

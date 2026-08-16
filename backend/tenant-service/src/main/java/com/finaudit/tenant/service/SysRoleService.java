@@ -75,7 +75,8 @@ public class SysRoleService {
         if (ids == null || ids.isEmpty()) {
             return List.of();
         }
-        return roleMapper.selectBatchIds(ids);
+        return roleMapper.selectList(new LambdaQueryWrapper<SysRole>()
+                .in(SysRole::getId, ids));
     }
 
     public SysRole getRequired(Long id) {

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Back, Refresh } from '@element-plus/icons-vue'
 import { getTaskDetail, getTaskSteps, resumeTask } from '@/api/task'
-import { TASK_STATUS_MAP, isActive } from '@/utils/task'
+import { TASK_STATUS_MAP, isActive, reimbIdOf } from '@/utils/task'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import type { TaskStatus, TaskStepVO, TaskVO } from '@/types'
@@ -96,6 +96,13 @@ onBeforeUnmount(() => {
         <div class="detail-header">
           <span>任务详情：{{ task?.taskNo }}</span>
           <div>
+            <el-button
+              v-if="task && reimbIdOf(task) != null"
+              type="primary"
+              @click="router.push(`/reimbursements/${reimbIdOf(task)}`)"
+            >
+              查看报销单
+            </el-button>
             <el-button
               v-if="task && isActive(task.status)"
               type="warning"

@@ -26,5 +26,7 @@
         <module>common-swagger-starter</module>
         <module>common-jwt-starter</module>
         <module>common-feign-starter</module>
+        <module>common-oss-starter</module>
+        <module>common-ocr-starter</module>
     </modules>
 </project>

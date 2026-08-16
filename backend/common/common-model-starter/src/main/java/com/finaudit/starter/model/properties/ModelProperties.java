@@ -1,6 +1,8 @@
 package com.finaudit.starter.model.properties;
 
 import com.finaudit.starter.model.ModelType;
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -8,6 +10,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * <p>密钥禁止入库，一律通过环境变量注入（见 .env.example 的 FINAUDIT_MODEL_API_KEY）。</p>
  */
 @ConfigurationProperties(prefix = "finaudit.model")
+@Getter
+@Setter
 public class ModelProperties {
 
     /** 默认模型类型 */
@@ -23,51 +27,4 @@ public class ModelProperties {
     /** 备用模型类型（默认模型故障时切换；可为 null，P1 未实现 Qwen/Claude 时保持空） */
     private ModelType fallbackType;
 
-    public ModelType getType() {
-        return type;
-    }
-
-    public void setType(ModelType type) {
-        this.type = type;
-    }
-
-    public String getModelName() {
-        return modelName;
-    }
-
-    public void setModelName(String modelName) {
-        this.modelName = modelName;
-    }
-
-    public String getApiKey() {
-        return apiKey;
-    }
-
-    public void setApiKey(String apiKey) {
-        this.apiKey = apiKey;
-    }
-
-    public String getBaseUrl() {
-        return baseUrl;
-    }
-
-    public void setBaseUrl(String baseUrl) {
-        this.baseUrl = baseUrl;
-    }
-
-    public int getTimeoutSeconds() {
-        return timeoutSeconds;
-    }
-
-    public void setTimeoutSeconds(int timeoutSeconds) {
-        this.timeoutSeconds = timeoutSeconds;
-    }
-
-    public ModelType getFallbackType() {
-        return fallbackType;
-    }
-
-    public void setFallbackType(ModelType fallbackType) {
-        this.fallbackType = fallbackType;
-    }
 }

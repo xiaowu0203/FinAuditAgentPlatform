@@ -1,1 +1,2 @@
 com.finaudit.starter.feign.FeignAutoConfiguration
+com.finaudit.starter.feign.FeignClientsAutoConfiguration
