@@ -9,7 +9,7 @@
 
 | 阶段 | 内容 | 说明 |
 |---|---|---|
-| **P2a 单据闭环** | MinIO 文件能力 + 报销单/附件实体 + 前端上传/提交页 + 前端任务跳转 | 任务入参从纯 JSON 文本 → 真实报销单数据（文件 ID 引用）；**后端已落地，前端归 P2a 待推进** |
+| **P2a 单据闭环** | MinIO 文件能力 + 报销单/附件实体 + 前端上传/提交页 + 前端任务跳转 | 任务入参从纯 JSON 文本 → 真实报销单数据（文件 ID 引用）；**后端 + 前端均已落地** |
 | **P2b 审核工具做厚** | OCR / 预算查询 / 规则校验 / 重复报销检测 | amount_verify 从唯一工具 → 五类之一；**已落地**（多厂商兜底后置，见 future-roadmap §4） |
 | **P2c 财务规则配置** | 规则表 + 配置页 + Nacos 动态刷新 | 差旅标准/限额/时效可视化配置，改规则不发布服务 |
 
@@ -95,9 +95,10 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | rule_code / rule_name | VARCHAR | 规则编码 / 名称 |
-| rule_type | VARCHAR(32) | TRAVEL_STANDARD / SUBSIDY_LIMIT / REIMBURSE_EXPIRE / AMOUNT_LIMIT |
+| rule_type | VARCHAR(32) | TRAVEL_STANDARD / SUBSIDY_LIMIT / REIMBURSE_EXPIRE / AMOUNT_LIMIT；**同租户同类型唯一**（UK `uk_rule_type(tenant_id, rule_type, deleted)`，业务层 + SQL 双层兜底） |
 | rule_config | JSON | 结构化规则（如城市星级房价上限） |
 | enabled / published / version | TINYINT / TINYINT / VARCHAR | 启停 / 是否已发布 Nacos / 版本 |
+| deleted | BIGINT | 逻辑删除：0 未删 / **主键id 已删**（配合 uk_rule_type；删除须自定义 `SET deleted=id`，禁用 MP 默认写 1） |
 
 ## 6. 新增接口（全部走网关 9080，Bearer + 租户隔离）
 

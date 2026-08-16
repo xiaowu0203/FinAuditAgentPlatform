@@ -4,13 +4,13 @@
 > 约定：P2/P3 代码落 TODO 注释时，同步在本表登记/更新；来源列指向原文档位置。
 > 目标阶段对应分期：P2 单据闭环与审核工具 → P3 多 Agent 与审批工单 → P4 可观测评估 → P5 开源打磨。
 
-## 1. 待定决策（P2 开工前必定）
+## 1. 已决策归档（P2 决策，已定结论）
 
 | 待办 | 说明 | 来源 | 状态 |
 |---|---|---|---|
-| D4 文件能力载体 | 新建 `rag-service` 骨架承载 file（符合 CLAUDE.md 目录）vs 抽 `common-minio-starter` + 上传暂挂 tool-service | P2-execution-plan §3 | 待定 |
+| D4 文件能力载体 | **已定：新增 `file-service`（9205）承载纯文件资源**（唯一持有 `common-oss-starter`；报销域迁 agent-core 服务内直调建任务，读附件走 `FileServiceFeign`；rag-service 回归 RAG 专用空骨架，P4 填 Milvus） | P2-execution-plan §3 D4 | 已定（P2a 落地） |
 | D5 OCR 厂商选型 | **已定：百度 + `common-ocr-starter`**；AK/SK 走 `FINAUDIT_OCR_BAIDU_API_KEY` / `FINAUDIT_OCR_BAIDU_SECRET_KEY` | P2-execution-plan §3 D6 | 已定（P2b） |
-| D6 部门实体表 | 先 `dept_name` 字符串，独立部门表后置 | P2-execution-plan §3 / P3 §8 | 后置 P5 |
+| D7 部门实体表 | 先 `dept_name` 字符串，独立部门表后置 | P2-execution-plan §3 D7 / P3 §8 | 后置 P5 |
 
 ## 2. 开发 TODO（P3 代码必落注释）
 

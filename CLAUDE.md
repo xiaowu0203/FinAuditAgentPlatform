@@ -22,7 +22,7 @@
 | MySQL | 5.7（本机已有，勿升级） |
 | Redis | 7.x（本机已有） |
 | MinIO | latest（本机已有） |
-| Milvus | P2 引入 |
+| Milvus | P4 引入（RAG 企业知识库，rag-service 空骨架 P4 填充） |
 | Redisson | 3.47.0 |
 | AWS SDK v2 | 2.53.1（common-oss-starter：MinIO/腾讯云 COS 统一 S3 客户端） |
 
