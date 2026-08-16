@@ -121,6 +121,12 @@ public class ExpenseReimbursement {
             map.put("quantity", item.quantity());
             map.put("unitPrice", item.unitPrice());
             map.put("date", item.date() == null ? null : item.date().toString());
+            // P2c 差旅/补贴评估字段（可空，任务快照 items 同步携带）
+            map.put("city", item.city());
+            map.put("hotelDays", item.hotelDays());
+            map.put("hotelAmount", item.hotelAmount());
+            map.put("transportAmount", item.transportAmount());
+            map.put("subsidyAmount", item.subsidyAmount());
             maps.add(map);
         }
         return maps;

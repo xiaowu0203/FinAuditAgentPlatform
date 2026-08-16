@@ -24,6 +24,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+        <!-- spring-tx：全局异常处理器捕获 DuplicateKeyException（org.springframework.dao，唯一索引兜底）；
+             版本由 spring-boot BOM 锁定，勿手写版本号 -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
         <!-- 跨服务 Feign 契约（客户端 + DTO）统一放本模块，任何服务引入即可复用，无需各自写一遍；
              版本由 spring-cloud-dependencies BOM 锁定，勿手写版本号。
              optional：openfeign 仅在编译契约时使用，不透传给消费者；真正发起 Feign 调用的服务

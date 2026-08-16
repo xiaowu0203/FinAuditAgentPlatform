@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
+import com.finaudit.agentcore.pojo.dto.RuleSaveRequest;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Getter;
 import lombok.Setter;
@@ -60,6 +61,39 @@ public class FinanceRule {
     private LocalDateTime updatedAt;
 
     @TableLogic
-    @Schema(description = "逻辑删除标记（0 未删 / 1 已删）")
-    private Integer deleted;
+    @Schema(description = "逻辑删除标记（0 未删 / 主键id 已删；删除须自定义 SET deleted=id，禁用 MP 默认写 1，否则与 uk_rule_type 唯一索引冲突）")
+    private Long deleted;
+
+    /** 默认版本号 */
+    private static final String DEFAULT_VERSION = "1.0";
+
+    /**
+     * 由新增请求构造规则（初始为草稿：published=0，需发布才生效；enabled 空默认启用）。
+     */
+    public static FinanceRule from(RuleSaveRequest request, Long tenantId) {
+        FinanceRule rule = new FinanceRule();
+        rule.setTenantId(tenantId);
+        rule.setRuleCode(request.ruleCode());
+        rule.setRuleName(request.ruleName());
+        rule.setRuleType(request.ruleType());
+        rule.setRuleConfig(request.ruleConfig() == null ? Map.of() : request.ruleConfig());
+        rule.setEnabled(request.enabled() == null ? 1 : request.enabled());
+        rule.setPublished(0);
+        rule.setVersion(DEFAULT_VERSION);
+        return rule;
+    }
+
+    /**
+     * 用修改请求合并更新既有规则；ruleConfig / enabled 空值不覆盖（走 MyBatis 非空更新）。
+     */
+    public void apply(RuleSaveRequest request) {
+        this.ruleName = request.ruleName();
+        this.ruleType = request.ruleType();
+        if (request.ruleConfig() != null) {
+            this.ruleConfig = request.ruleConfig();
+        }
+        if (request.enabled() != null) {
+            this.enabled = request.enabled();
+        }
+    }
 }

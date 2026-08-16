@@ -105,7 +105,10 @@ public class RuleCheckTool implements ToolExecutor {
         List<RuleCheckItem> items = new ArrayList<>(list.size());
         for (Object o : list) {
             if (o instanceof Map<?, ?> m) {
-                items.add(new RuleCheckItem(str(m.get("name")), decimal(m.get("amount")), str(m.get("date"))));
+                items.add(new RuleCheckItem(str(m.get("name")), decimal(m.get("amount")), str(m.get("date")),
+                        str(m.get("city")), intOf(m.get("hotelDays")),
+                        decimal(m.get("hotelAmount")), decimal(m.get("transportAmount")),
+                        decimal(m.get("subsidyAmount"))));
             }
         }
         return items;
@@ -138,6 +141,23 @@ public class RuleCheckTool implements ToolExecutor {
         }
         try {
             return new BigDecimal(v.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 对象安全转 Integer（住宿天数），兼容 Number / 字符串，转换失败返回 null。
+     */
+    private static Integer intOf(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof Number n) {
+            return n.intValue();
+        }
+        try {
+            return Integer.valueOf(v.toString());
         } catch (NumberFormatException e) {
             return null;
         }

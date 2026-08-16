@@ -200,7 +200,7 @@ CREATE TABLE expense_reimbursement (
     status       VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '审核状态（对齐任务状态机）',
     claim_date   DATE          NOT NULL COMMENT '报销日期',
     remark       VARCHAR(512)  DEFAULT NULL COMMENT '备注',
-    items        JSON          NOT NULL COMMENT '报销明细 [{name,amount,amountType,quantity,unitPrice,date}]',
+    items        JSON          NOT NULL COMMENT '报销明细 [{name,amount,amountType,quantity,unitPrice,date,city,hotelDays,hotelAmount,transportAmount,subsidyAmount}]（P2c 差旅/补贴评估字段，均 JSON 内嵌）',
     created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted      TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
@@ -287,10 +287,11 @@ CREATE TABLE finance_rule (
     version     VARCHAR(16)   NOT NULL DEFAULT '1.0' COMMENT '规则版本',
     created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted     TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    deleted     BIGINT        NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0 未删 / 主键id 已删（配合 uk_rule_type，删除实现必须 SET deleted=id 禁用写 1）',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_rule (tenant_id, rule_code)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '财务规则表';
+    UNIQUE KEY uk_rule (tenant_id, rule_code),
+    UNIQUE KEY uk_rule_type (tenant_id, rule_type, deleted)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '财务规则表（同租户同 rule_type 唯一，业务层 + 唯一索引双层兜底）';
 
 -- =====================================================================
 -- Seed 数据（默认租户 + 管理员 + 角色 + 内置工具 + 预算 + 财务规则）
@@ -328,8 +329,8 @@ INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, inp
      '{"type":"object","properties":{"deptName":{"type":"string"},"claimDate":{"type":"string"},"amount":{"type":"number"}},"required":["deptName","claimDate","amount"]}',
      1, '1.0', 'FINANCE', 0),
     (4, 1, 'rule_check', '财务规则校验',
-     '按财务规则（大额限额/报销时效等）校验报销单，返回命中规则与超标标记。入参 expenseType + claimDate + items + totalAmount。',
-     '{"type":"object","properties":{"expenseType":{"type":"string"},"claimDate":{"type":"string"},"items":{"type":"array","items":{"type":"object"}},"totalAmount":{"type":"number"}},"required":["expenseType","claimDate","items","totalAmount"]}',
+     '按财务规则（大额限额/报销时效/差旅标准/补贴限额）校验报销单，返回命中规则与超标标记。入参 expenseType + claimDate + items + totalAmount。',
+     '{"type":"object","properties":{"expenseType":{"type":"string"},"claimDate":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":"string"},"quantity":{"type":"number"},"unitPrice":{"type":"number"},"date":{"type":"string"},"city":{"type":"string"},"hotelDays":{"type":"integer"},"hotelAmount":{"type":"number"},"transportAmount":{"type":"number"},"subsidyAmount":{"type":"number"}},"required":["name","amount"]}},"totalAmount":{"type":"number"}},"required":["expenseType","claimDate","items","totalAmount"]}',
      1, '1.0', 'FINANCE', 0),
     (5, 1, 'duplicate_check', '重复报销检测',
      '按申请人+商户+金额+日期区间查历史报销单，返回疑似重复。入参 reimbId（报销单ID，agent-core 按此读当前+历史 OCR 商户）。',
@@ -343,9 +344,14 @@ INSERT INTO budget (id, tenant_id, dept_name, period, total_budget, used_amount)
     (3, 1, '市场部', '2026-08', 80000.00, 45600.00),
     (4, 1, '销售部', '2026-08', 120000.00, 102400.00);
 
--- P2b 财务规则种子（可评估两类；TRAVEL_STANDARD/SUBSIDY_LIMIT 结构待 P2c 配置）
+-- P2c 财务规则种子（四类全结构化；published=1 即 Nacos 生效集，改后置 0 需重新发布）
 INSERT INTO finance_rule (id, tenant_id, rule_code, rule_name, rule_type, rule_config, enabled, published, version) VALUES
     (1, 1, 'amount_limit', '大额报销限额', 'AMOUNT_LIMIT',
-     '{"threshold":5000}', 1, 0, '1.0'),
+     '{"threshold":5000}', 1, 1, '1.0'),
     (2, 1, 'reimburse_expire', '报销时效', 'REIMBURSE_EXPIRE',
-     '{"maxDays":30}', 1, 0, '1.0');
+     '{"maxDays":30}', 1, 1, '1.0'),
+    (3, 1, 'travel_standard', '差旅标准', 'TRAVEL_STANDARD',
+     '{"standards":[{"city":"北京","hotelDaily":500,"transportTotal":3000},{"city":"上海","hotelDaily":450,"transportTotal":2500}]}',
+     1, 1, '1.0'),
+    (4, 1, 'subsidy_limit', '补贴限额', 'SUBSIDY_LIMIT',
+     '{"dailyAmount":200}', 1, 1, '1.0');

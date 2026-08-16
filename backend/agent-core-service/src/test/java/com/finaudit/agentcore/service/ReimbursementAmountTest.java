@@ -16,7 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class ReimbursementAmountTest {
 
     private static ReimbursementItemRequest item(String name, String amount) {
-        return new ReimbursementItemRequest(name, new BigDecimal(amount), null, null, null, null);
+        return new ReimbursementItemRequest(name, new BigDecimal(amount), null, null, null, null,
+                null, null, null, null, null);
     }
 
     @Test

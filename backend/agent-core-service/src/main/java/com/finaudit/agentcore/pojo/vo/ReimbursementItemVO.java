@@ -31,6 +31,21 @@ public class ReimbursementItemVO {
     @Schema(description = "发生日期")
     private LocalDate date;
 
+    @Schema(description = "城市（差旅标准评估用）")
+    private String city;
+
+    @Schema(description = "住宿天数")
+    private Integer hotelDays;
+
+    @Schema(description = "住宿金额")
+    private BigDecimal hotelAmount;
+
+    @Schema(description = "交通金额")
+    private BigDecimal transportAmount;
+
+    @Schema(description = "补贴金额")
+    private BigDecimal subsidyAmount;
+
     /**
      * 由 items JSON Map 转换（Jackson 读回金额可能是 Integer/Double，统一转 Decimal）。
      */
@@ -43,6 +58,11 @@ public class ReimbursementItemVO {
         vo.setUnitPrice(decimal(m.get("unitPrice")));
         String date = str(m.get("date"));
         vo.setDate(date == null || date.isBlank() ? null : LocalDate.parse(date));
+        vo.setCity(str(m.get("city")));
+        vo.setHotelDays(intOf(m.get("hotelDays")));
+        vo.setHotelAmount(decimal(m.get("hotelAmount")));
+        vo.setTransportAmount(decimal(m.get("transportAmount")));
+        vo.setSubsidyAmount(decimal(m.get("subsidyAmount")));
         return vo;
     }
 
@@ -58,5 +78,19 @@ public class ReimbursementItemVO {
             return new BigDecimal(n.toString());
         }
         return new BigDecimal(v.toString());
+    }
+
+    private static Integer intOf(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof Number n) {
+            return n.intValue();
+        }
+        try {
+            return Integer.valueOf(v.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 }
