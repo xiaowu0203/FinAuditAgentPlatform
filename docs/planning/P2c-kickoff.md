@@ -1,6 +1,6 @@
 # P2c 财务规则配置 · 开工交接
 
-> 创建: 2026-08-16 ｜ 状态: 待开工 ｜ 源文档: `P2-execution-plan.md`（§4 P2c / §6 接口 / §7 风险 / §8 验收）
+> 创建: 2026-08-16 ｜ 状态: **已完成（后端 CRUD + `TenantNacosConfigHelper` 动态刷新 + 前端配置页落地，四项验收专项验证通过，改规则不重启即时生效）** ｜ 源文档: `P2-execution-plan.md`（§4 P2c / §6 接口 / §7 风险 / §8 验收）
 > 适用会话: 新开会话直接照此开工，相关 memory 见 `nacos3-console-architecture` / `intellij-maven-jdk-env`。
 
 ## 1. 背景与目标
@@ -37,8 +37,8 @@ P2c 目标：**规则可视化配置 + 发布 Nacos 动态刷新，改规则不�
 ### ③ 前端规则配置页
 规则列表 + 按 `rule_type` 结构化表单（AMOUNT_LIMIT→threshold、REIMBURSE_EXPIRE→maxDays…）+ 发布/启停 + 生效状态展示；路由 `/rules`
 
-### ④ 差旅/补贴规则（建议首版后置）
-`TRAVEL_STANDARD`/`SUBSIDY_LIMIT` 现因缺城市/住宿天数字段在 `check()` 内直接跳过。若配置页要支持，需先定入参扩展（明细加 city/hotelDays）。建议首版只做 AMOUNT_LIMIT + REIMBURSE_EXPIRE，另两类可配置但评估后置。
+### ④ 差旅/补贴规则（✅ 已真实施，非后置）
+`TRAVEL_STANDARD`/`SUBSIDY_LIMIT` 原因缺城市/住宿天数字段在 `check()` 内直接跳过；P2c 已定入参扩展（明细加 city/hotelDays/subsidyAmount/hotelAmount/transportAmount）并落地**真实评估**：住宿均价 / 交通金额 / 单日补贴超标即命中（验收记录见 `P2-execution-plan.md` §4 P2c）。无城市标准 / 字段缺失优雅跳过，不阻断其他明细。
 
 ## 4. 新会话先定的 4 个决策
 
@@ -53,11 +53,14 @@ P2c 目标：**规则可视化配置 + 发布 Nacos 动态刷新，改规则不�
 - MySQL 5.7：`rule_config` JSON 只存不参与 WHERE（规划 §7）
 - 配置类默认值字段用 `@Getter @Setter` 勿用 `@Data`（默认值静默丢失，CLAUDE.md §5.7）
 - 内联测试请求直连服务端口（9201/9202/9205）带 `X-Tenant-Id/X-User-Id`；网关要 JWT
+- ⚠️ **Windows shell 内联中文请求体按 GBK 编码发送**：curl `-d '{...中文...}'` 会致服务端 UTF-8 解析 500（`Invalid UTF-8 middle byte 0xde`）。请求体含中文（如明细 name）时**写 UTF-8 文件 + `--data-binary @file`**，勿内联
 - 跑闭环前确认 agent-core 为最新代码（P2b 竞态修复 `afterCommit` 需重启生效）
 
 ## 6. 验收
 
 规划 §8 第 4 项：改 `amount_limit.threshold` → 发布 → **不重启** → 下次 `rule_check` 立即用新阈值。建议照 P2b 方式：清数据 → 跑闭环验证改前/改后阈值是否生效。
+
+> ✅ **2026-08-16 已完成**：阈值收缩/放大双向即时生效（不重启）、跨租户隔离、差旅/补贴真实命中与合规无假阳性、删 Nacos 配置降级 DB 四类专项验证全部通过。详见 `P2-execution-plan.md` §4 P2c 验证记录。
 
 ## 7. 参考资料
 

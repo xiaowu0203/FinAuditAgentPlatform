@@ -125,3 +125,63 @@ Query 参数：`pageNum`（默认 1）、`pageSize`（默认 10）、`status`（
 - 前端任务详情跳报销单：读 `task.inputParams.reimbId`
 - 网关路由：`/api/v1/reimbursements/**` → `lb://agent-core-service`
 
+---
+
+# 规则配置 API（P2c 可视化配置 + Nacos 动态刷新）
+
+> 归属 agent-core，前缀 `/api/v1/rules`，经网关 `X-Tenant-Id`/`X-User-Id` 请求头鉴权。
+> 鉴权：**管理员 ID 白名单**（`finaudit.admin.user-ids`，P2 无 RBAC，P5 换角色校验），非白名单 403。
+> 唯一约束：**同租户同 `ruleType` 仅允许一条规则**——新增/修改时业务层校验（`ensureRuleTypeUnique`）+ SQL 唯一索引 `uk_rule_type(tenant_id, rule_type, deleted)`（deleted=id 软删语义）双层兜底；冲突返回 400。
+> 发布语义：`published=1` 为生效集（Nacos 快照）；`save/update/toggle` 置 `published=0`（草稿，需重新发布才生效）。
+> 生效机制：发布写 Nacos `finaudit-rules-{tenantId}`，应用端经 `TenantNacosConfigHelper` 监听即时生效，**改规则不重启服务**；Nacos 无配置时降级 DB 直查（种子仍生效）。
+
+## GET /api/v1/rules — 规则列表
+
+`data` 为当前租户全部规则（含草稿与已发布，`RuleVO`）：
+
+```json
+{ "code": 0, "message": "ok", "data": [ {
+  "id": 1, "ruleCode": "amount_limit", "ruleName": "大额报销限额", "ruleType": "AMOUNT_LIMIT",
+  "ruleConfig": { "threshold": 5000 }, "enabled": 1, "published": 1, "version": "1.0",
+  "createdAt": "2026-08-16T10:00:00", "updatedAt": "2026-08-16T10:00:00"
+} ] }
+```
+
+`published=1` 已发布生效 / `0` 草稿待发布。
+
+## POST /api/v1/rules — 新增规则
+
+请求体（`ruleConfig` 按 `ruleType` 结构化；ruleCode 创建后不可改）：
+
+```json
+{ "ruleCode": "amount_limit", "ruleName": "大额报销限额", "ruleType": "AMOUNT_LIMIT",
+  "ruleConfig": { "threshold": 5000 }, "enabled": 1 }
+```
+
+各类型 `ruleConfig`：
+
+| ruleType | 结构 |
+|---|---|
+| `AMOUNT_LIMIT` | `{"threshold":5000}`（申报总额超过即命中） |
+| `REIMBURSE_EXPIRE` | `{"maxDays":30}`（明细日期早于报销日-N天命中） |
+| `TRAVEL_STANDARD` | `{"standards":[{"city":"北京","hotelDaily":500,"transportTotal":3000},...]}`（住宿均价/交通金额超标命中） |
+| `SUBSIDY_LIMIT` | `{"dailyAmount":200}`（单日补贴 = subsidyAmount/hotelDays 超上限命中） |
+
+## PUT /api/v1/rules/{id} — 修改规则
+
+同上请求体；变更即置 `published=0`（草稿），需重新发布。`ruleConfig`/`enabled` 空值不覆盖。
+
+## POST /api/v1/rules/{id}/toggle — 启停规则
+
+翻转 `enabled`；变更即置 `published=0`（草稿），需重新发布。
+
+## POST /api/v1/rules/{id}/publish — 发布规则
+
+置目标规则 `published=1` + 版本自增，序列化**租户全部 `published=1` 规则**写 Nacos（整租户快照覆盖）。先写 Nacos 成功再落库 DB，发布失败 DB 无脏写。发布后同租户应用端立即生效（不重启）。
+
+## 关联
+
+- Nacos 数据源（订阅）：`spring.cloud.nacos.config.namespace=dev` + `NacosConfigManager`（`TenantNacosConfigHelper`）
+- Nacos 发布（管理端）：8848 登录 → 8080 控制台 API `/v3/console/cs/config`（头 `accessToken`），配置参数见 `finaudit.nacos-config.*`
+- 网关路由：`/api/v1/rules/**` → `lb://agent-core-service`
+

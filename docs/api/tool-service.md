@@ -47,3 +47,7 @@
 | toolCode | 说明 | 入参 | 结果 |
 |---|---|---|---|
 | `amount_verify` | 金额核验（全程 BigDecimal） | `{items:[{name,amount}], claimedTotal}` | `{total, claimedTotal, match, diff, message}` |
+| `ocr_extract` | 票据 OCR 识别（P2b；失败自动重试 ≤3 后转人工录入 `ocr_status=FAILED`） | `{reimbId, attachmentIds:[fileRecordId]}` | `{ocrStatus, amount, date, merchant, taxNo, ...}` |
+| `budget_query` | 预算核算（P2b，查部门当月剩余预算） | `{deptName}` | `{deptName, period, totalBudget, usedAmount, remaining}` |
+| `rule_check` | 财务规则校验（P2b 注册；P2c 起规则源为 Nacos 动态刷新快照，无配置降级 DB） | `{expenseType, claimDate, totalAmount, items:[{name,amount,date,city,hotelDays,hotelAmount,transportAmount,subsidyAmount}]}`（差旅/补贴评估字段，缺失自动跳过） | `{hits:[{ruleCode,ruleName,ruleType,message,overLimit}], overLimit, message}` |
+| `duplicate_check` | 重复报销检测（P2b，按申请人+商户+金额+日期区间） | `{reimbId}` | `{suspected:[{...重复明细}]}` |

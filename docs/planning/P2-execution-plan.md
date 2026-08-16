@@ -1,6 +1,6 @@
 # P2 单据闭环与审核工具 · 执行点文档
 
-> 版本: v0.5 ｜ 状态: **P2a、P2b 已落地（工具闭环两轮验证通过，已提交推送）；P2c 财务规则配置待开工** ｜ 前置依赖: P1 完成、MinIO 本机启动
+> 版本: v0.7 ｜ 状态: **P2a、P2b、P2c 全部落地（工具闭环两轮 + P2c 动态刷新/隔离/降级专项验证通过）** ｜ 前置依赖: P1 完成、MinIO 本机启动
 > 目标: 把审核业务从「纯 JSON 文本任务」升级为「真实报销单闭环」——图片上传、四类审核工具、财务规则可视化配置，为 P3 多 Agent 流水线铺垫数据与工具底座。
 
 ---
@@ -21,7 +21,7 @@
 |---|---|---|
 | D1 | OCR 引入时机 | **P2b**（非占位、非后置），需第三方 key + 多厂商兜底/熔断降级 |
 | D2 | 单据提交形态 | **图片上传**（依赖 MinIO，P2a 前启动 9000/9001） |
-| D3 | 财务规则载体 | **后台可视化配置 + Nacos 动态刷新**（规则存表，保存后发布到 Nacos，服务 @RefreshScope 生效） |
+| D3 | 财务规则载体 | **后台可视化配置 + Nacos 动态刷新**（规则存表，保存后发布到 Nacos，改规则不重启服务）。P2c 落地方式：`TenantNacosConfigHelper` 封装 `NacosConfigService` 手动监听 + TTL 缓存 + DB 降级（非 `@RefreshScope`，规则量小，事件驱动即时生效） |
 | D4 | 文件能力载体 | **新增 file-service 承载纯文件资源**（上传/下载/预览收敛 file-service，唯一持有 `common-oss-starter`；报销域迁 agent-core 服务内直调建任务，读附件一律 `FileServiceFeign`；rag-service 回归 RAG 专用空骨架，P4 填 Milvus）。**P2a 重构已落地** |
 | D5 | 任务业务分派 | **`agent_task` 增 `task_type`（REIMBURSEMENT/GENERIC）**：报销单提交显式标记 REIMBURSEMENT，通用任务缺省 GENERIC；`TaskPlanner` 按业务注入提示词指令段 + 按业务收敛工具集（财务工具仅 REIMBURSEMENT 注入），避免报销与通用任务共用同一份写死「财务审核」提示词导致规划漂移，并为 P3 多 Agent 角色化铺垫分派字段。**P2a 已落地** |
 
@@ -52,9 +52,11 @@
 > **P2b 闭环验证记录（2026-08-16）**：数据清空后连跑两轮「第一次报销 / 重复报销」全链路通过——OCR 成功抽取 7741.75 京东发票、金额核验/预算/规则/重复检测输出正确、LLM 决策 APPROVE / NEED_INFO 分别回写 reimb SUCCESS / MANUAL_REVIEW；过程中修复两处缺陷：预签名 URL 被二次编码（`AuthorizationQueryParametersError`，改用 `URI.create` 透传）、MQ 任务提交事件先于事务提交发布致消费者「任务不存在」卡死（改 `afterCommit` 后发布）。
 
 ### P2c 财务规则配置
-- [ ] **`finance_rule` 表 + CRUD**：规则类型 TRAVEL_STANDARD / SUBSIDY_LIMIT / REIMBURSE_EXPIRE / AMOUNT_LIMIT，`rule_config` JSON 结构化存储
-- [ ] **发布到 Nacos**：`POST /api/v1/rules/{id}/publish` → 规则写入 Nacos（租户维度 data-id），`published` 标记；`rule_check` 订阅/轮询刷新，改规则不发布服务
-- [ ] **前端规则配置页**：规则列表 + 编辑（结构化表单）+ 发布/启停 + 生效状态展示
+- [x] **`finance_rule` 表 + CRUD**：规则类型 TRAVEL_STANDARD / SUBSIDY_LIMIT / REIMBURSE_EXPIRE / AMOUNT_LIMIT，`rule_config` JSON 结构化存储（四类全结构化）
+- [x] **发布到 Nacos**：`POST /api/v1/rules/{id}/publish` → 规则写入 Nacos（租户维度 data-id），`published` 标记；`rule_check` 经 `TenantNacosConfigHelper` 监听即时生效，改规则不重启服务（Nacos 无配置降级 DB）
+- [x] **前端规则配置页**：规则列表 + 编辑（结构化表单）+ 发布/启停 + 生效状态展示（路由 `/rules`）
+
+> **P2c 验收记录（2026-08-16）**：四类规则全部结构化（AMOUNT_LIMIT/REIMBURSE_EXPIRE/TRAVEL_STANDARD/SUBSIDY_LIMIT）。专项验证：① 改 amount_limit.threshold 5000→3000 → 发布 → 不重启 → rule_check 4000 立即命中「超过 3000」；放大 3000→8000 → 6000 恢复不命中（事件驱动，无重启）；② 租户 2 规则列表空 + 评估不命中（隔离）；③ TRAVEL 明细（北京 住宿 1800/3晚、补贴 900/3日）同时命中差旅住宿与补贴超标，合规用例无假阳性；④ 删除 Nacos `finaudit-rules-1` → rule_check 7500 降级命中 DB「超过 7000」（非残留 8000 快照），无空窗。过程中定位 500 根因：**Windows shell 内联中文请求体被按 GBK 发送**（`Invalid UTF-8 middle byte 0xde`），非代码缺陷，改 UTF-8 文件体重测即通。
 
 ## 5. 新增表（对齐现有 snake_case + 三件套风格）
 
@@ -125,6 +127,6 @@
 - [x] 图片上传 MinIO 成功，附件与报销单关联可查
 - [x] 提交报销单 → 生成 agent_task，任务入参为真实报销单数据（含附件引用）
 - [x] 四类工具真实执行：OCR 抽取 / 预算核算 / 规则校验 / 重复检测，结果落库（金额全 Decimal）
-- [ ] 规则配置页改差旅标准 → 发布 → **无需重启服务**，下次审核立即生效（**P2c 承接**）
+- [x] 规则配置页改差旅标准 → 发布 → **无需重启服务**，下次审核立即生效（**P2c 承接**，2026-08-16 专项验证：threshold 5000→3000→8000 双向即时生效，含差旅/补贴真实命中）
 - [x] OCR 失败路径：自动重试 → 失败标记人工录入，不阻塞主流程
-- [ ] 跨租户隔离：租户 2 不可见租户 1 的报销单/预算/规则（MyBatis-Plus 多租户拦截器架构保证，待专项验证）
+- [x] 跨租户隔离：租户 2 不可见租户 1 的报销单/预算/规则（MyBatis-Plus 多租户拦截器架构保证，P2c 专项验证通过：列表空 + 评估不命中）

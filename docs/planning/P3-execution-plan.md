@@ -61,7 +61,7 @@ P3+:  PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING
 - [ ] **表**：`audit_ticket` + `audit_record`（见 §5）
 - [ ] **工单 Service/Controller**：创建工单（`NEED_REVIEW` → 生成 ticket，任务置 `APPROVAL_PENDING`）+ 审批动作 approve / reject / amend / terminate
 - [ ] **amend 回退重跑**：`adjusted_amount` 写回任务入参 → 流水线重跑（回 RUNNING）→ 结果重新落库 → 再次分支判定
-- [ ] **触发规则配置化**：大额阈值 / 超标 / 风控命中阈值走 P2 `finance_rule` 体系，不写死（TODO：发票存疑/对公/跨部门分摊扩展）
+- [ ] **触发规则配置化**：大额阈值 / 超标 / 风控命中阈值走 P2 `finance_rule` 体系，不写死（TODO：发票存疑/对公/跨部门分摊扩展）。> 前置已就绪：P2c 已落地 `finance_rule` 可视化配置 + Nacos 动态刷新（改规则不重启），P3 触发阈值直接复用 `TenantNacosConfigHelper` 同一套监听/缓存/降级，见 `P2-execution-plan.md` §4 P2c
 - [ ] **审计留痕**：每次审批动作写 `audit_record`（操作人/前后金额/意见/时间），工单详情可查完整留痕
 - [ ] **前端审批工单页**：工单列表（状态过滤）+ 详情（单据 + OCR + 校验异常点 + 留痕）+ 审批操作按钮；财务角色可见
 
