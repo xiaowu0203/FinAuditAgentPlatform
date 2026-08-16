@@ -1,6 +1,6 @@
 # P2 单据闭环与审核工具 · 执行点文档
 
-> 版本: v0.4 ｜ 状态: **P2a 已落地；P2b 审核工具做厚进行中（Schema/迁移/OCR Starter 已开工）、P2c 财务规则配置待开工** ｜ 前置依赖: P1 完成、MinIO 本机启动
+> 版本: v0.5 ｜ 状态: **P2a、P2b 已落地（工具闭环两轮验证通过，已提交推送）；P2c 财务规则配置待开工** ｜ 前置依赖: P1 完成、MinIO 本机启动
 > 目标: 把审核业务从「纯 JSON 文本任务」升级为「真实报销单闭环」——图片上传、四类审核工具、财务规则可视化配置，为 P3 多 Agent 流水线铺垫数据与工具底座。
 
 ---
@@ -10,7 +10,7 @@
 | 阶段 | 内容 | 说明 |
 |---|---|---|
 | **P2a 单据闭环** | MinIO 文件能力 + 报销单/附件实体 + 前端上传/提交页 + 前端任务跳转 | 任务入参从纯 JSON 文本 → 真实报销单数据（文件 ID 引用）；**后端已落地，前端归 P2a 待推进** |
-| **P2b 审核工具做厚** | OCR / 预算查询 / 规则校验 / 重复报销检测 | amount_verify 从唯一工具 → 五类之一 |
+| **P2b 审核工具做厚** | OCR / 预算查询 / 规则校验 / 重复报销检测 | amount_verify 从唯一工具 → 五类之一；**已落地**（多厂商兜底后置，见 future-roadmap §4） |
 | **P2c 财务规则配置** | 规则表 + 配置页 + Nacos 动态刷新 | 差旅标准/限额/时效可视化配置，改规则不发布服务 |
 
 **编排说明**：P2 仍是单 Agent（沿用 P1 TaskPlanner），多 Agent 角色化流水线由 P3 承接。P2 重点是数据层 + 工具层做真。
@@ -29,10 +29,10 @@
 
 | # | 决策 | 备选 | 结论 |
 |---|---|---|---|
-| D6 | OCR 厂商选型 | 百度 / 阿里 / 本地轻量；统一封装进 OCR 工具 Starter | **已定（P2b）：百度 + `common-ocr-starter`**。AK/SK 走 `FINAUDIT_OCR_BAIDU_API_KEY` / `FINAUDIT_OCR_BAIDU_SECRET_KEY`；主线「智能财务票据识别（iocr finance，一次得票据分类+结构化字段）」+ `vat_invoice` 增值税细节兜底；starter 留多厂商扩展位 |
+| D6 | OCR 厂商选型 | 百度 / 阿里 / 本地轻量；统一封装进 OCR 工具 Starter | **已定（P2b）：百度 + `common-ocr-starter`**。AK/SK 走 `FINAUDIT_OCR_BAIDU_API_KEY` / `FINAUDIT_OCR_BAIDU_SECRET_KEY`；主线「智能财务票据识别（iocr finance，一次得票据分类+结构化字段）」+ `vat_invoice` 增值税细节兜底；starter 留多厂商扩展位；**多厂商兜底/熔断降级后置**（见 future-roadmap §4） |
 | D7 | 部门归属 | 先 `dept_name` 字符串，独立部门表后置 | 字符串（预算按 dept_name 分组即可） |
 
-## 4. 执行点进度（待进行）
+## 4. 执行点进度
 
 ### P2a 单据闭环
 - [x] **MinIO 文件能力**：按 D4 落地，**P2a-重构后拆出 file-service（9205）**：`POST /api/v1/files/upload`（multipart → MinIO，元数据落 `file_record`，业务附件仅存 `file_record` 引用）
@@ -42,12 +42,14 @@
 - [x] **前端任务跳转**（归 P2a）：前端任务列表可跳报销单（后端 `TaskVO.inputParams.reimbId` 已暴露并 E2E 验证）
 
 ### P2b 审核工具做厚（tool-service）
-- [ ] **`ocr_extract` 票据识别**：OCR 抽取金额/日期/商户/税号，识别失败自动重试 ≤3 → 仍失败推送人工录入（`ocr_status=FAILED`）；多厂商兜底（D6 定）
-- [ ] **`budget_query` 预算核算**：查 `budget` 部门当月剩余预算，返回占用/剩余额度
-- [ ] **`rule_check` 财务规则校验**：加载 `finance_rule`（本地缓存 + Nacos 刷新），校验差旅标准/补贴限额/报销时效/大额阈值，返回命中规则 + 是否超标
-- [ ] **`duplicate_check` 重复报销检测**：按（申请人 + 商户 + 金额 + 日期区间）查历史报销单，返回疑似重复
-- [ ] **工具注册**：四类工具注册进 `tool_registry`（入参 JSON Schema 强校验），TaskPlanner 动态注入已兼容（P1 收尾已验证）
-- [ ] **金额一律 Decimal**：工具输出金额字段全 DECIMAL，杜绝 float/double
+- [x] **`ocr_extract` 票据识别**：OCR 抽取金额/日期/商户/税号，识别失败自动重试 ≤3 → 仍失败推送人工录入（`ocr_status=FAILED`）；多厂商兜底/熔断降级**后置**（D6 扩展位 → future-roadmap §4）
+- [x] **`budget_query` 预算核算**：查 `budget` 部门当月剩余预算，返回占用/剩余额度
+- [x] **`rule_check` 财务规则校验**：加载 `finance_rule`（本地加载，Nacos 动态刷新归 P2c），校验差旅标准/补贴限额/报销时效/大额阈值，返回命中规则 + 是否超标
+- [x] **`duplicate_check` 重复报销检测**：按（申请人 + 商户 + 金额 + 日期区间）查历史报销单，返回疑似重复
+- [x] **工具注册**：四类工具注册进 `tool_registry`（入参 JSON Schema 强校验），TaskPlanner 动态注入已兼容（P1 收尾已验证）
+- [x] **金额一律 Decimal**：工具输出金额字段全 DECIMAL，杜绝 float/double
+
+> **P2b 闭环验证记录（2026-08-16）**：数据清空后连跑两轮「第一次报销 / 重复报销」全链路通过——OCR 成功抽取 7741.75 京东发票、金额核验/预算/规则/重复检测输出正确、LLM 决策 APPROVE / NEED_INFO 分别回写 reimb SUCCESS / MANUAL_REVIEW；过程中修复两处缺陷：预签名 URL 被二次编码（`AuthorizationQueryParametersError`，改用 `URI.create` 透传）、MQ 任务提交事件先于事务提交发布致消费者「任务不存在」卡死（改 `afterCommit` 后发布）。
 
 ### P2c 财务规则配置
 - [ ] **`finance_rule` 表 + CRUD**：规则类型 TRAVEL_STANDARD / SUBSIDY_LIMIT / REIMBURSE_EXPIRE / AMOUNT_LIMIT，`rule_config` JSON 结构化存储
@@ -120,9 +122,9 @@
 
 ## 8. 验收清单（P2 完成定义）
 
-1. 图片上传 MinIO 成功，附件与报销单关联可查
-2. 提交报销单 → 生成 agent_task，任务入参为真实报销单数据（含附件引用）
-3. 四类工具真实执行：OCR 抽取 / 预算核算 / 规则校验 / 重复检测，结果落库（金额全 Decimal）
-4. 规则配置页改差旅标准 → 发布 → **无需重启服务**，下次审核立即生效
-5. OCR 失败路径：自动重试 → 失败标记人工录入，不阻塞主流程
-6. 跨租户隔离：租户 2 不可见租户 1 的报销单/预算/规则
+- [x] 图片上传 MinIO 成功，附件与报销单关联可查
+- [x] 提交报销单 → 生成 agent_task，任务入参为真实报销单数据（含附件引用）
+- [x] 四类工具真实执行：OCR 抽取 / 预算核算 / 规则校验 / 重复检测，结果落库（金额全 Decimal）
+- [ ] 规则配置页改差旅标准 → 发布 → **无需重启服务**，下次审核立即生效（**P2c 承接**）
+- [x] OCR 失败路径：自动重试 → 失败标记人工录入，不阻塞主流程
+- [ ] 跨租户隔离：租户 2 不可见租户 1 的报销单/预算/规则（MyBatis-Plus 多租户拦截器架构保证，待专项验证）
