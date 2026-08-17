@@ -4,10 +4,10 @@
 
     <insert id="insertBatch">
         INSERT INTO agent_task_step
-        (tenant_id, task_id, step_no, step_name, step_type, tool_name,input_params, `output`, status, error_msg, retry_count, deleted)
+        (tenant_id, task_id, step_no, step_name, step_type, tool_name, agent_role, input_params, `output`, status, error_msg, retry_count, deleted)
         VALUES
         <foreach collection='list' item='s' separator=','>
-            (#{s.tenantId}, #{s.taskId}, #{s.stepNo}, #{s.stepName}, #{s.stepType}, #{s.toolName},
+            (#{s.tenantId}, #{s.taskId}, #{s.stepNo}, #{s.stepName}, #{s.stepType}, #{s.toolName}, #{s.agentRole},
             #{s.inputParams,typeHandler=com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler},
             #{s.output,typeHandler=com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler},
             #{s.status}, #{s.errorMsg}, #{s.retryCount}, 0)

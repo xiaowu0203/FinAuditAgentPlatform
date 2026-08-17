@@ -49,13 +49,13 @@ P3+:  PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING
 - 任务级新增 **`APPROVAL_PENDING`**（暂停等审批）、**`REJECTED`**（人工驳回，区别于系统 FAILED）
 - 步骤级沿用现有状态机；命中审批触发条件时，当前流水线步骤进入暂停态
 
-## 4. 执行点进度（待进行）
+## 4. 执行点进度（P3a 已落地，P3b/P3c 待进行）
 
 ### P3a 多 Agent 角色化 + 规则流水线
-- [ ] **`AgentRole` 枚举 + 角色定义**：`DOCUMENT_PARSER`（OCR 工具）/ `BUDGET_CALCULATOR`（budget_query）/ `RULE_VALIDATOR`（rule_check + amount_verify）/ `RISK_AUDITOR`（duplicate_check + 存疑语义）/ `SCHEDULER`（统筹，无工具）
-- [ ] **`RuleBasedFlowEngine`**：升级 TaskPlanner/Orchestrator——按业务规则编排流水线（顺序 + 分支），LLM 只在语义节点作为步骤类型保留；**TODO 注释标注「运行中实时打断」后置**
-- [ ] **结果分支**：流水线末步按规则输出 → `AUTO_PASS`（小额全合规）或 `NEED_REVIEW`（命中触发条件）
-- [ ] **存疑标记**：规则/风控 Agent 输出 `confidence`/`uncertain` 标记 → 强制走 `NEED_REVIEW`（幻觉拦截占位，TODO 指向 P4）
+- [x] **`AgentRole` 枚举 + 角色定义**：五类角色收敛于 agent-core，工具编码与角色 prompt 绑定
+- [x] **`RuleBasedFlowEngine`**：REIMBURSEMENT 按固定规则流水线编排，GENERIC 保留 TaskPlanner；LLM 仅执行风控/汇总语义节点
+- [x] **结果分支**：`ReviewFlowDecider` 确定性判定 `AUTO_PASS` / `NEED_REVIEW`，命中触发条件或 LLM 非 APPROVE 进入待审批
+- [x] **存疑标记**：`RiskAssessment.confidence/uncertain` → 风控存疑强制 `NEED_REVIEW`（P4 再建设正式评估体系）
 
 ### P3b 审批工单闭环
 - [ ] **表**：`audit_ticket` + `audit_record`（见 §5）

@@ -37,8 +37,8 @@ export interface LoginResult {
   user: UserVO
 }
 
-/** 任务状态（状态机：PENDING → RUNNING → SUCCESS / FAILED） */
-export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+/** 任务状态（状态机：PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED） */
+export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'APPROVAL_PENDING' | 'REJECTED'
 
 /** 任务 */
 export interface TaskVO {
@@ -64,6 +64,7 @@ export interface TaskStepVO {
   stepName: string
   stepType: string
   toolName: string | null
+  agentRole: string | null
   inputParams: Record<string, unknown> | null
   output: Record<string, unknown> | null
   status: TaskStatus
@@ -86,8 +87,8 @@ export interface FileVO {
 /** 费用类型 */
 export type ExpenseType = 'TRAVEL' | 'ENTERTAINMENT' | 'OFFICE'
 
-/** 报销单审核状态（对齐任务状态机） */
-export type ReimbStatus = TaskStatus
+/** 报销单审核状态（任务状态 + 报销域 MANUAL_REVIEW） */
+export type ReimbStatus = TaskStatus | 'MANUAL_REVIEW'
 
 /** 报销单（列表 / 提交返回） */
 export interface ReimbursementVO {

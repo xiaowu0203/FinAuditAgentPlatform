@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Back, Refresh } from '@element-plus/icons-vue'
 import { getTaskDetail, getTaskSteps, resumeTask } from '@/api/task'
-import { TASK_STATUS_MAP, isActive, reimbIdOf } from '@/utils/task'
+import { TASK_STATUS_MAP, AGENT_ROLE_MAP, isActive, reimbIdOf } from '@/utils/task'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import type { TaskStatus, TaskStepVO, TaskVO } from '@/types'
@@ -90,12 +90,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="detail">
-    <el-card v-loading="loading" class="mb">
+  <div class="page-shell detail">
+    <el-card v-loading="loading" class="page-card mb">
       <template #header>
         <div class="detail-header">
-          <span>任务详情：{{ task?.taskNo }}</span>
           <div>
+            <div class="page-title card-title">任务详情：{{ task?.taskNo }}</div>
+            <div class="page-subtitle">查看任务基础信息、入参、结果和运行进度</div>
+          </div>
+          <div class="header-actions">
             <el-button
               v-if="task && reimbIdOf(task) != null"
               type="primary"
@@ -117,7 +120,7 @@ onBeforeUnmount(() => {
       </template>
 
       <template v-if="task">
-        <el-descriptions :column="2" border>
+        <el-descriptions :column="2" border class="soft-descriptions">
           <el-descriptions-item label="标题">{{ task.title }}</el-descriptions-item>
           <el-descriptions-item label="状态">
             <el-tag :type="TASK_STATUS_MAP[task.status].tag">{{ TASK_STATUS_MAP[task.status].label }}</el-tag>
@@ -137,12 +140,24 @@ onBeforeUnmount(() => {
       </template>
     </el-card>
 
-    <el-card v-loading="stepsLoading">
-      <template #header><span>步骤明细（{{ steps.length }}）</span></template>
+    <el-card v-loading="stepsLoading" class="page-card">
+      <template #header>
+        <div class="page-header">
+          <div>
+            <div class="page-title card-title">步骤明细（{{ steps.length }}）</div>
+            <div class="page-subtitle">按步骤查看工具调用、输出内容和失败信息</div>
+          </div>
+        </div>
+      </template>
       <el-table :data="steps" empty-text="暂无步骤">
         <el-table-column prop="stepNo" label="步骤" width="70" />
         <el-table-column prop="stepName" label="名称" min-width="200" show-overflow-tooltip />
         <el-table-column prop="stepType" label="类型" width="90" />
+        <el-table-column label="角色" width="110">
+          <template #default="{ row }">
+            {{ row.agentRole ? (AGENT_ROLE_MAP[row.agentRole] ?? row.agentRole) : '—' }}
+          </template>
+        </el-table-column>
         <el-table-column prop="toolName" label="工具" width="140" />
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
@@ -170,10 +185,17 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.detail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.detail {
+  gap: 16px;
+}
+
+.card-title {
+  font-size: 16px;
+}
+
+.soft-descriptions :deep(.el-descriptions__body) {
+  border-radius: 16px;
+  overflow: hidden;
 }
 </style>
 

@@ -47,12 +47,15 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="detail">
-    <el-card v-loading="loading" class="mb">
+  <div class="page-shell detail">
+    <el-card v-loading="loading" class="page-card mb">
       <template #header>
         <div class="detail-header">
-          <span>报销单详情：{{ reimb?.reimbNo }}</span>
           <div>
+            <div class="page-title card-title">报销单详情：{{ reimb?.reimbNo }}</div>
+            <div class="page-subtitle">集中查看报销基础信息、明细汇总和附件资料</div>
+          </div>
+          <div class="header-actions">
             <el-button v-if="reimb?.taskId" type="primary" @click="router.push(`/tasks/${reimb!.taskId}`)">
               查看审核任务
             </el-button>
@@ -62,7 +65,7 @@ onMounted(load)
       </template>
 
       <template v-if="reimb">
-        <el-descriptions :column="3" border>
+        <el-descriptions :column="3" border class="soft-descriptions">
           <el-descriptions-item label="标题">{{ reimb.title }}</el-descriptions-item>
           <el-descriptions-item label="状态">
             <el-tag :type="TASK_STATUS_MAP[reimb.status].tag">{{ TASK_STATUS_MAP[reimb.status].label }}</el-tag>
@@ -86,9 +89,14 @@ onMounted(load)
       </template>
     </el-card>
 
-    <el-card class="mb">
+    <el-card class="page-card mb">
       <template #header>
-        <span>报销明细（{{ (detail?.items || []).length }} 项，服务端核验金额一致）</span>
+        <div class="page-header">
+          <div>
+            <div class="page-title card-title">报销明细（{{ (detail?.items || []).length }} 项）</div>
+            <div class="page-subtitle">明细合计与服务端核验金额保持一致</div>
+          </div>
+        </div>
       </template>
       <el-table :data="detail?.items || []" empty-text="暂无明细">
         <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
@@ -116,8 +124,15 @@ onMounted(load)
       </el-table>
     </el-card>
 
-    <el-card>
-      <template #header><span>附件（{{ (detail?.attachments || []).length }}）</span></template>
+    <el-card class="page-card">
+      <template #header>
+        <div class="page-header">
+          <div>
+            <div class="page-title card-title">附件（{{ (detail?.attachments || []).length }}）</div>
+            <div class="page-subtitle">支持预览和下载，方便对照审核材料</div>
+          </div>
+        </div>
+      </template>
       <el-empty v-if="!detail?.attachments || detail.attachments.length === 0" description="暂无附件" />
       <div v-else class="attachment-grid">
         <el-card v-for="att in detail.attachments" :key="att.id" shadow="hover" class="attachment-card">
@@ -146,10 +161,12 @@ onMounted(load)
 </template>
 
 <style scoped>
-.detail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.detail {
+  gap: 16px;
+}
+
+.card-title {
+  font-size: 16px;
 }
 
 .amount {
@@ -194,5 +211,10 @@ onMounted(load)
   display: flex;
   justify-content: center;
   gap: 8px;
+}
+
+.soft-descriptions :deep(.el-descriptions__body) {
+  border-radius: 16px;
+  overflow: hidden;
 }
 </style>

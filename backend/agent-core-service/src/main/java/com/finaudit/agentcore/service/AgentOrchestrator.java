@@ -2,10 +2,13 @@ package com.finaudit.agentcore.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.finaudit.agentcore.enums.StepStatus;
 import com.finaudit.agentcore.domain.AuditConclusion;
+import com.finaudit.agentcore.domain.FlowDecision;
+import com.finaudit.agentcore.domain.RiskAssessment;
 import com.finaudit.agentcore.domain.TaskPlanStep;
+import com.finaudit.agentcore.enums.AgentRole;
 import com.finaudit.agentcore.enums.ReimbursementStatus;
+import com.finaudit.agentcore.enums.StepStatus;
 import com.finaudit.agentcore.enums.TaskStatus;
 import com.finaudit.agentcore.enums.TaskType;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
@@ -15,7 +18,6 @@ import com.finaudit.starter.mq.message.ToolResultMessage;
 import com.finaudit.starter.model.ModelType;
 import com.finaudit.starter.model.client.AiClient;
 import com.finaudit.starter.model.client.ChatClientFactory;
-import com.finaudit.starter.model.client.StructuredChatReply;
 import com.finaudit.starter.web.exception.BizException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,6 +55,10 @@ public class AgentOrchestrator {
     private final AgentTaskService taskService;
     private final AgentTaskStepService stepService;
     private final TaskPlanner planner;
+    /** 规则驱动流水线引擎（REIMBURSEMENT 规划，P3a） */
+    private final RuleBasedFlowEngine flowEngine;
+    /** 流水线结果分支判定器（REIMBURSEMENT 收尾，P3a） */
+    private final ReviewFlowDecider reviewFlowDecider;
     private final TaskEventPublisher eventPublisher;
     // AI大模型客户端，DeepSeek模型实例
     private final AiClient modelClient;
@@ -63,17 +69,22 @@ public class AgentOrchestrator {
      * 构造注入所有依赖组件
      * @param taskService 任务服务
      * @param stepService 任务步骤服务
-     * @param planner 任务步骤规划器
+     * @param planner 任务步骤规划器（GENERIC）
+     * @param flowEngine 规则驱动流水线引擎（REIMBURSEMENT，P3a）
+     * @param reviewFlowDecider 流水线结果分支判定器（P3a）
      * @param eventPublisher MQ事件发布组件
      * @param modelFactory 大模型客户端工厂，获取DeepSeek对话实例
      * @param reimbursementService 报销单服务（终态回写审核状态）
      */
     public AgentOrchestrator(AgentTaskService taskService, AgentTaskStepService stepService,
-                             TaskPlanner planner, TaskEventPublisher eventPublisher,
+                             TaskPlanner planner, RuleBasedFlowEngine flowEngine,
+                             ReviewFlowDecider reviewFlowDecider, TaskEventPublisher eventPublisher,
                              ChatClientFactory modelFactory, ReimbursementService reimbursementService) {
         this.taskService = taskService;
         this.stepService = stepService;
         this.planner = planner;
+        this.flowEngine = flowEngine;
+        this.reviewFlowDecider = reviewFlowDecider;
         this.eventPublisher = eventPublisher;
         this.modelClient = modelFactory.getClient(ModelType.DEEPSEEK);
         this.reimbursementService = reimbursementService;
@@ -102,8 +113,13 @@ public class AgentOrchestrator {
         taskService.markRunning(task);
         // 报销单状态同步为【审核中】
         syncReimbStatus(task, ReimbursementStatus.RUNNING);
-        // 规划器生成完整步骤清单（涉及模型调用操作）
-        List<TaskPlanStep> plan = planner.plan(task);
+        /**
+         * 报销单类型（固定化流水线步骤）：走flowEngine.plan(task)
+         * 通用任务类型（由大模型决定步骤）：走planner.plan(task)
+         */
+        List<TaskPlanStep> plan = TaskType.of(task.getTaskType()) == TaskType.REIMBURSEMENT
+                ? flowEngine.plan(task)
+                : planner.plan(task);
         // 将相关子步骤列表进行落库
         stepService.insertPlan(taskId, task.getTenantId(), plan);
         // 更新任务总步骤、已完成初始值0
@@ -163,7 +179,7 @@ public class AgentOrchestrator {
         if ("LLM".equalsIgnoreCase(step.getStepType())) {
             executeLlmStep(task, step);
         } else if ("TOOL".equalsIgnoreCase(step.getStepType())) {
-            // 若为TOOL类型，发布MQ消息，交由远程工具服务异步执行
+            // 若为TOOL类型，发布MQ消息，交由远程工具服务异步执行（ToolExecuteConsumer）
             eventPublisher.publishToolExecute(task, step);
         } else {
             // 若为未知类型，直接标记任务失败
@@ -202,17 +218,31 @@ public class AgentOrchestrator {
             if (step.getInputParams() != null) {
                 ctx.append("【当前步骤入参】\n").append(toJsonText(step.getInputParams())).append("\n");
             }
-            String system = """
-                    你是财务审核 Agent。基于任务入参与前序步骤结果，给出确定性、可执行的审核结论。
-                    金额核验等工具已给出量化结果（match/total/diff）时，以该结果为准下结论，不要以"缺少单据/发票/审批材料"为由拒绝给出结论；
-                    若入参确实不足，明确指出缺少的具体字段，而非笼统索要材料。
-                    按下方 JSON Schema 输出结构化审核结论；decision 只能取 APPROVE（通过）/ REJECT（驳回）/ NEED_INFO（需补充材料）三者之一。""";
             String user = "任务标题：" + task.getTitle() + "\n" + ctx;
-            // 结构化输出：审核结论按 AuditConclusion 反序列化后落库（形状由 Schema 约束）
-            StructuredChatReply<AuditConclusion> reply = modelClient.chatStructured(
-                    system, user, AuditConclusion.class);
+
+            /**
+             * 按步骤 agentRole 选 system prompt 与结构化输出形状。
+             * 风控语义步骤(RISK_AUDITOR) → RiskAssessment（存疑标记/置信度）；
+             * 其余（SCHEDULER/无角色，
+             */
+            // 获取执行步骤中设定的Agent角色
+            AgentRole role = AgentRole.of(step.getAgentRole());
+            // 若未设置角色，默认为SCHEDULER
+            String system = (role == null || role.systemPrompt().isBlank())
+                    ? AgentRole.SCHEDULER.systemPrompt()
+                    : role.systemPrompt();
+            Object data;
+            // 若为风控Agent，则返回RiskAssessment结构体（包含置信度等）
+            if (role == AgentRole.RISK_AUDITOR) {
+                data = modelClient.chatStructured(system, user, RiskAssessment.class).data();
+            }
+            // 若为统筹调度Agent，则返回AuditConclusion
+            else {
+                data = modelClient.chatStructured(system, user, AuditConclusion.class).data();
+            }
+            // 将data转为Map<String, Object> 入库，状态置SUCCESS
             stepService.markSuccess(step,
-                    OBJECT_MAPPER.convertValue(reply.data(), new TypeReference<Map<String, Object>>() {}));
+                    OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}));
             // 刷新任务已完成步骤数量
             refreshFinishedSteps(task.getId());
             // 自动推进执行下一个步骤
@@ -301,9 +331,11 @@ public class AgentOrchestrator {
     public void resume(Long taskId) {
         // 校验任务是否存在
         AgentTask task = taskService.getRequired(taskId);
-        // 终态任务不允许续跑（SUCCESS/FAILED）
+        // 终态任务不允许续跑（SUCCESS/FAILED；P3a 起含 APPROVAL_PENDING 待审批 / REJECTED 人工驳回，等 P3b 审批动作流转）
         if (TaskStatus.SUCCESS.name().equals(task.getStatus())
-                || TaskStatus.FAILED.name().equals(task.getStatus())) {
+                || TaskStatus.FAILED.name().equals(task.getStatus())
+                || TaskStatus.APPROVAL_PENDING.name().equals(task.getStatus())
+                || TaskStatus.REJECTED.name().equals(task.getStatus())) {
             throw new BizException(
                     "任务已终结（" + task.getStatus() + "），无需续跑");
         }
@@ -339,6 +371,7 @@ public class AgentOrchestrator {
             m.put("stepName", s.getStepName());
             m.put("stepType", s.getStepType());
             m.put("toolName", s.getToolName());
+            m.put("agentRole", s.getAgentRole());
             m.put("output", s.getOutput());
             return m;
         }).toList();
@@ -347,6 +380,33 @@ public class AgentOrchestrator {
         result.put("summary", "审核流程执行完成");
         result.put("stepCount", steps.size());
         result.put("steps", stepResults);
+
+        // P3a 结果分支：REIMBURSEMENT 走确定性判定（AUTO_PASS / NEED_REVIEW），GENERIC 维持原 LLM 决策回写
+        if (TaskType.REIMBURSEMENT.name().equals(task.getTaskType())) {
+            // 执行步骤，获取判定结果
+            FlowDecision decision = reviewFlowDecider.decide(steps);
+            result.put("flowBranch", decision.flowBranch());
+            result.put("reviewReasons", decision.reviewReasons());
+            // 需要人工审核
+            if (FlowDecision.NEED_REVIEW.equals(decision.flowBranch())) {
+                // 命中触发条件（大额/超标/风控存疑）或 LLM 结论非通过 → 暂停等人工审批，终审权在人
+                // 将任务状态更新为【待审核】
+                taskService.markApprovalPending(task, result, steps.size());
+                log.info("任务 {} 命中人工复核分支，原因: {}", task.getTaskNo(), decision.reviewReasons());
+                // TODO(P3b)：此处按 reviewReasons 前缀（OVER_LIMIT/RULE_FAIL/RISK_HIT/LLM_DECISION）生成审批工单，
+                // 审批动作流转：通过→SUCCESS、驳回→REJECTED、改金额→回退流水线重跑
+                syncReimbStatus(task, ReimbursementStatus.MANUAL_REVIEW);
+                return;
+            }
+            // 更新任务为成功状态
+            taskService.markSuccess(task, result, steps.size());
+            log.info("任务 {} 自动通过（AUTO_PASS），共 {} 步", task.getTaskNo(), steps.size());
+            // 报销单审核状态回写
+            syncReimbStatus(task, ReimbursementStatus.SUCCESS);
+            return;
+        }
+
+        // 更新任务为成功
         taskService.markSuccess(task, result, steps.size());
         log.info("任务 {} 执行成功，共 {} 步", task.getTaskNo(), steps.size());
         // 报销单状态回写：按 LLM 汇总决策细化（REJECT→FAILED、NEED_INFO→MANUAL_REVIEW，其余→SUCCESS）

@@ -130,6 +130,18 @@ public class AgentTaskService {
     }
 
     /**
+     * 更新任务为待审批（P3a 结果分支 NEED_REVIEW），写入流水线结果与进度。
+     * <p>镜像 markSuccess，仅状态为 APPROVAL_PENDING；审批动作由 P3b 工单模块流转
+     * （通过→SUCCESS、驳回→REJECTED）。</p>
+     */
+    public void markApprovalPending(AgentTask task, Map<String, Object> result, int finishedSteps) {
+        task.setResult(result);
+        task.setStatus(TaskStatus.APPROVAL_PENDING.name());
+        task.setFinishedSteps(finishedSteps);
+        taskMapper.updateById(task);
+    }
+
+    /**
      * 更新任务为失败状态，写入相关错误信息
      */
     public void markFailed(AgentTask task, String errorMsg) {

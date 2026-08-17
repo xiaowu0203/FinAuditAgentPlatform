@@ -159,11 +159,14 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <el-card v-loading="submitting">
+  <el-card v-loading="submitting" class="page-card">
     <template #header>
       <div class="page-header">
-        <span>提交报销单</span>
         <div>
+          <div class="page-title card-title">提交报销单</div>
+          <div class="page-subtitle">填写明细、上传附件后发起审核，后端接口和数据结构保持不变</div>
+        </div>
+        <div class="header-actions">
           <el-button :icon="Back" @click="router.back()">返回</el-button>
           <el-button type="primary" @click="fillTemplate">内置模板</el-button>
         </div>
@@ -259,10 +262,8 @@ async function handleSubmit() {
 </template>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.card-title {
+  font-size: 16px;
 }
 
 .item-block {

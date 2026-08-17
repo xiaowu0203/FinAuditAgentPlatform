@@ -128,6 +128,7 @@ CREATE TABLE agent_task_step (
     step_name   VARCHAR(64)   NOT NULL COMMENT '步骤名称',
     step_type   VARCHAR(16)   NOT NULL COMMENT '步骤类型: LLM/TOOL',
     tool_name   VARCHAR(64)   DEFAULT NULL COMMENT 'TOOL 步骤的工具编码',
+    agent_role  VARCHAR(32)   DEFAULT NULL COMMENT '执行角色（AgentRole: SCHEDULER/DOCUMENT_PARSER/BUDGET_CALCULATOR/RULE_VALIDATOR/RISK_AUDITOR；历史与 GENERIC 步骤为空）',
     input_params JSON         DEFAULT NULL COMMENT '步骤入参',
     output      JSON          DEFAULT NULL COMMENT '步骤输出',
     status      VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '步骤状态',

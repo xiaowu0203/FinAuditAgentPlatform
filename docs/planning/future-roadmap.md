@@ -20,7 +20,7 @@
 | 多级审批链（资金类一级→二级） | `audit_ticket.audit_level` + 审批流 | P5+ | P3 §8 / ProjectBusiness 微调建议4 |
 | 触发条件扩展（发票存疑 / 对公支付 / 跨部门分摊） | 触发规则配置化（P2 `finance_rule` 体系） | P4/P5 | P3 §8 |
 | 幻觉拦截 → 正式评估体系 | 存疑标记 → P4 幻觉检测规则 + 监控大盘 | P4 | P3 §8 / 需求标准⑤③ |
-| **工具幻觉：工具目录为空时 LLM 虚构工具编码** | `TaskPlanner`（规划层校验步骤工具编码）+ P3 `RuleBasedFlowEngine`（按业务绑定工具，不依赖 LLM 自由选） | P3 | P2a 实测：GENERIC 任务财务工具被 `filterTools` 过滤后目录为空，LLM 虚构 `expense_checker` 致任务 FAILED（T202608152311580979）；REIMBURSEMENT 有 `amount_verify` 不受影响 |
+| **工具幻觉：工具目录为空时 LLM 虚构工具编码** | `TaskPlanner`（规划层校验步骤工具编码）+ P3 `RuleBasedFlowEngine`（按业务绑定工具，不依赖 LLM 自由选） | **已完成（P3a）** | P2a 实测：GENERIC 任务财务工具被 `filterTools` 过滤后目录为空，LLM 虚构 `expense_checker` 致任务 FAILED（T202608152311580979）；现已采用规划层剔除 + 报销固定流水线双保险 |
 
 ## 3. 代码遗留 TODO（P1 残留，跨阶段）
 

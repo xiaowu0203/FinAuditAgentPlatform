@@ -66,10 +66,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-card>
+  <el-card class="page-card">
     <template #header>
       <div class="list-header">
-        <span>任务列表</span>
+        <div>
+          <div class="page-title card-title">任务列表</div>
+          <div class="page-subtitle">按状态筛选任务，进行中任务支持自动刷新和续跑</div>
+        </div>
         <div class="filters">
           <el-select
             v-model="query.status"
@@ -131,15 +134,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.list-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.filters {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.card-title {
+  font-size: 16px;
 }
 </style>

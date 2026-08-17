@@ -73,7 +73,7 @@
 | created_by | BIGINT | 提交人用户 ID |
 | created_at / updated_at / deleted | | 索引 `idx_tenant_status(tenant_id, status)`、`idx_created_at` |
 
-**任务状态机**：`PENDING → RUNNING → SUCCESS / FAILED`（预留 `MANUAL_REVIEW` 人工复核）。
+**任务状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。`APPROVAL_PENDING` 表示 P3a 流水线需要人工审批，`REJECTED` 为 P3b 人工驳回。
 
 ## 6. agent_task_step Agent 任务步骤表（断点续跑载体）
 
@@ -86,6 +86,7 @@
 | step_name | VARCHAR(64) | 步骤名称 |
 | step_type | VARCHAR(16) | `LLM`（模型推理）/ `TOOL`（工具调用） |
 | tool_name | VARCHAR(64) | TOOL 步骤的工具编码 |
+| agent_role | VARCHAR(32) | P3a 执行角色：SCHEDULER / DOCUMENT_PARSER / BUDGET_CALCULATOR / RULE_VALIDATOR / RISK_AUDITOR；历史与 GENERIC 步骤可空 |
 | input_params | JSON | 步骤入参 |
 | output | JSON | 步骤输出 |
 | status | VARCHAR(20) | 步骤状态 |
@@ -142,7 +143,7 @@
 | items | JSON | 报销明细 `[{name,amount,amountType,quantity,unitPrice,date,city,hotelDays,hotelAmount,transportAmount,subsidyAmount}]`（P2c 差旅/补贴评估字段均 JSON 内嵌） |
 | created_at / updated_at / deleted | | 索引 `uk_reimb_no`、`idx_tenant_status(tenant_id,status)`、`idx_applicant(tenant_id,applicant_id)`、`idx_task(task_id)` |
 
-**状态机**：`PENDING → RUNNING → SUCCESS / FAILED`（预留 `MANUAL_REVIEW`），与任务状态机对齐。
+**状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。报销单在任务待审批时使用 `MANUAL_REVIEW` 状态，审批工单闭环归 P3b。
 
 ## 10. expense_attachment 报销业务附件表（P2a-重构）
 

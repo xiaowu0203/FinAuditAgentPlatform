@@ -183,10 +183,13 @@ onMounted(() => load())
 </script>
 
 <template>
-  <el-card>
+  <el-card class="page-card">
     <template #header>
       <div class="list-header">
-        <span>财务规则配置</span>
+        <div>
+          <div class="page-title card-title">财务规则配置</div>
+          <div class="page-subtitle">结构化维护审核规则，草稿保存后可按需发布生效</div>
+        </div>
         <div class="filters">
           <el-tooltip content="发布后立即生效，无需重启服务" placement="top">
             <span class="tip">⚡ 改规则不重启</span>
@@ -316,16 +319,8 @@ onMounted(() => load())
 </template>
 
 <style scoped>
-.list-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.filters {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.card-title {
+  font-size: 16px;
 }
 
 .tip {

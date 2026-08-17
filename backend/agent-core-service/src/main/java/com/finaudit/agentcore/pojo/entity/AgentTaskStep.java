@@ -46,6 +46,9 @@ public class AgentTaskStep {
     @Schema(description = "工具名称")
     private String toolName;
 
+    @Schema(description = "执行角色（AgentRole 枚举名，可空；历史与 GENERIC 步骤为空）")
+    private String agentRole;
+
     @TableField(typeHandler = JacksonTypeHandler.class)
     @Schema(description = "步骤入参（JSON）")
     private Map<String, Object> inputParams;
@@ -88,6 +91,7 @@ public class AgentTaskStep {
         step.setStepName(plan.stepName());
         step.setStepType(plan.stepType());
         step.setToolName(plan.toolName());
+        step.setAgentRole(plan.agentRole());
         step.setInputParams(plan.inputParams());
         step.setStatus(StepStatus.PENDING.name());
         step.setRetryCount(0);
