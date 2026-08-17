@@ -26,7 +26,7 @@
 
 | 待办 | 落点 | 说明 | 目标阶段 |
 |---|---|---|---|
-| 分布式锁 | `common-redis-starter`（Redisson 3.47.0 版本已锁未实现） | 需求标准②并发冲突；P3 审批工单并发已提示 | P3（审批并发）/ P5 |
+| 分布式锁 | `common-redis-starter`（Redisson 3.47.0 版本已锁未实现） | P3b 审批工单并发控制尚待实现 | P3b（待实现）/ P5 |
 | 多模型 + Token 统计 + 故障切换 | `common-model-starter` `ChatClientFactory` | DeepSeek 已实现（P1.2），Qwen/Claude 对接、token 统计、备用模型切换缺 | P4（成本评估依赖） |
 
 ## 4. P4 阶段承接（可观测与评估）

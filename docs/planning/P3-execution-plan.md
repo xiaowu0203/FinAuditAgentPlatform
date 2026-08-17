@@ -1,6 +1,6 @@
 # P3 多 Agent 协同与审批工单 · 执行点文档
 
-> 版本: v0.1 ｜ 状态: **规划完成，待开工** ｜ 前置依赖: P2 完成
+> 版本: v0.1 ｜ 状态: **P3a 已完成，P3b/P3c 待实施** ｜ 前置依赖: P2 完成
 > 目标: 三块并进——① 5 类财务 Agent 角色化 + 规则引擎流水线；② 人机协同审批工单闭环（含审计留痕）；③ 安全风控（注入/脱敏/越权/幻觉占位）。
 
 ---
@@ -57,11 +57,13 @@ P3+:  PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING
 - [x] **结果分支**：`ReviewFlowDecider` 确定性判定 `AUTO_PASS` / `NEED_REVIEW`，命中触发条件或 LLM 非 APPROVE 进入待审批
 - [x] **存疑标记**：`RiskAssessment.confidence/uncertain` → 风控存疑强制 `NEED_REVIEW`（P4 再建设正式评估体系）
 
+> P3a 当前边界：仅将任务标记为 `APPROVAL_PENDING` 并在任务结果中展示复核原因；`audit_ticket` 工单、审批动作和 `audit_record` 留痕均属于尚未实施的 P3b。
+
 ### P3b 审批工单闭环
 - [ ] **表**：`audit_ticket` + `audit_record`（见 §5）
 - [ ] **工单 Service/Controller**：创建工单（`NEED_REVIEW` → 生成 ticket，任务置 `APPROVAL_PENDING`）+ 审批动作 approve / reject / amend / terminate
 - [ ] **amend 回退重跑**：`adjusted_amount` 写回任务入参 → 流水线重跑（回 RUNNING）→ 结果重新落库 → 再次分支判定
-- [ ] **触发规则配置化**：大额阈值 / 超标 / 风控命中阈值走 P2 `finance_rule` 体系，不写死（TODO：发票存疑/对公/跨部门分摊扩展）。> 前置已就绪：P2c 已落地 `finance_rule` 可视化配置 + Nacos 动态刷新（改规则不重启），P3 触发阈值直接复用 `TenantNacosConfigHelper` 同一套监听/缓存/降级，见 `P2-execution-plan.md` §4 P2c
+- [ ] **触发规则配置化**：P3a 已完成确定性 `AUTO_PASS/NEED_REVIEW` 分支；大额阈值 / 超标 / 风控命中转为工单触发规则属于 P3b，复用 P2 `finance_rule` 体系，不写死（TODO：发票存疑/对公/跨部门分摊扩展）。
 - [ ] **审计留痕**：每次审批动作写 `audit_record`（操作人/前后金额/意见/时间），工单详情可查完整留痕
 - [ ] **前端审批工单页**：工单列表（状态过滤）+ 详情（单据 + OCR + 校验异常点 + 留痕）+ 审批操作按钮；财务角色可见
 
@@ -123,7 +125,7 @@ P3+:  PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING
 | 多级审批链（资金类一级→二级） | `audit_ticket.audit_level` + 审批流 | P5+ |
 | 触发条件扩展（发票存疑/对公/跨部门分摊） | 触发规则配置化 | P4/P5 |
 | 幻觉拦截 → 正式评估体系 | 存疑标记 → P4 幻觉检测规则 + 大盘 | P4 |
-| 工具幻觉：目录为空时 LLM 虚构工具编码 | TaskPlanner 规划层校验 TOOL 步骤编码；RuleBasedFlowEngine 按业务绑定工具集，杜绝 LLM 自由选 | P3 |
+| 工具幻觉：目录为空时 LLM 虚构工具编码 | TaskPlanner 规划层校验 + RuleBasedFlowEngine 按业务绑定工具集 | **P3a 已完成** |
 | 部门实体表（替代 dept_name 字符串） | P2 D7 | P5 |
 
 ## 9. 风险与预案

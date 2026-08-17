@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · Financial Expense Audit Agent Platform
 
-> **Progress: P0 Foundation ✅ ｜ P1 Core Loop ✅ (5-service integration acceptance passed) ｜ P2 Planning** · Details in `docs/`
+> **Progress: P0 Foundation ✅ ｜ P1 Core Loop ✅ (5-service integration acceptance passed) ｜ P2 Reimbursement and audit tools ✅ ｜ P3a Multi-agent roles and rule pipeline ✅ ｜ P3b/P3c planned** · Details in `docs/`
 
 ## Overview
 
@@ -23,11 +23,17 @@ async multi-agent collaboration, layered context governance, approval gateway an
 - **Service contract**: Feign contracts centralized in common-code + common-feign-starter header/token propagation
 - **Minimal frontend**: Vue3 + TypeScript, four pages (login / dashboard / task list / task detail)
 
-### Roadmap (P2+, see `docs/planning/future-roadmap.md`)
+### Delivered (P3a: multi-agent roles and rule pipeline)
 
-- **P2** Reimbursement loop (image upload + MinIO), four audit tools (OCR / budget / rules / duplicate detection), visual financial-rule configuration
-- **P3** Multi-agent pipeline (rule-engine driven) + approval tickets + human-in-the-loop audit trail
-- **P4** RAG enterprise knowledge base (Milvus), monitoring dashboard & quantitative evaluation
+- Five financial agent roles: document parsing, budget calculation, rule validation, risk auditing, and scheduling
+- `REIMBURSEMENT` tasks use a deterministic rule-based pipeline and return `AUTO_PASS` or `NEED_REVIEW` with review reasons
+- `APPROVAL_PENDING` currently marks manual review only; approval tickets, approval actions, and audit records belong to P3b
+
+### Roadmap (P3b/P3c+, see `docs/planning/future-roadmap.md`)
+
+- **P3b** Approval ticket workflow (tickets, approval actions, amend-and-rerun, audit trail)
+- **P3c** Security controls (prompt-injection blocking, output masking, tool authorization)
+- **P4** RAG enterprise knowledge base (Milvus), monitoring dashboard, and quantitative evaluation
 
 ## Tech Stack
 

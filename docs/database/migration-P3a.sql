@@ -1,5 +1,5 @@
 -- =====================================================================
--- P3a 增量迁移（仅一次；本机已有 P2c 数据时执行，勿与 finaidit-schema.sql 重灌混用）
+-- P3a 增量迁移（仅一次；本机已有 P2c 数据时执行，勿与 finaudit-schema.sql 重灌混用）
 -- 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
 -- 执行: mysql -uroot -p < docs/database/migration-P3a.sql
 -- 注意: MySQL 5.7 的 ALTER ADD COLUMN 不支持 IF NOT EXISTS，

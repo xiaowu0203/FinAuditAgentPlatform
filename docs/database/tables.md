@@ -68,12 +68,12 @@
 | status | VARCHAR(20) | 任务状态，见下方状态机 |
 | total_steps | INT | 总步骤数 |
 | finished_steps | INT | 已完成步骤数 |
-| result | JSON | 最终结果（汇总 JSON） |
+| result | JSON | 最终结果（P3a 汇总 JSON；REIMBURSEMENT 可含 `steps`、`flowBranch`（`AUTO_PASS`/`NEED_REVIEW`）及 `reviewReasons`） |
 | error_msg | VARCHAR(1024) | 失败原因 |
 | created_by | BIGINT | 提交人用户 ID |
 | created_at / updated_at / deleted | | 索引 `idx_tenant_status(tenant_id, status)`、`idx_created_at` |
 
-**任务状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。`APPROVAL_PENDING` 表示 P3a 流水线需要人工审批，`REJECTED` 为 P3b 人工驳回。
+**任务状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。P3a 的 `APPROVAL_PENDING` 仅表示流水线判定需要人工复核并保存复核原因，尚未生成审批工单；`REJECTED` 为 P3b 审批动作预留状态。
 
 ## 6. agent_task_step Agent 任务步骤表（断点续跑载体）
 
@@ -136,14 +136,14 @@
 | applicant_id | BIGINT | 申请人用户 ID（来源 `X-User-Id`） |
 | dept_name | VARCHAR(64) | 部门（D6：先字符串，独立部门表后置） |
 | total_amount | DECIMAL(12,2) | 申报总金额（服务端按明细求和，不信任客户端） |
-| task_id | BIGINT | 关联 `agent_task.id`（提交后经 Feign 反写） |
+| task_id | BIGINT | 关联 `agent_task.id`（agent-core 服务内同事务创建任务并回填） |
 | status | VARCHAR(20) | 审核状态，对齐任务状态机 |
 | claim_date | DATE | 报销日期 |
 | remark | VARCHAR(512) | 备注 |
 | items | JSON | 报销明细 `[{name,amount,amountType,quantity,unitPrice,date,city,hotelDays,hotelAmount,transportAmount,subsidyAmount}]`（P2c 差旅/补贴评估字段均 JSON 内嵌） |
 | created_at / updated_at / deleted | | 索引 `uk_reimb_no`、`idx_tenant_status(tenant_id,status)`、`idx_applicant(tenant_id,applicant_id)`、`idx_task(task_id)` |
 
-**状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。报销单在任务待审批时使用 `MANUAL_REVIEW` 状态，审批工单闭环归 P3b。
+**状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。任务进入 P3a `APPROVAL_PENDING` 时，报销单同步为 `MANUAL_REVIEW`；这只是待人工复核映射，审批工单、审批动作和完整留痕归 P3b。
 
 ## 10. expense_attachment 报销业务附件表（P2a-重构）
 

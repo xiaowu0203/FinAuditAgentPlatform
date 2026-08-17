@@ -1,9 +1,9 @@
 -- =====================================================================
 -- FinAuditAgentPlatform 数据库初始化脚本
--- 版本: P2b（审核工具做厚：budget/finance_rule 表 + tool_registry 加 scenario/cacheable） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
+-- 版本: P3a（多 Agent 角色化与规则流水线；P3b 审批工单表尚未加入） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
 -- 说明: 可直接整体执行；DROP TABLE IF EXISTS 保证幂等（会清空重灌）。
 --       本机执行: mysql -uroot -p < docs/database/finaudit-schema.sql
---       已有数据的环境只跑增量: mysql -uroot -p < docs/database/migration-P2b.sql
+--       已有数据的环境只跑增量: mysql -uroot -p < docs/database/migration-P3a.sql
 -- =====================================================================
 
 CREATE DATABASE IF NOT EXISTS finaudit DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -92,7 +92,8 @@ CREATE TABLE sys_user_role (
 
 -- ---------------------------------------------------------------------
 -- 5. Agent 任务表（任务持久化 + 状态机载体）
---    状态机: PENDING -> RUNNING -> SUCCESS / FAILED（预留 MANUAL_REVIEW）
+--    状态机: PENDING -> RUNNING -> SUCCESS / FAILED / APPROVAL_PENDING / REJECTED
+--    P3a 的 APPROVAL_PENDING 仅表示待人工复核；审批工单与审计记录属于 P3b
 -- ---------------------------------------------------------------------
 CREATE TABLE agent_task (
     id            BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -185,7 +186,8 @@ CREATE TABLE tool_execution_log (
 
 -- ---------------------------------------------------------------------
 -- 9. 报销单表（P2a 单据闭环）
---    status 对齐任务状态机: PENDING -> RUNNING -> SUCCESS / FAILED（预留 MANUAL_REVIEW）
+--    status 对齐任务状态机: PENDING -> RUNNING -> SUCCESS / FAILED / APPROVAL_PENDING / REJECTED
+--    P3a 进入 APPROVAL_PENDING 时，报销单展示 MANUAL_REVIEW；审批工单闭环属于 P3b
 --    items 存提交明细，仅作存储不参与 WHERE 过滤（MySQL 5.7 JSON 检索限制）
 -- ---------------------------------------------------------------------
 CREATE TABLE expense_reimbursement (
@@ -256,7 +258,7 @@ CREATE TABLE file_record (
 
 -- ---------------------------------------------------------------------
 -- 12. 部门预算表（P2b 预算核算工具 budget_query）
---    period 预算周期 YYYY-MM；used_amount 审核通过后累加（P3 审批流承接）
+--    period 预算周期 YYYY-MM；P3b 审批通过后 used_amount 累加（待实现）
 -- ---------------------------------------------------------------------
 CREATE TABLE budget (
     id           BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',

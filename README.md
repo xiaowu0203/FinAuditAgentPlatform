@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · 财务费用智能审核 Agent 平台
 
-> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅（P2a 单据闭环 + P2b 审核工具做厚 + P2c 财务规则配置全部落地）** · 详细文档见 `docs/`
+> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b/P3c 规划中** · 详细文档见 `docs/`
 
 ## 项目简介
 
@@ -26,9 +26,16 @@
 - **P2b 审核工具做厚 ✅**：OCR / 预算查询 / 规则校验 / 重复报销检测四类工具（金额全 Decimal），工具注册 + JSON Schema 校验，报销闭环两轮验证通过
 - **P2c 财务规则配置 ✅**：`finance_rule` 表 + 配置页 + Nacos 动态刷新（`TenantNacosConfigHelper` 监听 + 缓存 TTL + DB 降级），改规则不发布服务即时生效；同租户同类型唯一约束
 
-### 规划中（P3+，见 `docs/planning/future-roadmap.md`）
+### 已落地（P3a 多 Agent 角色化与规则流水线）
 
-- **P3** 多 Agent 协同流水线（规则引擎驱动）+ 审批工单 + 人机协同审计留痕
+- 五类财务 Agent 角色：文档解析、预算核算、规则校验、风控审计、审批调度
+- `REIMBURSEMENT` 任务使用固定规则流水线，输出 `AUTO_PASS` / `NEED_REVIEW` 分支及复核原因
+- `APPROVAL_PENDING` 仅表示待人工复核；审批工单、审批动作和审计留痕属于后续 P3b
+
+### 规划中（P3b/P3c+，见 `docs/planning/future-roadmap.md`）
+
+- **P3b** 审批工单闭环（工单、审批动作、改金额回退重跑、审计留痕）
+- **P3c** 安全风控（Prompt 注入拦截、输出脱敏、工具越权校验）
 - **P4** RAG 企业知识库（Milvus）、监控大盘与量化评估
 
 ## 技术栈

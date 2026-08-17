@@ -37,7 +37,7 @@
 
 ## GET /api/v1/tasks/{id} — 任务详情
 
-`data` 同提交响应；`status` 见状态机（`PENDING/RUNNING/SUCCESS/FAILED/APPROVAL_PENDING/REJECTED`），`result.steps` 为各步骤执行结果汇总；P3a REIMBURSEMENT 任务的 `result` 还包含 `flowBranch`（`AUTO_PASS`/`NEED_REVIEW`）与 `reviewReasons`。
+`data` 同提交响应；`status` 见状态机（`PENDING/RUNNING/SUCCESS/FAILED/APPROVAL_PENDING/REJECTED`），`result.steps` 为各步骤执行结果汇总；P3a REIMBURSEMENT 任务的 `result` 还包含 `flowBranch`（`AUTO_PASS`/`NEED_REVIEW`）与 `reviewReasons`。`NEED_REVIEW` 当前只会将任务置为 `APPROVAL_PENDING` 并展示复核原因；当前未提供 `/api/v1/audit/tickets/**`、approve/reject/amend/terminate 或审计记录接口，这些属于 P3b。
 
 ## GET /api/v1/tasks/{id}/steps — 步骤明细
 
@@ -51,9 +51,9 @@
 } ] }
 ```
 
-## GET /api/v1/tasks — 分页查询
+`GET /api/v1/tasks/{id}/steps` 返回的 `agentRole` 标识 P3a 角色：`DOCUMENT_PARSER` 绑定 `ocr_extract`、`BUDGET_CALCULATOR` 绑定 `budget_query`、`RULE_VALIDATOR` 绑定 `rule_check/amount_verify`、`RISK_AUDITOR` 绑定 `duplicate_check`，`SCHEDULER` 负责汇总。当前仅 REIMBURSEMENT 使用固定流水线，GENERIC 仍使用 TaskPlanner。风控结果可包含 `riskLevel`、`confidence`、`uncertain`、`riskPoints`；存疑会进入 `NEED_REVIEW`。
 
-Query 参数：`pageNum`（默认 1）、`pageSize`（默认 10）、`status`（可选，如 `SUCCESS`/`FAILED`）。
+## GET /api/v1/tasks — 分页查询`pageNum`（默认 1）、`pageSize`（默认 10）、`status`（可选，如 `SUCCESS`/`FAILED`）。
 
 响应 `data` 为 MyBatis-Plus `Page`：
 
