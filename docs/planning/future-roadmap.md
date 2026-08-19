@@ -21,12 +21,13 @@
 | 触发条件扩展（发票存疑 / 对公支付 / 跨部门分摊） | 触发规则配置化（P2 `finance_rule` 体系） | P4/P5 | P3 §8 |
 | 幻觉拦截 → 正式评估体系 | 存疑标记 → P4 幻觉检测规则 + 监控大盘 | P4 | P3 §8 / 需求标准⑤③ |
 | **工具幻觉：工具目录为空时 LLM 虚构工具编码** | `TaskPlanner`（规划层校验步骤工具编码）+ P3 `RuleBasedFlowEngine`（按业务绑定工具，不依赖 LLM 自由选） | **已完成（P3a）** | P2a 实测：GENERIC 任务财务工具被 `filterTools` 过滤后目录为空，LLM 虚构 `expense_checker` 致任务 FAILED（T202608152311580979）；现已采用规划层剔除 + 报销固定流水线双保险 |
+| 废单查看当时票据 | `ReimbursementService.markCancelledByTaskId` / `toDetail`（报销单新增 `attachments_snapshot` JSON 列后置） | P4/P5 | 评审 TODO：作废解绑后废单详情附件区为空，历史票据引用仅存 audit_record 快照；候选「作废时持久附件引用快照 → 废单详情按快照重建 VO」，勿回改解绑语义（锁死 file_record 复用），详见代码注释 |
 
 ## 3. 代码遗留 TODO（P1 残留，跨阶段）
 
 | 待办 | 落点 | 说明 | 目标阶段 |
 |---|---|---|---|
-| 分布式锁 | `common-redis-starter`（Redisson 3.47.0 版本已锁未实现） | P3b 审批工单并发控制尚待实现 | P3b（待实现）/ P5 |
+| 分布式锁 | `common-redis-starter` `DistributedLockTemplate`（Redisson 3.47.0） | **已完成（P3b）**：审批工单动作并发控制 `audit:ticket:{id}`，锁在事务提交后释放（`executeInTx`）；锁 key 前缀 `finaudit:lock:` | P3b（已完成）/ P5 拓展其他场景 |
 | 多模型 + Token 统计 + 故障切换 | `common-model-starter` `ChatClientFactory` | DeepSeek 已实现（P1.2），Qwen/Claude 对接、token 统计、备用模型切换缺 | P4（成本评估依赖） |
 
 ## 4. P4 阶段承接（可观测与评估）

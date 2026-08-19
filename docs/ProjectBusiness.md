@@ -112,7 +112,7 @@
 解决方案：
 
 1. 后台可视化配置财务审核规则（差旅标准、限额、时效），存储 Nacos 动态刷新，无需发布服务；✅ **P2c 已落地**（2026-08-16，四类规则结构化配置 + 发布 Nacos 动态刷新 + 前端 `/rules` 配置页，见 `P2-execution-plan.md` §4 P2c）
-2. 规则变更记录日志，支持审计追溯；审批动作的 `audit_record` 留痕属于 P3b，当前尚未实现。
+2. 规则变更记录日志，支持审计追溯；✅ **P3b 已落地**：审批动作的 `audit_record` 留痕（append-only，含 before/after 数据快照）。
 3. 规则校验 Agent 自动加载最新规则，无需重启服务；✅ **P2c 已落地**（`rule_check` 经 `TenantNacosConfigHelper` 监听 + 缓存 TTL 即时生效，Nacos 无配置降级 DB）
 
 #### 短板 3：多租户企业财务数据隔离要求极高
@@ -121,7 +121,7 @@
 
 数据库设计采用**租户 ID 逻辑隔离**，所有单据、预算、知识库表强制携带 tenant_id，SQL 统一拦截加租户条件，杜绝跨租户数据泄露，满足企业财务合规要求。
 
-## 二、财务审核 Agent 业务流程（P2/P3a 当前实现，P3b 审批闭环待实现）
+## 二、财务审核 Agent 业务流程（P2/P3a/P3b 当前实现，P3c 待实施）
 
 1. **单据提交**：员工前端上传发票、报销单图片，填写基础报销信息，提交任务
 
@@ -142,13 +142,61 @@
     - 全合规小额单据：流水线输出 `AUTO_PASS`，任务完成
     - 存在异常 / 大额 / 风控存疑：输出 `NEED_REVIEW`，任务置 `APPROVAL_PENDING` 并展示复核原因；审批工单生成属于 P3b
 
-5. **人机协同审核（P3b 规划）**
+5. **人机协同审核（P3b 已实现）**
 
-   财务人员查看单据、Agent 校验异常点，可通过 / 驳回 / 修改金额 / 补充备注；审批动作与回退重跑尚未实现。
+   任务命中复核条件 → 生成审批工单（任务置 `APPROVAL_PENDING`）；**提交人**在工单 `PENDING`/`REJECTED` 时可全量改明细（标题/部门只读）后同单重跑（resubmit，上限 3 次）；财务可 通过 / 驳回 / 终止，并处理撤销申请（同意作废 / 拒绝恢复）；每次动作留痕含前后数据快照；**普通用户可在审批工单页只读查看本人工单**（createdBy 过滤，无审批操作）。
 
-6. **流程收尾（P3b 规划）**
+6. **流程收尾（P3b 已实现）**
 
-   审批完成后同步单据状态与预算数据，审批操作日志与审计记录归档；当前 P3a 仅持久化任务/步骤执行结果。
+   审批完成同步单据状态（SUCCESS / FAILED / CANCELLED）与审计留痕归档（`audit_record` append-only，含 before/after 数据快照）。
+
+7. **审批工单完整执行路径（分角色视角，P3b 已实现）**
+
+   > 三层 1:1 联动：报销单（`expense_reimbursement`）↔ 审核任务（`agent_task`）↔ 审批工单（`audit_ticket`）；工单生成后流转以工单状态为准。终态任务（SUCCESS/FAILED/REJECTED/CANCELLED）不可 resume，CANCELLED 的迟到工具结果丢弃。
+
+   **① 普通用户（提交人）视角**
+
+   起点：`POST /api/v1/reimbursements` 提交报销单 → 流水线自动审核。
+   - `AUTO_PASS`（全合规小额）：报销单 `SUCCESS`，无工单，流程结束。
+   - `NEED_REVIEW`（大额/超标/风控存疑）：生成工单 `PENDING`（SUBMIT 留痕），进入人工环节。
+
+   工单 `PENDING`（待审批），二选一：
+
+   | 动作 | 接口（基址 `/api/v1/reimbursements/{id}`） | 约束 | 结果 |
+   |---|---|---|---|
+   | 撤回 | `POST /withdraw` | 仅 PENDING、本人 | 工单 WITHDRAWN；任务/报销单 CANCELLED；附件解绑；WITHDRAW 留痕 |
+   | 修改重跑 | `POST /resubmit` | 仅 PENDING/REJECTED、本人、rerun<3、任务非 RUNNING | 工单 AMENDED、rerun+1，任务重跑 |
+
+   修改重跑（title/deptName 服务端锁定只读；明细/总额服务端重算；附件重绑；重建步骤）后三岔：
+   - 重跑 `AUTO_PASS` → 工单自动 APPROVED（AUTO_PASS_COMMENT 留痕），报销单 SUCCESS，闭环结束；
+   - 重跑再命中复核 → 工单复位 PENDING（刷新风险描述，RERUN 留痕）；
+   - 重跑 `FAILED` → 工单复位 PENDING（RERUN_FAILED 留痕，防 AMENDED 死端）。
+
+   工单 `REJECTED`（已驳回）：仅可 修改重跑（同上循环）或只读，不能撤回。
+   工单 `APPROVED`（已通过）：可 `POST /withdraw-request` 申请撤销（仅 APPROVED、本人、幂等）→ 工单 `WITHDRAW_PENDING`：财务同意→WITHDRAWN 作废+附件解绑；财务拒绝→回 APPROVED。
+   工单 `AMENDED`/`WITHDRAW_PENDING`/`WITHDRAWN`/`TERMINATED`：只读。
+   权限：普通用户列表/详情按 createdBy 过滤，仅见本人单据。
+
+   **② 财务（admin/auditor）视角**
+
+   入口：`GET /api/v1/audit/tickets`（财务看本租户全量，可状态过滤）；详情 `GET /{id}`（工单+报销单+完整留痕）、留痕 `GET /{id}/records`。
+
+   `PENDING` 工单三动作（请求头 X-User-Roles 须含 admin/auditor；Redisson 锁 `audit:ticket:{id}` 内重读再判状态）：
+
+   | 动作 | 接口（基址 `/api/v1/audit/tickets/{id}`） | 结果 |
+   |---|---|---|
+   | 通过 | `POST /approve` | 工单 APPROVED；任务 SUCCESS；报销单 SUCCESS；APPROVE 留痕 |
+   | 驳回 | `POST /reject` | 工单 REJECTED；任务 REJECTED；报销单 FAILED；REJECT 留痕（提交人可重跑） |
+   | 终止 | `POST /terminate` | 工单 TERMINATED；任务 REJECTED(errorMsg)；报销单 FAILED；TERMINATE 留痕（硬终止，不可重跑） |
+
+   `WITHDRAW_PENDING` 工单两动作：
+
+   | 动作 | 接口（基址同上） | 结果 |
+   |---|---|---|
+   | 同意撤销 | `POST /withdraw-agree` | 工单 WITHDRAWN；任务/报销单 CANCELLED；附件解绑；WITHDRAW_AGREE 留痕 |
+   | 拒绝撤销 | `POST /withdraw-refuse` | 工单回 APPROVED（业务数据不动）；WITHDRAW_REFUSE 留痕 |
+
+   财务仅可操作 PENDING 与 WITHDRAW_PENDING 两类状态；每次动作追加 audit_record（操作人/前后金额/意见/快照）。
 
 ## 三、补充进原需求文档的专属业务说明（可直接复制）
 

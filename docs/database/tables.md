@@ -73,7 +73,7 @@
 | created_by | BIGINT | 提交人用户 ID |
 | created_at / updated_at / deleted | | 索引 `idx_tenant_status(tenant_id, status)`、`idx_created_at` |
 
-**任务状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。P3a 的 `APPROVAL_PENDING` 仅表示流水线判定需要人工复核并保存复核原因，尚未生成审批工单；`REJECTED` 为 P3b 审批动作预留状态。
+**任务状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。P3b 起 `APPROVAL_PENDING` 已生成审批工单（见 §14）；`REJECTED` 由审批驳回/终止产生（区别于系统 `FAILED`）。
 
 ## 6. agent_task_step Agent 任务步骤表（断点续跑载体）
 
@@ -81,7 +81,7 @@
 |---|---|---|
 | id | BIGINT PK | |
 | tenant_id | BIGINT | |
-| task_id | BIGINT | 任务 ID，UK(task_id, step_no) |
+| task_id | BIGINT | 任务 ID，UK(task_id, step_no, deleted)（含 deleted：重规划软删历史步骤不占唯一名额） |
 | step_no | INT | 步骤序号（从 1 开始） |
 | step_name | VARCHAR(64) | 步骤名称 |
 | step_type | VARCHAR(16) | `LLM`（模型推理）/ `TOOL`（工具调用） |
@@ -92,7 +92,7 @@
 | status | VARCHAR(20) | 步骤状态 |
 | error_msg | VARCHAR(1024) | 失败原因 |
 | retry_count | INT | 重试次数 |
-| created_at / updated_at / deleted | | 索引 `idx_task(task_id)`、`idx_status(status)` |
+| created_at / updated_at / deleted | | `deleted` 为 **BIGINT**（0 未删 / 主键id 已删，配合 uk_task_step）；索引 `idx_task(task_id)`、`idx_status(status)` |
 
 **步骤状态机**：`PENDING → RUNNING → SUCCESS / FAILED`（同任务状态机；FAILED 且 `retry_count < 3` 时允许重试）。
 
@@ -143,7 +143,7 @@
 | items | JSON | 报销明细 `[{name,amount,amountType,quantity,unitPrice,date,city,hotelDays,hotelAmount,transportAmount,subsidyAmount}]`（P2c 差旅/补贴评估字段均 JSON 内嵌） |
 | created_at / updated_at / deleted | | 索引 `uk_reimb_no`、`idx_tenant_status(tenant_id,status)`、`idx_applicant(tenant_id,applicant_id)`、`idx_task(task_id)` |
 
-**状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。任务进入 P3a `APPROVAL_PENDING` 时，报销单同步为 `MANUAL_REVIEW`；这只是待人工复核映射，审批工单、审批动作和完整留痕归 P3b。
+**状态机**：`PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED`。任务进入 `APPROVAL_PENDING` 时，报销单同步为 `MANUAL_REVIEW`；P3b 起审批动作会经审批工单（见 §14/§15）驱动，approve → `SUCCESS`、reject/terminate → `FAILED`（任务侧 `REJECTED`）。
 
 ## 10. expense_attachment 报销业务附件表（P2a-重构）
 
@@ -206,6 +206,64 @@
 | published | TINYINT | 是否已发布 Nacos：1 生效 / 0 草稿 |
 | version | VARCHAR(16) | 规则版本（发布自增） |
 | created_at / updated_at / deleted | | 逻辑删除，规则不物理删除；**deleted=BIGINT**（0 未删 / 主键id 已删）——删除实现必须自定义 `SET deleted=id`，禁用 MP 默认写 1，否则与 `uk_rule_type` 冲突 |
+
+## 14. audit_ticket 审批工单表（P3b 人机协同审批闭环）
+
+> 归属 agent-core。触发：任务流水线判定 `NEED_REVIEW` 时生成（`review_reasons` 复核原因 + `trigger_type` 确定性映射：`OVER_LIMIT` 大额/超标 / `RULE_FAIL` 规则不通过 / `RISK_HIT` 风控命中，`LLM_DECISION` 兜底归 `RISK_HIT`）。工单与任务 **1:1**（`uk_task(tenant_id, task_id)` 唯一键），同单续跑复用同一工单。
+
+**状态机（P3b 工作流重设计）**：
+
+```
+PENDING → APPROVED / REJECTED / TERMINATED / WITHDRAWN / AMENDED
+  ↘ AMENDED(rerunning) →(重跑再次命中复核) PENDING   （reviewReasons/trigger 刷新 + RERUN 留痕）
+                        →(重跑 AUTO_PASS)  APPROVED  （系统留痕 comment=改金额重跑后自动通过）
+                        →(重跑 FAILED)     PENDING   （onRerunFail 复位 + RERUN_FAILED 留痕）
+APPROVED → WITHDRAW_PENDING →(财务同意) WITHDRAWN
+                             →(财务拒绝) APPROVED（原地返回）
+PENDING → WITHDRAWN（提交人撤回，直接生效）
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| task_id | BIGINT | 关联 `agent_task.id`，UNIQUE `uk_task(tenant_id, task_id)`（P3b：同单续跑 1:1，防同任务重复建单竞态） |
+| ticket_no | VARCHAR(64) | 工单编号 `AT-{taskNo}`，UK `uk_ticket_no(tenant_id, ticket_no)` |
+| title | VARCHAR(128) | 任务标题（冗余展示） |
+| trigger_type | VARCHAR(32) | 触发类型（见上；重跑再次命中时刷新） |
+| risk_desc | VARCHAR(512) | 复核原因描述（review_reasons join 截断；重跑再次命中时刷新） |
+| step_no | INT | 触发步骤（预留：决策跨步骤，暂置 NULL） |
+| origin_amount | DECIMAL(12,2) | 申报总额（任务入参 `claimedTotal`） |
+| adjusted_amount | DECIMAL(12,2) | 提交人修改重跑后总额（resubmit 时写，重跑后为最终金额） |
+| status | VARCHAR(20) | `PENDING` / `APPROVED` / `REJECTED` / `AMENDED` / `TERMINATED` / `WITHDRAW_PENDING` / `WITHDRAWN`，索引 `idx_tenant_status(tenant_id,status)` |
+| audit_level | TINYINT | 审批级数，P3 恒 1（预留多级审批 TODO P5+） |
+| rerun_count | INT | 提交人 resubmit 重跑次数，上限 3（P3 §9 防死循环；P3b 起财务不再 amend，计数器共用） |
+| review_reasons | JSON | 复核原因列表（JacksonTypeHandler 映射，仅存储；重跑再次命中时刷新） |
+| auditor_id | BIGINT | 最近处理人用户 ID（财务动作写；提交人 resubmit **不动**，防止申请人 ID 误写为审批人） |
+| audit_comment | VARCHAR(512) | 最近处理意见 |
+| created_by | BIGINT | 申请人用户 ID（任务提交人；resubmit/withdraw/withdrawRequest 权限校验依据） |
+| created_at / updated_at / deleted | | |
+
+## 15. audit_record 审批留痕表（append-only，审计溯源）
+
+> 归属 agent-core。每次动作追加一条（含快照），记录操作人/角色/前后金额/意见/**变更前后数据快照**，不可更新不可删除（仅逻辑删除预留）。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| ticket_id | BIGINT | 工单 ID，索引 `idx_ticket(ticket_id)` |
+| action | VARCHAR(20) | 动作：SUBMIT 建单 / APPROVE 通过 / REJECT 驳回 / AMEND 提交人修改重跑 / TERMINATE 终止 / RERUN 重跑复位 / RERUN_FAILED 重跑失败复位 / WITHDRAW 提交人撤回 / WITHDRAW_REQ 发起撤销申请 / WITHDRAW_AGREE 同意撤销 / WITHDRAW_REFUSE 拒绝撤销 |
+| before_amount | DECIMAL(12,2) | 变更前金额 |
+| after_amount | DECIMAL(12,2) | 变更后金额 |
+| before_data | JSON | 变更前数据快照（`ReimbursementService.buildSnapshot`；首条 SUBMIT 为 NULL） |
+| after_data | JSON | 变更后数据快照（顶层字段 + 明细 + 附件引用，**不含 OSS 路径/预签名 URL**，日期转字符串） |
+| comment | VARCHAR(512) | 操作意见 |
+| operator_id | BIGINT | 操作人用户 ID（系统动作 NULL） |
+| operator_name | VARCHAR(64) | 操作人姓名（系统动作 NULL） |
+| operator_roles | VARCHAR(128) | 操作人当时角色（审计溯源；系统动作/提交人动作为 NULL） |
+| created_at | DATETIME | 操作时间 |
+| deleted | TINYINT | 逻辑删除 |
 
 ## Seed 数据（脚本内置）
 
