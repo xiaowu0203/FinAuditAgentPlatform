@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { getTaskPage, resumeTask } from '@/api/task'
-import { TASK_STATUS_MAP, isActive, reimbIdOf } from '@/utils/task'
+import { TASK_STATUS_MAP, canResume, isActive, reimbIdOf } from '@/utils/task'
 import type { TaskStatus, TaskVO } from '@/types'
 
 const router = useRouter()
@@ -71,7 +71,7 @@ onBeforeUnmount(() => {
       <div class="list-header">
         <div>
           <div class="page-title card-title">任务列表</div>
-          <div class="page-subtitle">按状态筛选任务，进行中任务支持自动刷新和续跑</div>
+          <div class="page-subtitle">按状态筛选任务，进行中任务自动刷新；仅未启动任务可续跑</div>
         </div>
         <div class="filters">
           <el-select
@@ -112,7 +112,7 @@ onBeforeUnmount(() => {
           >
             报销单
           </el-button>
-          <el-button v-if="isActive(row.status)" link type="warning" size="small" @click="handleResume(row)">
+          <el-button v-if="canResume(row.status)" link type="warning" size="small" @click="handleResume(row)">
             续跑
           </el-button>
         </template>

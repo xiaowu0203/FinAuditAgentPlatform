@@ -22,11 +22,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * 审核数据接口（P2b 工具-facing 端点，/api/v1/audit/**）。
- * <p>复用同一批对外接口（Feign 直连，不拆 /internal）：OCR 结果回写 / 预算查询 / 规则校验 / 重复检测。
- * 安全注记：这些端点按租户隔离但未按用户收窄（工具用 reimbId 直取），P2 可接受，P5 加角色校验。</p>
- */
 @Tag(name = "审核数据", description = "工具-facing 审核数据端点（P2b）")
 @RestController
 @RequestMapping("/api/v1/audit")

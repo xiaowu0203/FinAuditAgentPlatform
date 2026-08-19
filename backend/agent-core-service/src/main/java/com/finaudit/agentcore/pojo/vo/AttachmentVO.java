@@ -5,6 +5,8 @@ import com.finaudit.starter.web.feign.dto.FileRecordVO;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
+import java.util.Map;
+
 /**
  * 报销附件响应（业务字段 + 经 file-service 联取的元数据 + 预签名 URL）。
  */
@@ -35,6 +37,9 @@ public class AttachmentVO {
     @Schema(description = "OCR状态")
     private String ocrStatus;
 
+    @Schema(description = "OCR 抽取字段（JSON；P3b 工单详情对照展示，无 OCR 为 null）")
+    private Map<String, Object> ocrResult;
+
     @Schema(description = "预签名预览 URL（默认有效期）")
     private String url;
 
@@ -49,6 +54,7 @@ public class AttachmentVO {
         vo.setFileRecordId(a.getFileRecordId());
         vo.setFileType(a.getFileType());
         vo.setOcrStatus(a.getOcrStatus());
+        vo.setOcrResult(a.getOcrResult());
         vo.setFileName(file == null ? null : file.fileName());
         vo.setObjectName(file == null ? null : file.objectName());
         vo.setUrl(url);

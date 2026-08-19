@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Back, Refresh } from '@element-plus/icons-vue'
 import { getTaskDetail, getTaskSteps, resumeTask } from '@/api/task'
-import { TASK_STATUS_MAP, AGENT_ROLE_MAP, isActive, reimbIdOf } from '@/utils/task'
+import { TASK_STATUS_MAP, AGENT_ROLE_MAP, canResume, isActive, isFinanceRole, reimbIdOf } from '@/utils/task'
+import { useAuthStore } from '@/stores/auth'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import type { TaskStatus, TaskStepVO, TaskVO } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const taskId = Number(route.params.id)
+const isFinance = computed(() => isFinanceRole(auth.user?.roles))
 
 const loading = ref(false)
 const stepsLoading = ref(false)
@@ -106,8 +109,16 @@ onBeforeUnmount(() => {
             >
               查看报销单
             </el-button>
+            <!-- 任意用户可见（申请人本人工单只读查看）；财务角色跳转后执行审批，故 danger 强调 -->
             <el-button
-              v-if="task && isActive(task.status)"
+              v-if="task?.status === 'APPROVAL_PENDING'"
+              :type="isFinance ? 'danger' : 'primary'"
+              @click="router.push(`/audits?taskId=${task!.id}`)"
+            >
+              查看审批工单
+            </el-button>
+            <el-button
+              v-if="task && canResume(task.status)"
               type="warning"
               :icon="Refresh"
               @click="handleResume"

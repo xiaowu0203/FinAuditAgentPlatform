@@ -77,8 +77,8 @@ public class AgentTaskStep {
     private LocalDateTime updatedAt;
 
     @TableLogic
-    @Schema(description = "逻辑删除标记（0 未删 / 1 已删）")
-    private Integer deleted;
+    @Schema(description = "逻辑删除标记（0 未删 / 主键id 已删；配合 uk_task_step 含 deleted，重规划历史步骤保留且不占唯一名额）")
+    private Long deleted;
 
     /**
      * 由规划步骤构造待执行步骤（初始状态 PENDING，重试 0 次）。

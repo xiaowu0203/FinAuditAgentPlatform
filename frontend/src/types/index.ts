@@ -37,8 +37,8 @@ export interface LoginResult {
   user: UserVO
 }
 
-/** 任务状态（状态机：PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED） */
-export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'APPROVAL_PENDING' | 'REJECTED'
+/** 任务状态（状态机：PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / REJECTED / CANCELLED） */
+export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'APPROVAL_PENDING' | 'REJECTED' | 'CANCELLED'
 
 /** 任务 */
 export interface TaskVO {
@@ -134,6 +134,8 @@ export interface AttachmentVO {
   objectName: string | null
   fileType: string
   ocrStatus: string
+  /** OCR 抽取字段（P3b 工单详情对照展示；无 OCR 为 null） */
+  ocrResult: Record<string, unknown> | null
   url: string
 }
 
@@ -192,4 +194,81 @@ export interface RuleSaveRequest {
   ruleType: RuleType
   ruleConfig: Record<string, unknown>
   enabled?: number
+}
+
+/** 审批工单状态（P3b 状态机：PENDING → APPROVED / REJECTED / AMENDED / TERMINATED / WITHDRAWN；APPROVED → WITHDRAW_PENDING 撤销待审） */
+export type AuditTicketStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'AMENDED' | 'TERMINATED' | 'WITHDRAW_PENDING' | 'WITHDRAWN'
+
+/** 审批动作（留痕 action） */
+export type AuditAction =
+  | 'SUBMIT'
+  | 'APPROVE'
+  | 'REJECT'
+  | 'AMEND'
+  | 'TERMINATE'
+  | 'RERUN'
+  | 'RERUN_FAILED'
+  | 'WITHDRAW'
+  | 'WITHDRAW_REQ'
+  | 'WITHDRAW_AGREE'
+  | 'WITHDRAW_REFUSE'
+
+/** 工单触发类型（P3b 确定性映射：OVER_LIMIT > RULE_FAIL > RISK_HIT） */
+export type AuditTriggerType = 'OVER_LIMIT' | 'RULE_FAIL' | 'RISK_HIT'
+
+/** 审批工单（列表 / 详情基础信息） */
+export interface AuditTicketVO {
+  id: number
+  tenantId: number
+  taskId: number
+  ticketNo: string
+  title: string
+  triggerType: AuditTriggerType
+  riskDesc: string
+  originAmount: number
+  adjustedAmount: number | null
+  status: AuditTicketStatus
+  rerunCount: number
+  reviewReasons: string[] | null
+  auditorId: number | null
+  auditComment: string | null
+  createdAt: string
+}
+
+/** 审批留痕（append-only，审计溯源；P3b 起携带变更前后数据快照） */
+export interface AuditRecordVO {
+  id: number
+  action: AuditAction
+  beforeAmount: number | null
+  afterAmount: number | null
+  comment: string | null
+  operatorId: number | null
+  operatorName: string | null
+  operatorRoles: string | null
+  /** 变更前数据快照（首条 SUBMIT 为 null；无预签名 URL/OSS 路径） */
+  beforeData: Record<string, unknown> | null
+  /** 变更后数据快照（每次动作落一条，审批时点数据现场） */
+  afterData: Record<string, unknown> | null
+  createdAt: string
+}
+
+/** 工单详情（工单 + 关联报销单详情 + 留痕时间线） */
+export interface AuditTicketDetailVO {
+  ticket: AuditTicketVO
+  reimbursement: ReimbursementDetailVO | null
+  records: AuditRecordVO[]
+}
+
+/** 审批动作请求（approve/reject/terminate/withdraw-agree|refuse 共用；仅意见） */
+export interface AuditActionRequest {
+  comment?: string
+}
+
+/** 修改明细重跑请求（提交人 resubmit；标题/部门服务端沿用库内旧值，请求体不携带） */
+export interface ReimbursementResubmitRequest {
+  expenseType: ExpenseType
+  claimDate: string
+  remark?: string
+  items: ReimbursementItemVO[]
+  fileRecordIds: number[]
 }

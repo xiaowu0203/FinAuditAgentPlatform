@@ -6,7 +6,7 @@ import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
 import com.finaudit.agentcore.pojo.vo.TaskVO;
 import com.finaudit.agentcore.service.AgentOrchestrator;
 import com.finaudit.agentcore.service.AgentTaskService;
-import com.finaudit.agentcore.service.AgentTaskStepService;
+import com.finaudit.agentcore.util.FinanceRoles;
 import com.finaudit.starter.web.result.R;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -29,13 +29,10 @@ import java.util.List;
 public class AgentTaskController {
 
     private final AgentTaskService taskService;
-    private final AgentTaskStepService stepService;
     private final AgentOrchestrator orchestrator;
 
-    public AgentTaskController(AgentTaskService taskService, AgentTaskStepService stepService,
-                               AgentOrchestrator orchestrator) {
+    public AgentTaskController(AgentTaskService taskService, AgentOrchestrator orchestrator) {
         this.taskService = taskService;
-        this.stepService = stepService;
         this.orchestrator = orchestrator;
     }
 
@@ -48,24 +45,30 @@ public class AgentTaskController {
         return R.success(taskService.createTask(request, tenantId, userId));
     }
 
-    @Operation(summary = "任务详情", description = "按任务 ID 查询任务状态与概要信息")
+    @Operation(summary = "任务详情", description = "按任务 ID 查询任务状态与概要信息；非财务角色仅本人可查")
     @GetMapping("/{id}")
-    public R<TaskVO> detail(@PathVariable Long id) {
-        return R.success(taskService.getTask(id));
+    public R<TaskVO> detail(@PathVariable Long id,
+                            @RequestHeader(value = "X-User-Id", required = false) Long userId,
+                            @RequestHeader(value = "X-User-Roles", required = false) String roles) {
+        return R.success(taskService.getTask(id, userId, FinanceRoles.isFinance(roles)));
     }
 
-    @Operation(summary = "任务步骤", description = "查询任务已生成/已执行的步骤列表")
+    @Operation(summary = "任务步骤", description = "查询任务已生成/已执行的步骤列表；非财务角色仅本人任务")
     @GetMapping("/{id}/steps")
-    public R<List<StepVO>> steps(@PathVariable Long id) {
-        return R.success(stepService.listVoByTask(id));
+    public R<List<StepVO>> steps(@PathVariable Long id,
+                                 @RequestHeader(value = "X-User-Id", required = false) Long userId,
+                                 @RequestHeader(value = "X-User-Roles", required = false) String roles) {
+        return R.success(taskService.listSteps(id, userId, FinanceRoles.isFinance(roles)));
     }
 
-    @Operation(summary = "任务分页查询", description = "按状态分页查询任务，status 为空查全部")
+    @Operation(summary = "任务分页查询", description = "按状态分页查询任务，status 为空查全部；非财务角色仅本人创建，finance 看本租户全量")
     @GetMapping
     public R<Page<TaskVO>> page(@RequestParam(defaultValue = "1") int pageNum,
                                 @RequestParam(defaultValue = "10") int pageSize,
-                                @RequestParam(required = false) String status) {
-        return R.success(taskService.pageTask(pageNum, pageSize, status));
+                                @RequestParam(required = false) String status,
+                                @RequestHeader(value = "X-User-Id", required = false) Long userId,
+                                @RequestHeader(value = "X-User-Roles", required = false) String roles) {
+        return R.success(taskService.pageTask(pageNum, pageSize, status, userId, FinanceRoles.isFinance(roles)));
     }
 
     @Operation(summary = "断点续跑", description = "失败任务从失败步骤继续执行")

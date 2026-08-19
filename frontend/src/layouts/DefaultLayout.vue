@@ -13,10 +13,13 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/tasks')) return '/tasks'
   if (route.path.startsWith('/reimbursements')) return '/reimbursements'
   if (route.path.startsWith('/rules')) return '/rules'
+  if (route.path.startsWith('/audits')) return '/audits'
   return '/dashboard'
 })
 const pageTitle = computed(() => (route.meta.title as string | undefined) || '')
 const displayName = computed(() => auth.user?.realName || auth.user?.username || '未登录')
+/** 财务角色（admin/auditor）：仅此类用户可见「审批工单」菜单（路由守卫同规则） */
+const isFinance = computed(() => (auth.user?.roles || []).some((r) => r === 'admin' || r === 'auditor'))
 
 async function handleCommand(command: string) {
   if (command !== 'logout') return
@@ -55,9 +58,14 @@ async function handleCommand(command: string) {
           <el-icon><Tickets /></el-icon>
           <span>报销单</span>
         </el-menu-item>
-        <el-menu-item index="/rules">
+        <el-menu-item v-if="isFinance" index="/rules">
           <el-icon><Setting /></el-icon>
           <span>规则配置</span>
+        </el-menu-item>
+        <!-- 审批工单：所有登录用户可见——申请人只读查看本人工单（后端按 createdBy 过滤），财务角色执行审批操作 -->
+        <el-menu-item index="/audits">
+          <el-icon><Checked /></el-icon>
+          <span>审批工单</span>
         </el-menu-item>
       </el-menu>
       <div class="aside-footer">

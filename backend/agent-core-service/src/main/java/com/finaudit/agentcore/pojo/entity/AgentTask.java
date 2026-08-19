@@ -103,4 +103,12 @@ public class AgentTask {
         return "T" + LocalDateTime.now().format(TASK_NO_FMT)
                 + String.format("%04d", ThreadLocalRandom.current().nextInt(10000));
     }
+
+    /**
+     * 作废回写（提交人撤回 / 财务同意撤销）：置 CANCELLED 并记录原因，供前端展示与 resume 拒绝。
+     */
+    public void applyCancelled(String reason) {
+        this.status = TaskStatus.CANCELLED.name();
+        this.errorMsg = reason;
+    }
 }

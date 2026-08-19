@@ -64,6 +64,8 @@ public class AgentOrchestrator {
     private final AiClient modelClient;
     /** 报销单服务（任务终态回写审核状态，报销域数据访问收敛本服务） */
     private final ReimbursementService reimbursementService;
+    /** 审批工单服务（P3b：NEED_REVIEW 进入审批态 / AUTO_PASS 闭合 AMENDED 工单） */
+    private final AuditTicketService auditTicketService;
 
     /**
      * 构造注入所有依赖组件
@@ -75,11 +77,13 @@ public class AgentOrchestrator {
      * @param eventPublisher MQ事件发布组件
      * @param modelFactory 大模型客户端工厂，获取DeepSeek对话实例
      * @param reimbursementService 报销单服务（终态回写审核状态）
+     * @param auditTicketService 审批工单服务（P3b 审批态进入/闭合）
      */
     public AgentOrchestrator(AgentTaskService taskService, AgentTaskStepService stepService,
                              TaskPlanner planner, RuleBasedFlowEngine flowEngine,
                              ReviewFlowDecider reviewFlowDecider, TaskEventPublisher eventPublisher,
-                             ChatClientFactory modelFactory, ReimbursementService reimbursementService) {
+                             ChatClientFactory modelFactory, ReimbursementService reimbursementService,
+                             AuditTicketService auditTicketService) {
         this.taskService = taskService;
         this.stepService = stepService;
         this.planner = planner;
@@ -88,6 +92,7 @@ public class AgentOrchestrator {
         this.eventPublisher = eventPublisher;
         this.modelClient = modelFactory.getClient(ModelType.DEEPSEEK);
         this.reimbursementService = reimbursementService;
+        this.auditTicketService = auditTicketService;
     }
 
     /**
@@ -289,6 +294,14 @@ public class AgentOrchestrator {
         }
         // 校验任务是否存在，不存在抛出异常
         AgentTask task = taskService.getRequired(msg.taskId());
+        // P3b 防御：任务已作废/已驳回（含终止）时丢弃迟到的 tool.result，防把已终结任务的步骤标 SUCCESS（脏状态）
+        String taskStatus = task.getStatus();
+        if (TaskStatus.CANCELLED.name().equals(taskStatus)
+                || TaskStatus.REJECTED.name().equals(taskStatus)) {
+            log.warn("任务 {} 已终结（{}），丢弃迟到的 tool.result: stepId={}",
+                    msg.taskId(), taskStatus, msg.stepId());
+            return;
+        }
 
         // 若工具执行成功
         if (msg.success()) {
@@ -331,11 +344,13 @@ public class AgentOrchestrator {
     public void resume(Long taskId) {
         // 校验任务是否存在
         AgentTask task = taskService.getRequired(taskId);
-        // 终态任务不允许续跑（SUCCESS/FAILED；P3a 起含 APPROVAL_PENDING 待审批 / REJECTED 人工驳回，等 P3b 审批动作流转）
+        // 终态任务不允许续跑（SUCCESS/FAILED；P3a 起含 APPROVAL_PENDING 待审批 / REJECTED 人工驳回；
+        // P3b 含 CANCELLED 已作废——防对撤回/撤销的作废任务误触发重跑）
         if (TaskStatus.SUCCESS.name().equals(task.getStatus())
                 || TaskStatus.FAILED.name().equals(task.getStatus())
                 || TaskStatus.APPROVAL_PENDING.name().equals(task.getStatus())
-                || TaskStatus.REJECTED.name().equals(task.getStatus())) {
+                || TaskStatus.REJECTED.name().equals(task.getStatus())
+                || TaskStatus.CANCELLED.name().equals(task.getStatus())) {
             throw new BizException(
                     "任务已终结（" + task.getStatus() + "），无需续跑");
         }
@@ -389,13 +404,9 @@ public class AgentOrchestrator {
             result.put("reviewReasons", decision.reviewReasons());
             // 需要人工审核
             if (FlowDecision.NEED_REVIEW.equals(decision.flowBranch())) {
-                // 命中触发条件（大额/超标/风控存疑）或 LLM 结论非通过 → 暂停等人工审批，终审权在人
-                // 将任务状态更新为【待审核】
-                taskService.markApprovalPending(task, result, steps.size());
+                // 流水线判定 NEED_REVIEW 时进入审批态（命中触发条件（大额/超标/风控存疑）或 LLM 结论非通过 → 生成审批工单进入审批态，终审权在人）
+                auditTicketService.enterApproval(task, result, steps.size(), decision.reviewReasons());
                 log.info("任务 {} 命中人工复核分支，原因: {}", task.getTaskNo(), decision.reviewReasons());
-                // TODO(P3b)：此处按 reviewReasons 前缀（OVER_LIMIT/RULE_FAIL/RISK_HIT/LLM_DECISION）生成审批工单，
-                // 审批动作流转：通过→SUCCESS、驳回→REJECTED、改金额→回退流水线重跑
-                syncReimbStatus(task, ReimbursementStatus.MANUAL_REVIEW);
                 return;
             }
             // 更新任务为成功状态
@@ -403,6 +414,8 @@ public class AgentOrchestrator {
             log.info("任务 {} 自动通过（AUTO_PASS），共 {} 步", task.getTaskNo(), steps.size());
             // 报销单审核状态回写
             syncReimbStatus(task, ReimbursementStatus.SUCCESS);
+            // amend 重跑自动通过：闭合 AMENDED 工单（PENDING 不可能任务 SUCCESS，安全）
+            auditTicketService.closeOnAutoPass(task);
             return;
         }
 
@@ -423,6 +436,9 @@ public class AgentOrchestrator {
         log.error("任务 {} 失败: {}", task.getTaskNo(), error);
         // 报销单状态回写【审核失败】
         syncReimbStatus(task, ReimbursementStatus.FAILED);
+        // 提交人修改重跑（AMENDED 工单）失败时复位工单 PENDING + RERUN_FAILED 留痕，
+        // 防工单永久停 AMENDED 变孤儿（财务不能动作、提交人不能再改）
+        auditTicketService.onRerunFail(task);
     }
 
     /**

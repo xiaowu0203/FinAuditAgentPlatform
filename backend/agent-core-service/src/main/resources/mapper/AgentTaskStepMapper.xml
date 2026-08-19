@@ -14,4 +14,11 @@
         </foreach>
     </insert>
 
+    <!-- replan 软删：SET deleted=id 而非 MP 默认 1（uk_task_step 含 deleted，deleted=id 每行唯一，历史步骤不占名额） -->
+    <update id="softDeleteByTaskId">
+        UPDATE agent_task_step
+        SET deleted = id, updated_at = NOW()
+        WHERE tenant_id = #{tenantId} AND task_id = #{taskId} AND deleted = 0
+    </update>
+
 </mapper>

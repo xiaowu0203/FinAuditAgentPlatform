@@ -4,6 +4,7 @@ import com.finaudit.agentcore.config.AdminProperties;
 import com.finaudit.agentcore.pojo.dto.RuleSaveRequest;
 import com.finaudit.agentcore.pojo.vo.RuleVO;
 import com.finaudit.agentcore.service.FinanceRuleService;
+import com.finaudit.agentcore.util.FinanceRoles;
 import com.finaudit.starter.web.exception.BizException;
 import com.finaudit.starter.web.result.R;
 import io.swagger.v3.oas.annotations.Operation;
@@ -20,11 +21,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
-/**
- * 规则配置管理接口（P2c，/api/v1/rules/**）。
- * <p>可视化配置 finance_rule → 发布 Nacos 动态刷新（改规则不重启服务）。鉴权：租户隔离 + 管理员 ID 白名单
- * （{@code finaudit.admin.user-ids}，P2 无 RBAC；P5 换角色校验）。</p>
- */
 @Tag(name = "规则配置", description = "财务规则配置管理端点（P2c）")
 @RestController
 @RequestMapping("/api/v1/rules")
@@ -41,11 +37,11 @@ public class RuleController {
     @Operation(summary = "规则列表", description = "当前租户全部规则（含草稿与已发布，published 标生效状态）")
     @GetMapping
     public R<List<RuleVO>> list(@RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
-                                @RequestHeader(value = "X-User-Id", required = false) Long userId) {
-        // 校验租户ID
+                                @RequestHeader(value = "X-User-Id", required = false) Long userId,
+                                @RequestHeader(value = "X-User-Roles", required = false) String roles) {
+        // 校验租户ID、管理权限
         requireTenant(tenantId);
-        // 校验管理员ID（主要看是否在白名单中）
-        requireAdmin(userId);
+        requireAdmin(userId, roles);
         return R.success(financeRuleService.listAll(tenantId).stream().map(RuleVO::from).toList());
     }
 
@@ -53,9 +49,11 @@ public class RuleController {
     @PostMapping
     public R<RuleVO> save(@Valid @RequestBody RuleSaveRequest request,
                           @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
-                          @RequestHeader(value = "X-User-Id", required = false) Long userId) {
+                          @RequestHeader(value = "X-User-Id", required = false) Long userId,
+                          @RequestHeader(value = "X-User-Roles", required = false) String roles) {
+        // 校验租户ID、管理权限
         requireTenant(tenantId);
-        requireAdmin(userId);
+        requireAdmin(userId, roles);
         return R.success(RuleVO.from(financeRuleService.save(request, tenantId)));
     }
 
@@ -64,9 +62,11 @@ public class RuleController {
     public R<RuleVO> update(@PathVariable("id") Long id,
                             @Valid @RequestBody RuleSaveRequest request,
                             @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
-                            @RequestHeader(value = "X-User-Id", required = false) Long userId) {
+                            @RequestHeader(value = "X-User-Id", required = false) Long userId,
+                            @RequestHeader(value = "X-User-Roles", required = false) String roles) {
+        // 校验租户ID、管理权限
         requireTenant(tenantId);
-        requireAdmin(userId);
+        requireAdmin(userId, roles);
         return R.success(RuleVO.from(financeRuleService.update(id, request, tenantId)));
     }
 
@@ -74,9 +74,11 @@ public class RuleController {
     @PostMapping("/{id}/toggle")
     public R<RuleVO> toggle(@PathVariable("id") Long id,
                             @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
-                            @RequestHeader(value = "X-User-Id", required = false) Long userId) {
+                            @RequestHeader(value = "X-User-Id", required = false) Long userId,
+                            @RequestHeader(value = "X-User-Roles", required = false) String roles) {
+        // 校验租户ID、管理权限
         requireTenant(tenantId);
-        requireAdmin(userId);
+        requireAdmin(userId, roles);
         return R.success(RuleVO.from(financeRuleService.toggle(id, tenantId)));
     }
 
@@ -84,19 +86,33 @@ public class RuleController {
     @PostMapping("/{id}/publish")
     public R<RuleVO> publish(@PathVariable("id") Long id,
                              @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
-                             @RequestHeader(value = "X-User-Id", required = false) Long userId) {
+                             @RequestHeader(value = "X-User-Id", required = false) Long userId,
+                             @RequestHeader(value = "X-User-Roles", required = false) String roles) {
+        // 校验租户ID、管理权限
         requireTenant(tenantId);
-        requireAdmin(userId);
+        requireAdmin(userId, roles);
         return R.success(RuleVO.from(financeRuleService.publish(id, tenantId)));
     }
 
+    /**
+     * 校验租户ID
+     * @param tenantId 租户ID
+     */
     private void requireTenant(Long tenantId) {
         if (tenantId == null) {
             throw new BizException("缺少租户标识 X-Tenant-Id，请通过网关访问");
         }
     }
 
-    private void requireAdmin(Long userId) {
+    /**
+     * 校验管理权限（finance 角色或白名单）
+     * @param userId 用户ID
+     * @param roles 角色列表
+     */
+    private void requireAdmin(Long userId, String roles) {
+        if (FinanceRoles.isFinance(roles)) {
+            return;
+        }
         if (userId == null || !adminProperties.getUserIds().contains(userId)) {
             throw new BizException("无规则配置管理权限");
         }
