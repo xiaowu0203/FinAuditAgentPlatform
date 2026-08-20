@@ -25,8 +25,8 @@
 | 服务 | 端口 | 文档 |
 |---|---|---|
 | `agent-gateway` | 9080 | [网关（路由/鉴权/注入头/401）](./gateway.md) |
-| `agent-core-service` | 9201 | [任务 API + 报销单 API（提交/详情/分页/续跑/修改重跑/撤回/撤销）+ 审批工单 API（分页/详情/审批动作/留痕）+ 规则配置 API（CRUD/启停/发布 Nacos）](./agent-core.md) |
-| `tool-service` | 9202 | [工具 API（列表/注册/调试直调）](./tool-service.md) |
+| `agent-core-service` | 9201 | [任务 API + 报销单 API（提交/详情/分页/续跑/修改重跑/撤回/撤销）+ 审批工单 API（分页/详情/审批动作/留痕）+ 规则配置 API（CRUD/启停/发布 Nacos）+ 审核数据 API（OCR 回写/预算/规则/重复检测 + P3c 越权校验端点）+ 脱敏说明](./agent-core.md) |
+| `tool-service` | 9202 | [工具 API（列表/注册/调试直调；P3c `execute` 统一越权校验）](./tool-service.md) |
 | `tenant-service` | 9203 | [租户/用户/角色/认证 API](./tenant-service.md) |
 | `rag-service` | 9204 | [RAG 语义检索 API（P4 填充，当前空骨架）](./rag-service.md) |
 | `file-service` | 9205 | [文件 API（上传/详情/预览/下载）](./file-service.md) |

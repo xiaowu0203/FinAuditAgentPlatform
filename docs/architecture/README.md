@@ -9,4 +9,4 @@
 
 ## 待补充
 
-总体架构图、微服务拆分图仍待补充；P3a 多 Agent 流程与 P3b 审批工单状态机已在[任务事件驱动编排](./task-orchestration.md)中说明（含审批工单流转整页图 `docs/images/audit-ticket-workflow.png`）。
+总体架构图、微服务拆分图仍待补充；P3a 多 Agent 流程与 P3b 审批工单状态机已在[任务事件驱动编排](./task-orchestration.md)中说明（含审批工单流转整页图 `docs/images/audit-ticket-workflow.png`）。P3c 安全风控（Prompt 注入拦截 → 强制人工、`@Mask` 输出脱敏、工具 execute 统一越权校验）的接入点见 [P3 执行计划](../planning/P3-execution-plan.md) §4.3 与各服务 API 文档。

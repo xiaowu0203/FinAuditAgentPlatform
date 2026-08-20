@@ -215,6 +215,19 @@ reimb:   MANUAL_REVIEW/FAILED/RUNNING + CANCELLED（撤回/撤销同意）
 
 `rerun_count` 全局统一（提交人 resubmit 用同一计数器，上限 3）。重跑失败（`failTask`）自动经 `onRerunFail` 复位 AMENDED 工单，不留孤儿。
 
+## 审核数据 API（P3c 工具防越权新增端点）
+
+工具-facing 审核数据端点（P2b/P3a 已覆盖 `POST /attachments/{fileRecordId}/ocr-result`、`GET /budgets`、`POST /rules/check`、`GET /reimbursements/duplicates`），P3c 工具防越权新增两个只读归属校验端点，供 tool-service `ToolAccessGuard` 调用（`X-Tenant-Id` 头，按当前租户过滤）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/audit/budgets/dept-exists?deptName=` | 校验 `deptName` 是否为当前租户已知部门（budget 表有过该部门即 true；租户无预算记录放行）。`budget_query` 越权校验用 |
+| GET | `/api/v1/audit/reimbursements/{reimbId}/tenant` | 返回该报销单归属 `tenantId`（不存在返回 `data=null`）。`duplicate_check`/`ocr_extract` 校验 reimbId 归属用 |
+
+## 脱敏（P3c 安全风控）
+
+对外 VO 经 common-code `@Mask` 序列化脱敏：**手机号**（tenant-service 用户 VO）、**税号/纳税人识别号**（`AttachmentVO.ocrResult` Map 递归脱敏键 `taxNo`/`SellerRegisterNum` 等）、**审计快照**（`buildSnapshot` 落库存前净化税号键）。**金额永不脱敏**；内部 Feign/MQ DTO 保持明文。
+
 ## 关联
 
 - 网关路由：`/api/v1/audit/**` → `lb://agent-core-service`（P2 已配，复用）

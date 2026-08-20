@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · 财务费用智能审核 Agent 平台
 
-> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 规划中** · 详细文档见 `docs/`
+> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 安全风控 ✅** · 详细文档见 `docs/`
 
 ## 项目简介
 
@@ -46,9 +46,14 @@
 
 > 提交后流水线自动判级：`AUTO_PASS` 直接闭环无工单；`NEED_REVIEW` 生成工单进入人工审批。修改重跑从 `AMENDED` 出发有三去向，其中「再命中 / 失败」都复位 `PENDING`（RERUN / RERUN_FAILED 留痕）。详见 `docs/architecture/task-orchestration.md`。
 
-### 规划中（P3c/P4，见 `docs/planning/future-roadmap.md`）
+### 已落地（P3c 安全风控）
 
-- **P3c** 安全风控（Prompt 注入拦截、输出脱敏、工具越权校验）
+- **Prompt 注入拦截**：common-code `PromptInjectionGuard`（正则 + 可配置规则）在 `AgentOrchestrator.executeLlmStep` 拼接 user 后、调 LLM 前校验；命中**不调 LLM**，合成 `uncertain=true/confidence=0` 的 `RiskAssessment` → `ReviewFlowDecider` 判 `RISK_HIT` → 建审批工单**强制人工**（命中不直接放行）
+- **输出脱敏 `@Mask`**：common-code Jackson 序列化切面，对外 VO 按 `MaskType`（ID_CARD/BANK_CARD/TAX_NO/PHONE）脱敏；手机号（租户用户 VO）、税号（`AttachmentVO.ocrResult` Map）、审计快照敏感键均生效，**金额永不脱敏**；内部链路明文
+- **工具防越权**：tool-service `ToolAccessGuard` 在 `execute` 统一入口校验租户一致性 + 部门校验（空白拒绝，未知部门告警不阻断）+ 单据归属（`duplicate_check`/`ocr_extract`），覆盖 HTTP 直调与 MQ
+
+### 规划中（P4，见 `docs/planning/future-roadmap.md`）
+
 - **P4** RAG 企业知识库（Milvus）、监控大盘与量化评估
 
 ## 技术栈
@@ -66,7 +71,7 @@ JDK 21 · Spring Boot 3.5.0 · Spring Cloud 2025.0.0 · Spring Cloud Alibaba 202
 | P2c 财务规则配置 | ✅ 完成 | finance_rule 表 + 配置页 + Nacos 动态刷新（`TenantNacosConfigHelper` 监听 + 缓存 TTL + DB 降级），改规则不重启即时生效；同租户同类型唯一约束 |
 | P3a 多 Agent 角色化 | ✅ 完成 | 五类财务角色 + `RuleBasedFlowEngine` 固定流水线 + `ReviewFlowDecider` 输出 `AUTO_PASS`/`NEED_REVIEW` |
 | P3b 审批工单闭环 | ✅ 完成 | 工单状态机 + `audit_record` 留痕 + 财务审批 + 提交人 resubmit 修改重跑 + 撤回/撤销 + 可见性统一 + 前端审批工单页 |
-| P3c 安全风控 | ⬜ 规划中 | Prompt 注入拦截 / 输出脱敏 / 工具越权校验 |
+| P3c 安全风控 | ✅ 完成 | Prompt 注入拦截（命中→强制人工工单） / `@Mask` 输出脱敏（税号/手机号，金额明文） / 工具 execute 统一越权校验 |
 
 ## 快速启动
 

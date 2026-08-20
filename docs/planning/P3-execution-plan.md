@@ -1,6 +1,6 @@
 # P3 多 Agent 协同与审批工单 · 执行点文档
 
-> 版本: v0.3 ｜ 状态: **P3a/P3b（含 P3b 工作流重设计）已完成，P3c 待实施** ｜ 前置依赖: P2 完成
+> 版本: v0.4 ｜ 状态: **P3a/P3b/P3c 均已完成** ｜ 前置依赖: P2 完成
 > 目标: 三块并进——① 5 类财务 Agent 角色化 + 规则引擎流水线；② 人机协同审批工单闭环（含审计留痕）；③ 安全风控（注入/脱敏/越权/幻觉占位）。
 
 ---
@@ -73,10 +73,10 @@ P3+:  PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / CANCELLED
 - [x] **前端审批工单页**：`views/audit/list.vue` + `detail.vue`（工单列表状态过滤 + 详情单据/OCR/校验异常点/留痕时间线 + 审批操作按钮 + 快照折叠展开）；**菜单/路由所有登录用户可见、审批操作按钮仅财务角色**（普通用户只读查看本人，后端 owner-read + `action()` 财务角色校验双重兜底）；轮询覆盖 `WITHDRAW_PENDING`；`views/reimbursement/detail.vue` + `edit.vue`（提交人修改重跑/撤回/发起撤销按钮 + 全量可改表单，title/dept 只读）
 
 ### P3c 安全风控
-- [ ] **`PromptInjectionGuard`**（common-code）：注入检测工具（关键词/模式 + 可配置规则），agent-core 拼接 prompt 前统一校验，命中 → 任务强制人工
-- [ ] **`@Mask` 注解 + 序列化切面**（common-code）：作用于对外 Controller VO 层，脱敏身份证/银行卡/税号/手机号；金额不脱敏；内部链路明文
-- [ ] **tool-service `execute` 统一校验**：业务级越权（预算查询限本部门、重复检测限本租户本员工）+ 参数归属校验
-- [ ] **脱敏字段清单**：随 §5 `audit_ticket`/报销单返回时应用
+- [x] **`PromptInjectionGuard`**（common-code `com.finaudit.starter.web.security`）：注入检测工具（内置关键词/模式正则 + `Builder` 可配置规则，纯字符串、无 AI 依赖）。agent-core `AgentOrchestrator.executeLlmStep` 拼接 user 后、调 `chatStructured` 前统一校验；命中 → **不调 LLM**，合成 `uncertain=true/confidence=0/riskLevel=HIGH` 的 `RiskAssessment`（或 `NEED_INFO` 的 `AuditConclusion`）落步骤 SUCCESS → `ReviewFlowDecider` 判 `RISK_HIT` → `enterApproval` 建审批工单**强制人工**（命中不直接放行）。规划阶段 `TaskPlanner` 注入防护留 TODO（§8）
+- [x] **`@Mask` 注解 + 序列化切面**（common-code `com.finaudit.starter.web.mask`）：`MaskIntrospector`（Jackson AnnotationIntrospector）经 `CommonWebAutoConfiguration#maskJacksonCustomizer` 挂到 Spring ObjectMapper，标注于对外 VO 字段按 `MaskType`（ID_CARD/BANK_CARD/TAX_NO/PHONE/GENERAL）序列化脱敏；`Map` 字段走 `MaskingMapSerializer` 递归脱敏敏感键（taxNo/SellerRegisterNum 等），**金额键永不脱敏**；内部 Feign/MQ DTO 不加注解保持明文。已应用：tenant-service `UserVO/UserInfoVO/UserDetailVO` 的 `phone`、agent-core `AttachmentVO.ocrResult`（税号）、`ReimbursementService.buildSnapshot` 落库存前净化税号键
+- [x] **tool-service `execute` 统一校验**：新增 `ToolAccessGuard`（`ToolRegistryService.execute` 入参 Schema 校验后、分发执行器前调用，覆盖 HTTP debugExecute 与 MQ 双链路）。三道校验：① 请求上下文租户与声明租户一致（`TenantContextHolder`，跨租户直调/篡改头拒绝）；② `budget_query` 部门校验（空白拒绝；非租户已知部门告警留痕、不阻断——跨租户由 agent-core 按 tenant_id 数据层隔离，完整「员工级部门绑定」待 P5 部门实体表）；③ `duplicate_check`/`ocr_extract` 单据归属（经 agent-core `findReimbTenantId`，reimbId 不存在或非本租户拒绝）
+- [x] **脱敏字段清单**：手机号（租户用户 VO）、税号/纳税人识别号（OCR `ocrResult` Map + 审计快照），金额明文。随报销单/审批工单详情返回时生效（`AttachmentVO` 经 `@Mask` 序列化脱敏）
 
 ## 5. 新增表
 
@@ -139,6 +139,8 @@ P3+:  PENDING → RUNNING → SUCCESS / FAILED / APPROVAL_PENDING / CANCELLED
 | 触发条件扩展（发票存疑/对公/跨部门分摊） | 触发规则配置化 | P4/P5 |
 | 幻觉拦截 → 正式评估体系 | 存疑标记 → P4 幻觉检测规则 + 大盘 | P4 |
 | 工具幻觉：目录为空时 LLM 虚构工具编码 | TaskPlanner 规划层校验 + RuleBasedFlowEngine 按业务绑定工具集 | **P3a 已完成** |
+| 规划阶段（TaskPlanner/GENERIC）Prompt 注入防护 | 复用 `PromptInjectionGuard` 于 `TaskPlanner.plan`，命中走 fallback + 标记需人工 | P4+（P3c 仅覆盖执行阶段 `executeLlmStep`） |
+| 部门归属的正式语义（员工级部门绑定） | 部门实体表替代 dept_name 字符串后，budget_query 限「本人部门」而非「租户已知部门」 | P5 |
 | 部门实体表（替代 dept_name 字符串） | P2 D7 | P5 |
 
 ## 9. 风险与预案
