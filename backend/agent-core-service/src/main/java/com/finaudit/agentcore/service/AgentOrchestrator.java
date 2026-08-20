@@ -19,11 +19,14 @@ import com.finaudit.starter.model.ModelType;
 import com.finaudit.starter.model.client.AiClient;
 import com.finaudit.starter.model.client.ChatClientFactory;
 import com.finaudit.starter.web.exception.BizException;
+import com.finaudit.starter.web.security.PromptInjectionGuard;
+import com.finaudit.starter.web.security.PromptInjectionResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -236,6 +239,35 @@ public class AgentOrchestrator {
             String system = (role == null || role.systemPrompt().isBlank())
                     ? AgentRole.SCHEDULER.systemPrompt()
                     : role.systemPrompt();
+
+            // 识别传入的Prompt是否有注入风险
+            PromptInjectionResult injection = PromptInjectionGuard.scan("LLM_STEP", user);
+            // 存在风险
+            if (injection.hit()) {
+                log.warn("检测到疑似Prompt注入，强制人工复核: step={}, detail={}",
+                        step.getStepName(), injection.detail());
+                Object data;
+                // 若角色为风控智能体，则直接构造风险结果，不调用模型
+                if (role == AgentRole.RISK_AUDITOR) {
+                    data = new RiskAssessment("HIGH", BigDecimal.ZERO, true,
+                            "检测到疑似Prompt注入，已强制人工复核", List.of(injection.detail()));
+                }
+                // 若为其他智能体，则构造相应结果，不调用模型
+                else {
+                    data = new AuditConclusion("检测到疑似Prompt注入，已强制人工复核", "NEED_INFO",
+                            null, null, null, null, List.of(injection.detail()), null);
+                }
+                // 将data转为Map<String, Object> 入库，状态置SUCCESS
+                stepService.markSuccess(step,
+                        OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}));
+                // 刷新完成的步骤数
+                refreshFinishedSteps(task.getId());
+                // 正常推进（finalizeSuccess 将按 NEED_REVIEW 进入审批工单）
+                continueTask(task.getId());
+                return;
+            }
+
+            // 未触发Prompt注入风险
             Object data;
             // 若为风控Agent，则返回RiskAssessment结构体（包含置信度等）
             if (role == AgentRole.RISK_AUDITOR) {

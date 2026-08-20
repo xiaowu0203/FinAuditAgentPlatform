@@ -23,6 +23,7 @@ import com.finaudit.starter.web.feign.FileServiceFeign;
 import com.finaudit.starter.web.feign.dto.DuplicateCheckVO;
 import com.finaudit.starter.web.feign.dto.DuplicateItemVO;
 import com.finaudit.starter.web.feign.dto.FileRecordVO;
+import com.finaudit.starter.web.mask.util.MaskUtil;
 import com.finaudit.starter.web.result.R;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -358,11 +359,23 @@ public class ReimbursementService {
             ref.put("fileRecordId", a.getFileRecordId());
             ref.put("fileType", a.getFileType());
             ref.put("ocrStatus", a.getOcrStatus());
-            ref.put("ocrResult", a.getOcrResult());
+            // OCR结果进行脱敏
+            ref.put("ocrResult", MaskUtil.maskSensitiveMap(a.getOcrResult(), null));
             atts.add(ref);
         }
         snapshot.put("attachments", atts);
         return snapshot;
+    }
+
+    /**
+     * 查询报销单归属租户
+     * <p>仅返回 tenant_id，跨域只读，数据访问收敛本类；不存在返回 null（由调用方判定为越权/不存在）。</p>
+     * @param reimbId 报销单ID
+     * @return 该报销单的 tenantId；不存在返回 null
+     */
+    public Long findTenantIdByReimb(Long reimbId) {
+        ExpenseReimbursement reimb = reimbursementMapper.selectById(reimbId);
+        return reimb == null ? null : reimb.getTenantId();
     }
 
     /** 公共详情组装：明细 + 附件（含 OCR 字段）。 */

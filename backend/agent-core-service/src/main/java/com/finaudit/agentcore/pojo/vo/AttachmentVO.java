@@ -2,6 +2,8 @@ package com.finaudit.agentcore.pojo.vo;
 
 import com.finaudit.agentcore.pojo.entity.ExpenseAttachment;
 import com.finaudit.starter.web.feign.dto.FileRecordVO;
+import com.finaudit.starter.web.mask.annotation.Mask;
+import com.finaudit.starter.web.mask.enums.MaskType;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -37,7 +39,12 @@ public class AttachmentVO {
     @Schema(description = "OCR状态")
     private String ocrStatus;
 
-    @Schema(description = "OCR 抽取字段（JSON；P3b 工单详情对照展示，无 OCR 为 null）")
+    /**
+     * OCR 抽取字段
+     * <p>P3c 脱敏：税号等敏感键序列化时经 {@link Mask} 递归脱敏，金额键保持明文。</p>
+     */
+    @Mask(MaskType.TAX_NO)
+    @Schema(description = "OCR 抽取字段（JSON；税号等敏感键对外脱敏，金额明文）")
     private Map<String, Object> ocrResult;
 
     @Schema(description = "预签名预览 URL（默认有效期）")

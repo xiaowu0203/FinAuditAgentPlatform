@@ -77,6 +77,22 @@ public class AuditDataController {
         return R.success(reimbursementService.queryDuplicates(tenantId, reimbId));
     }
 
+    @Operation(summary = "部门归属校验", description = "P3c 工具防越权：校验 deptName 是否为当前租户已知部门（budget_query 限本部门）")
+    @GetMapping("/budgets/dept-exists")
+    public R<Boolean> isTenantDept(@RequestParam("deptName") String deptName,
+                                   @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+        requireTenant(tenantId);
+        return R.success(budgetService.isTenantDept(tenantId, deptName));
+    }
+
+    @Operation(summary = "报销单归属租户查询", description = "P3c 工具防越权：返回报销单所属租户ID（duplicate_check/ocr_extract 校验 reimbId 归属）")
+    @GetMapping("/reimbursements/{reimbId}/tenant")
+    public R<Long> findReimbTenantId(@PathVariable("reimbId") Long reimbId,
+                                     @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+        requireTenant(tenantId);
+        return R.success(reimbursementService.findTenantIdByReimb(reimbId));
+    }
+
     private void requireTenant(Long tenantId) {
         if (tenantId == null) {
             throw new BizException("缺少租户标识 X-Tenant-Id，请通过网关访问");

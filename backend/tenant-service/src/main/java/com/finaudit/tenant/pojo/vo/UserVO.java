@@ -1,5 +1,7 @@
 package com.finaudit.tenant.pojo.vo;
 
+import com.finaudit.starter.web.mask.annotation.Mask;
+import com.finaudit.starter.web.mask.enums.MaskType;
 import com.finaudit.tenant.pojo.entity.SysUser;
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -12,7 +14,7 @@ import java.time.LocalDateTime;
  * @param tenantId  租户 ID
  * @param username  登录名
  * @param realName  真实姓名
- * @param phone     手机号
+ * @param phone     手机号（对外脱敏）
  * @param status    状态（1启用 0禁用）
  * @param createdAt 创建时间
  */
@@ -21,7 +23,7 @@ public record UserVO(
         @Schema(description = "租户 ID") Long tenantId,
         @Schema(description = "登录名") String username,
         @Schema(description = "真实姓名") String realName,
-        @Schema(description = "手机号") String phone,
+        @Mask(MaskType.PHONE) @Schema(description = "手机号") String phone,
         @Schema(description = "状态: 1启用 0禁用") Integer status,
         @Schema(description = "创建时间") LocalDateTime createdAt) {
 
