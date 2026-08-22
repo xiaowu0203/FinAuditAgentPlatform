@@ -105,4 +105,40 @@ public class AgentTaskStepService {
         step.setStatus(StepStatus.PENDING.name());
         stepMapper.updateById(step);
     }
+
+    /**
+     * 全量重规划（P3b 工作流重设计）：逻辑删除旧步骤 + 按新规划重插。
+     * <p>提交人修改明细后步骤可能增删（附件清空→OCR 步消失），update-in-place 只能置状态不能
+     * 改结构，故必须全量重建；这也一并修复了旧实现「重跑时 TOOL 步骤沿用规划时投影的旧
+     * input_params」的隐藏 bug（步骤重插后 inputParams 来自新任务快照）。</p>
+     * <p>安全前提：仅允许任务非 RUNNING 时调用（resubmit 限定 ticket PENDING/REJECTED 保证无在途
+     * tool.result 消息；旧步骤行逻辑删（deleted=1）保留，tool_execution_log 仍指向存在行）。
+     * 调用方必须在 replan 后以 {@code AgentTaskService.markPlanned} 刷新任务 totalSteps。</p>
+     *
+     * @param taskId   任务 ID
+     * @param tenantId 租户 ID
+     * @param plan     新规划步骤（来自 {@code RuleBasedFlowEngine.plan} 对新 inputParams 的投影）
+     */
+    public void replan(Long taskId, Long tenantId, List<TaskPlanStep> plan) {
+        // 软删置 deleted=id（而非 MP 默认 1）：uk_task_step 含 deleted，历史步骤保留且不占唯一名额
+        stepMapper.softDeleteByTaskId(taskId, tenantId);
+        insertPlan(taskId, tenantId, plan);
+    }
+
+    /**
+     * amend 重跑步骤复位：全部步骤置 PENDING、清输出/错误、重试归零（流水线重跑）。
+     *
+     * @deprecated P3b 重设计后修改重跑统一走 {@link #replan}（全量重建，修复 inputParams 陈旧 bug）；
+     *             本方法只能置状态、无法增删步骤，勿再用于 resubmit 链路。
+     */
+    @Deprecated
+    public void resetAllForRerun(Long taskId) {
+        for (AgentTaskStep step : listByTask(taskId)) {
+            step.setStatus(StepStatus.PENDING.name());
+            step.setOutput(null);
+            step.setErrorMsg(null);
+            step.setRetryCount(0);
+            stepMapper.updateById(step);
+        }
+    }
 }

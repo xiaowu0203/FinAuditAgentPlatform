@@ -46,6 +46,9 @@ public class AgentTaskStep {
     @Schema(description = "工具名称")
     private String toolName;
 
+    @Schema(description = "执行角色（AgentRole 枚举名，可空；历史与 GENERIC 步骤为空）")
+    private String agentRole;
+
     @TableField(typeHandler = JacksonTypeHandler.class)
     @Schema(description = "步骤入参（JSON）")
     private Map<String, Object> inputParams;
@@ -74,8 +77,8 @@ public class AgentTaskStep {
     private LocalDateTime updatedAt;
 
     @TableLogic
-    @Schema(description = "逻辑删除标记（0 未删 / 1 已删）")
-    private Integer deleted;
+    @Schema(description = "逻辑删除标记（0 未删 / 主键id 已删；配合 uk_task_step 含 deleted，重规划历史步骤保留且不占唯一名额）")
+    private Long deleted;
 
     /**
      * 由规划步骤构造待执行步骤（初始状态 PENDING，重试 0 次）。
@@ -88,6 +91,7 @@ public class AgentTaskStep {
         step.setStepName(plan.stepName());
         step.setStepType(plan.stepType());
         step.setToolName(plan.toolName());
+        step.setAgentRole(plan.agentRole());
         step.setInputParams(plan.inputParams());
         step.setStatus(StepStatus.PENDING.name());
         step.setRetryCount(0);

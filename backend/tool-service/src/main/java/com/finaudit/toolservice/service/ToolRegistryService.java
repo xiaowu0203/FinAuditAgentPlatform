@@ -33,10 +33,13 @@ public class ToolRegistryService {
 
     private final ToolRegistryMapper registryMapper;
     private final Map<ToolCode, ToolExecutor> executorMap;
+    private final ToolAccessGuard accessGuard;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public ToolRegistryService(ToolRegistryMapper registryMapper, List<ToolExecutor> executors) {
+    public ToolRegistryService(ToolRegistryMapper registryMapper, List<ToolExecutor> executors,
+                               ToolAccessGuard accessGuard) {
         this.registryMapper = registryMapper;
+        this.accessGuard = accessGuard;
         // List转Map：方便按工具编码查找
         this.executorMap = executors.stream()
                 .collect(Collectors.toMap(ToolExecutor::toolCode, Function.identity()));
@@ -84,6 +87,8 @@ public class ToolRegistryService {
         if (executor == null) {
             throw new BizException("工具未实现执行器: " + toolCode);
         }
+        // P3c 安全风控：工具防越权统一校验（租户一致性 / 部门归属 / 单据归属），覆盖 HTTP 与 MQ 双链路
+        accessGuard.check(tenantId, code, inputParams);
         // 工具接口执行相关工具（带入输入的参数 + 租户，供 Feign 委托跨服务取数）
         return executor.execute(tenantId, inputParams);
     }

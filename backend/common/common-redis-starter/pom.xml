@@ -16,6 +16,12 @@
     <description>Redis 通用能力：RedisTemplate 配置（分布式锁 P1 补全）</description>
 
     <dependencies>
+        <!-- common-code：统一 BizException / R（分布式锁抢锁失败抛业务异常），与 mybatisplus-starter 同模式 -->
+        <dependency>
+            <groupId>com.finaudit</groupId>
+            <artifactId>common-code</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
@@ -23,6 +29,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-json</artifactId>
+        </dependency>
+        <!-- Redisson 分布式锁（版本由 backend/pom.xml dependencyManagement 锁定 3.47.0；
+             redisson-spring-boot-starter 自动装配读取 spring.data.redis.* 前缀，与 Boot 3.5 一致） -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-boot-starter</artifactId>
         </dependency>
     </dependencies>
 </project>

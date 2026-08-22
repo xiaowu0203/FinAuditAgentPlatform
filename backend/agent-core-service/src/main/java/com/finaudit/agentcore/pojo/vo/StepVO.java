@@ -27,6 +27,9 @@ public class StepVO {
     @Schema(description = "工具名称")
     private String toolName;
 
+    @Schema(description = "执行角色（AgentRole 枚举名，可空；历史与 GENERIC 步骤为空）")
+    private String agentRole;
+
     @Schema(description = "步骤入参（JSON）")
     private Map<String, Object> inputParams;
 
@@ -49,6 +52,7 @@ public class StepVO {
         vo.setStepName(step.getStepName());
         vo.setStepType(step.getStepType());
         vo.setToolName(step.getToolName());
+        vo.setAgentRole(step.getAgentRole());
         vo.setInputParams(step.getInputParams());
         vo.setOutput(step.getOutput());
         vo.setStatus(step.getStatus());

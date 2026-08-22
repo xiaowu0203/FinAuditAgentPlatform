@@ -80,6 +80,42 @@ public class AttachmentService {
     }
 
     /**
+     * 解绑报销单全部附件（P3b 工作流重设计）：reimb_id 置 NULL，释放文件占用。
+     * <p>场景：报销单作废（撤回 / 撤销同意）释放占用，以及修改重跑时移除项的再绑定。
+     * 解绑后同 file_record 可重新挂到新报销单（{@link #attachToReimb} 的重复绑定校验不拦截）。</p>
+     */
+    @Transactional
+    public void unbindByReimb(Long reimbId) {
+        attachmentMapper.update(ExpenseAttachment.forBindReimb(null),
+                new LambdaUpdateWrapper<ExpenseAttachment>()
+                        .eq(ExpenseAttachment::getReimbId, reimbId));
+    }
+
+    /**
+     * 修改重跑附件重绑（P3b）：解绑移除项 + 绑定新增项，保留未变项不动。
+     * <p>先解绑「当前已绑定但新列表不含」的附件，再走 {@link #attachToReimb}（其重复绑定校验
+     * 会拦截跨报销单占用；同一报销单内已在列表中的行幂等跳过）。</p>
+     */
+    @Transactional
+    public void rebindForReimb(List<Long> newFileRecordIds, Long reimbId, Long tenantId) {
+        List<ExpenseAttachment> current = listByReimbId(reimbId);
+        if (!current.isEmpty()) {
+            List<Long> newIds = newFileRecordIds.stream().distinct().toList();
+            List<Long> removed = current.stream()
+                    .map(ExpenseAttachment::getFileRecordId)
+                    .filter(id -> !newIds.contains(id))
+                    .toList();
+            if (!removed.isEmpty()) {
+                attachmentMapper.update(ExpenseAttachment.forBindReimb(null),
+                        new LambdaUpdateWrapper<ExpenseAttachment>()
+                                .eq(ExpenseAttachment::getReimbId, reimbId)
+                                .in(ExpenseAttachment::getFileRecordId, removed));
+            }
+        }
+        attachToReimb(newFileRecordIds, reimbId, tenantId);
+    }
+
+    /**
      * 回写 OCR 结果（P2b ocr_extract 工具按 file_record_id 定位附件）。
      *
      * @param fileRecordId file_record id（附件引用）

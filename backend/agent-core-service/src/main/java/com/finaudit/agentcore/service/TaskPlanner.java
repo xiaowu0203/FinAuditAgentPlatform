@@ -18,6 +18,7 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -54,10 +55,10 @@ public class TaskPlanner {
      * 通用任务不注入财务工具（防止 LLM 在非报销业务上规划出财务工具步骤）。</p>
      */
     public List<TaskPlanStep> plan(AgentTask task) {
+        List<ToolInfo> tools = List.of();
         try {
             TaskType taskType = TaskType.of(task.getTaskType());
             // 动态拉取工具目录（经 Feign 读 tool-service；失败降级内置工具，保证闭环）
-            List<ToolInfo> tools;
             try {
                 List<ToolInfo> fetched = toolServiceFeign.listEnabled(task.getTenantId()).getData();
                 tools = fetched == null ? List.of() : fetched;
@@ -92,20 +93,18 @@ public class TaskPlanner {
                     system, user, new ParameterizedTypeReference<List<TaskPlanStep>>() {
                     });
             List<TaskPlanStep> steps = reply.data();
-            // 若结果为空，则走内置回退模板
+            // 若结果为空，则走内置回退模板（回退结果同样过清洗）
             if (steps == null || steps.isEmpty()) {
-                return fallback(task.getInputParams());
+                return sanitize(fallback(task.getInputParams()), tools);
             }
             log.info("LLM 规划成功，共 {} 步", steps.size());
-            // TODO(P3 工具幻觉)：此处未校验 TOOL 步骤 toolName 是否真实存在于工具目录。
-            // 实测 GENERIC 任务工具被 filterTools 过滤后目录为空时，LLM 虚构编码（如 expense_checker）致任务 FAILED。
-            // 修复方案见 docs/planning/future-roadmap.md「工具幻觉」登记项：P3 规划拆分 Agent 后按业务绑定工具集 +
-            // 规划层校验步骤工具编码，勿在此处加临时 hack。
-            return steps;
+            // P3a 规划层校验：剔除 LLM 虚构/目录外工具步骤（根治工具幻觉，见 future-roadmap 登记项）；
+            // LLM 无权指派角色，步骤 agentRole 统一置 null（角色化仅 RuleBasedFlowEngine 绑定）
+            return sanitize(steps, tools);
         } catch (Exception e) {
             log.warn("LLM 拆解失败，回退内置模板: {}", e.getMessage());
-            // 若异常，则回退内置模板
-            return fallback(task.getInputParams());
+            // 若异常，则回退内置模板并沿用已获取的工具目录进行清洗
+            return sanitize(fallback(task.getInputParams()), tools);
         }
     }
 
@@ -123,6 +122,36 @@ public class TaskPlanner {
         return tools.stream()
                 .filter(t -> !t.isFinance())
                 .toList();
+    }
+
+    /**
+     * 规划步骤清洗（P3a 工具幻觉根治）：
+     * 1. TOOL 步骤 toolName 不在有效工具目录（含 null）→ 剔除并告警——LLM 在目录为空时会虚构工具编码致任务失败；
+     * 2. LLM 步骤保留，agentRole 统一置 null（LLM 无权指派角色，角色化仅 RuleBasedFlowEngine 绑定）；
+     * 3. 清洗后为空 → 兜底单 LLM 分析步骤（纯 LLM 任务仍可完成）。
+     *
+     * @param validTools 有效工具目录（已按业务类型收敛，filterTools 之后）
+     */
+    private static List<TaskPlanStep> sanitize(List<TaskPlanStep> steps, List<ToolInfo> validTools) {
+        if (steps == null || steps.isEmpty()) {
+            return steps;
+        }
+        Set<String> validCodes = validTools == null ? Set.of()
+                : validTools.stream().map(ToolInfo::toolCode).collect(Collectors.toSet());
+        List<TaskPlanStep> clean = new ArrayList<>();
+        for (TaskPlanStep s : steps) {
+            if ("TOOL".equalsIgnoreCase(s.stepType())
+                    && (s.toolName() == null || !validCodes.contains(s.toolName()))) {
+                log.warn("剔除幻觉工具步骤[{}] toolName={}（不在工具目录）", s.stepName(), s.toolName());
+                continue;
+            }
+            clean.add(new TaskPlanStep(s.stepName(), s.stepType(), s.toolName(), s.inputParams(), null));
+        }
+        if (clean.isEmpty()) {
+            log.warn("规划步骤清洗后为空，兜底单 LLM 分析步骤");
+            clean.add(new TaskPlanStep("任务分析", "LLM", null, null, null));
+        }
+        return clean;
     }
 
     /** 业务指令段：按业务类型注入，让 LLM 明确业务场景与产出目标。 */

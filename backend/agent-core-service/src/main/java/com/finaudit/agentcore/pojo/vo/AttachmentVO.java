@@ -2,8 +2,12 @@ package com.finaudit.agentcore.pojo.vo;
 
 import com.finaudit.agentcore.pojo.entity.ExpenseAttachment;
 import com.finaudit.starter.web.feign.dto.FileRecordVO;
+import com.finaudit.starter.web.mask.annotation.Mask;
+import com.finaudit.starter.web.mask.enums.MaskType;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
+
+import java.util.Map;
 
 /**
  * 报销附件响应（业务字段 + 经 file-service 联取的元数据 + 预签名 URL）。
@@ -35,6 +39,14 @@ public class AttachmentVO {
     @Schema(description = "OCR状态")
     private String ocrStatus;
 
+    /**
+     * OCR 抽取字段
+     * <p>P3c 脱敏：税号等敏感键序列化时经 {@link Mask} 递归脱敏，金额键保持明文。</p>
+     */
+    @Mask(MaskType.TAX_NO)
+    @Schema(description = "OCR 抽取字段（JSON；税号等敏感键对外脱敏，金额明文）")
+    private Map<String, Object> ocrResult;
+
     @Schema(description = "预签名预览 URL（默认有效期）")
     private String url;
 
@@ -49,6 +61,7 @@ public class AttachmentVO {
         vo.setFileRecordId(a.getFileRecordId());
         vo.setFileType(a.getFileType());
         vo.setOcrStatus(a.getOcrStatus());
+        vo.setOcrResult(a.getOcrResult());
         vo.setFileName(file == null ? null : file.fileName());
         vo.setObjectName(file == null ? null : file.objectName());
         vo.setUrl(url);

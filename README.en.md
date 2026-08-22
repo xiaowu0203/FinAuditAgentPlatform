@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · Financial Expense Audit Agent Platform
 
-> **Progress: P0 Foundation ✅ ｜ P1 Core Loop ✅ (5-service integration acceptance passed) ｜ P2 Planning** · Details in `docs/`
+> **Progress: P0 Foundation ✅ ｜ P1 Core Loop ✅ (5-service integration acceptance passed) ｜ P2 Reimbursement and audit tools ✅ ｜ P3a Multi-agent roles and rule pipeline ✅ ｜ P3b Approval ticket workflow ✅ ｜ P3c planned** · Details in `docs/`
 
 ## Overview
 
@@ -23,11 +23,30 @@ async multi-agent collaboration, layered context governance, approval gateway an
 - **Service contract**: Feign contracts centralized in common-code + common-feign-starter header/token propagation
 - **Minimal frontend**: Vue3 + TypeScript, four pages (login / dashboard / task list / task detail)
 
-### Roadmap (P2+, see `docs/planning/future-roadmap.md`)
+### Delivered (P3a: multi-agent roles and rule pipeline)
 
-- **P2** Reimbursement loop (image upload + MinIO), four audit tools (OCR / budget / rules / duplicate detection), visual financial-rule configuration
-- **P3** Multi-agent pipeline (rule-engine driven) + approval tickets + human-in-the-loop audit trail
-- **P4** RAG enterprise knowledge base (Milvus), monitoring dashboard & quantitative evaluation
+- Five financial agent roles: document parsing, budget calculation, rule validation, risk auditing, and scheduling
+- `REIMBURSEMENT` tasks use a deterministic rule-based pipeline and return `AUTO_PASS` or `NEED_REVIEW` with review reasons
+- `APPROVAL_PENDING` marks a task awaiting manual review (large amount / over-limit / risk hit), pausing into the approval stage
+
+### Delivered (P3b: approval ticket workflow)
+
+- **Approval ticket state machine**: full `audit_ticket` lifecycle (PENDING → APPROVED / REJECTED / TERMINATED / AMENDED / WITHDRAWN), append-only `audit_record` audit trail (operator / before-after amounts / comment / before-after data snapshots)
+- **Finance actions**: `approve` / `reject` / `terminate` (Redisson lock `audit:ticket:{id}` + in-lock re-read to prevent concurrent overwrite)
+- **Submitter amend-and-rerun (resubmit)**: edit items then rerun the same task (max 3 retries; title/deptName locked server-side); rerun `AUTO_PASS` auto-closes / re-hit resets PENDING / failure `onRerunFail` prevents dead-end
+- **Withdraw / revoke**: submitter withdraws directly while PENDING; request revocation after APPROVED (`WITHDRAW_PENDING`) → finance agrees (voids) or refuses (reverts)
+- **Unified visibility**: finance sees full tenant scope, regular users only their own tickets / reimbursements / tasks
+
+**Approval ticket full workflow (state machine)**
+
+![Approval ticket state machine (full page: diagram + linkage table + action matrix)](docs/images/audit-ticket-workflow.png)
+
+> After submission the pipeline decides: `AUTO_PASS` closes with no ticket; `NEED_REVIEW` creates a ticket for human approval. Amend-and-rerun branches three ways from `AMENDED`; both "re-hit" and "failure" reset to `PENDING` (RERUN / RERUN_FAILED audit). See `docs/architecture/task-orchestration.md`.
+
+### Roadmap (P3c/P4, see `docs/planning/future-roadmap.md`)
+
+- **P3c** Security controls (prompt-injection blocking, output masking, tool authorization)
+- **P4** RAG enterprise knowledge base (Milvus), monitoring dashboard, and quantitative evaluation
 
 ## Tech Stack
 

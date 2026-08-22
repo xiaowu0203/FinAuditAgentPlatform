@@ -95,11 +95,25 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="dashboard">
+  <div class="page-shell dashboard">
+    <div class="page-header-bar">
+      <div>
+        <div class="page-title">任务工作台</div>
+        <div class="page-subtitle">快速提交审核任务，并实时查看最近任务的执行进度</div>
+      </div>
+    </div>
+
     <el-row :gutter="16">
       <el-col :xs="24" :md="14">
-        <el-card>
-          <template #header><span>提交审核任务</span></template>
+        <el-card class="page-card">
+          <template #header>
+            <div class="page-header">
+              <div>
+                <div class="page-title card-title">提交审核任务</div>
+                <div class="page-subtitle">支持直接输入 JSON 参数，提交后自动跳转到任务详情</div>
+              </div>
+            </div>
+          </template>
           <el-form :model="form" label-width="90px">
             <el-form-item label="任务标题" required>
               <el-input v-model="form.title" placeholder="如：差旅费报销审核" maxlength="128" clearable />
@@ -121,10 +135,13 @@ onBeforeUnmount(() => {
         </el-card>
       </el-col>
       <el-col :xs="24" :md="10">
-        <el-card>
+        <el-card class="page-card">
           <template #header>
             <div class="recent-header">
-              <span>最近任务</span>
+              <div>
+                <div class="page-title card-title">最近任务</div>
+                <div class="page-subtitle">存在进行中任务时会自动刷新状态</div>
+              </div>
               <el-link type="primary" @click="goList">全部任务 ›</el-link>
             </div>
           </template>
@@ -151,9 +168,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.dashboard {
+  gap: 18px;
+}
+
 .recent-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  width: 100%;
+}
+
+.card-title {
+  font-size: 16px;
 }
 </style>
