@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { getTaskPage, resumeTask } from '@/api/task'
-import { TASK_STATUS_MAP, isActive, reimbIdOf } from '@/utils/task'
+import { TASK_STATUS_MAP, canResume, isActive, reimbIdOf } from '@/utils/task'
 import type { TaskStatus, TaskVO } from '@/types'
 
 const router = useRouter()
@@ -66,10 +66,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-card>
+  <el-card class="page-card">
     <template #header>
       <div class="list-header">
-        <span>任务列表</span>
+        <div>
+          <div class="page-title card-title">任务列表</div>
+          <div class="page-subtitle">按状态筛选任务，进行中任务自动刷新；仅未启动任务可续跑</div>
+        </div>
         <div class="filters">
           <el-select
             v-model="query.status"
@@ -109,7 +112,7 @@ onBeforeUnmount(() => {
           >
             报销单
           </el-button>
-          <el-button v-if="isActive(row.status)" link type="warning" size="small" @click="handleResume(row)">
+          <el-button v-if="canResume(row.status)" link type="warning" size="small" @click="handleResume(row)">
             续跑
           </el-button>
         </template>
@@ -131,15 +134,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.list-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.filters {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.card-title {
+  font-size: 16px;
 }
 </style>

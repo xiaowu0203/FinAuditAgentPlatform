@@ -71,4 +71,26 @@ public interface AgentCoreServiceFeign {
     @GetMapping("/api/v1/audit/reimbursements/duplicates")
     R<DuplicateCheckVO> queryDuplicates(@RequestHeader("X-Tenant-Id") Long tenantId,
                                         @RequestParam("reimbId") Long reimbId);
+
+    /**
+     * 校验部门是否属于当前租户（P3c 工具防越权：budget_query 限本部门）。
+     *
+     * @param tenantId 租户ID（经 X-Tenant-Id 请求头传递）
+     * @param deptName 待校验部门
+     * @return true=该部门为租户已知部门；false=非本租户部门（越权/虚构）
+     */
+    @GetMapping("/api/v1/audit/budgets/dept-exists")
+    R<Boolean> isTenantDept(@RequestHeader("X-Tenant-Id") Long tenantId,
+                            @RequestParam("deptName") String deptName);
+
+    /**
+     * 查询报销单归属租户（P3c 工具防越权：duplicate_check/ocr_extract 校验 reimbId 归属）。
+     *
+     * @param tenantId 当前租户ID（经 X-Tenant-Id 请求头传递）
+     * @param reimbId  报销单ID
+     * @return 该报销单的 tenantId；不存在返回 data=null（越权/不存在）
+     */
+    @GetMapping("/api/v1/audit/reimbursements/{reimbId}/tenant")
+    R<Long> findReimbTenantId(@RequestHeader("X-Tenant-Id") Long tenantId,
+                              @PathVariable("reimbId") Long reimbId);
 }

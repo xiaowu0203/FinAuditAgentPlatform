@@ -42,6 +42,16 @@
 
 `data` 为工具结果；入参非法时返回 400（如缺 `amount` →「明细缺少 amount」）。
 
+## 工具防越权（P3c）
+
+`ToolAccessGuard` 在 `execute` 统一入口（入参 Schema 校验后、执行器分发前）对**所有链路**（HTTP 调试直调 + MQ `tool.execute`）做越权校验：
+
+| 校验 | 工具 | 行为 |
+|---|---|---|
+| 租户一致性 | 全部 | 请求上下文租户（`TenantContextHolder`）与声明租户不一致 → 拒绝 |
+| 部门校验 | `budget_query` | 空白部门 → 拒绝；非租户已知部门 → 告警留痕不阻断（跨租户已由 agent-core 按 `tenant_id` 数据层隔离，完整员工级部门绑定待 P5 部门实体表） |
+| 单据归属 | `duplicate_check` / `ocr_extract` | 入参 `reimbId` 不存在或非本租户 → 拒绝（经 agent-core `GET /audit/reimbursements/{reimbId}/tenant` 校验） |
+
 ## 内置工具
 
 | toolCode | 说明 | 入参 | 结果 |

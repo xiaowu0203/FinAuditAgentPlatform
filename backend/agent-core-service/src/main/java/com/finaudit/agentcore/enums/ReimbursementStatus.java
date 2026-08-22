@@ -15,8 +15,10 @@ public enum ReimbursementStatus {
     SUCCESS,
     /** 审核失败 */
     FAILED,
-    /** 人工复核（P3 审批工单预留） */
-    MANUAL_REVIEW;
+    /** 人工复核 */
+    MANUAL_REVIEW,
+    /** 已作废（提交人撤回或财务同意撤销；重复报销检测排除，附件解绑可复用） */
+    CANCELLED;
 
     /** 解析，非法值抛业务异常 */
     public static ReimbursementStatus of(String v) {

@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Back, Refresh } from '@element-plus/icons-vue'
 import { getTaskDetail, getTaskSteps, resumeTask } from '@/api/task'
-import { TASK_STATUS_MAP, isActive, reimbIdOf } from '@/utils/task'
+import { TASK_STATUS_MAP, AGENT_ROLE_MAP, canResume, isActive, isFinanceRole, reimbIdOf } from '@/utils/task'
+import { useAuthStore } from '@/stores/auth'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import type { TaskStatus, TaskStepVO, TaskVO } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const taskId = Number(route.params.id)
+const isFinance = computed(() => isFinanceRole(auth.user?.roles))
 
 const loading = ref(false)
 const stepsLoading = ref(false)
@@ -90,12 +93,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="detail">
-    <el-card v-loading="loading" class="mb">
+  <div class="page-shell detail">
+    <el-card v-loading="loading" class="page-card mb">
       <template #header>
         <div class="detail-header">
-          <span>任务详情：{{ task?.taskNo }}</span>
           <div>
+            <div class="page-title card-title">任务详情：{{ task?.taskNo }}</div>
+            <div class="page-subtitle">查看任务基础信息、入参、结果和运行进度</div>
+          </div>
+          <div class="header-actions">
             <el-button
               v-if="task && reimbIdOf(task) != null"
               type="primary"
@@ -103,8 +109,16 @@ onBeforeUnmount(() => {
             >
               查看报销单
             </el-button>
+            <!-- 任意用户可见（申请人本人工单只读查看）；财务角色跳转后执行审批，故 danger 强调 -->
             <el-button
-              v-if="task && isActive(task.status)"
+              v-if="task?.status === 'APPROVAL_PENDING'"
+              :type="isFinance ? 'danger' : 'primary'"
+              @click="router.push(`/audits?taskId=${task!.id}`)"
+            >
+              查看审批工单
+            </el-button>
+            <el-button
+              v-if="task && canResume(task.status)"
               type="warning"
               :icon="Refresh"
               @click="handleResume"
@@ -117,7 +131,7 @@ onBeforeUnmount(() => {
       </template>
 
       <template v-if="task">
-        <el-descriptions :column="2" border>
+        <el-descriptions :column="2" border class="soft-descriptions">
           <el-descriptions-item label="标题">{{ task.title }}</el-descriptions-item>
           <el-descriptions-item label="状态">
             <el-tag :type="TASK_STATUS_MAP[task.status].tag">{{ TASK_STATUS_MAP[task.status].label }}</el-tag>
@@ -137,12 +151,24 @@ onBeforeUnmount(() => {
       </template>
     </el-card>
 
-    <el-card v-loading="stepsLoading">
-      <template #header><span>步骤明细（{{ steps.length }}）</span></template>
+    <el-card v-loading="stepsLoading" class="page-card">
+      <template #header>
+        <div class="page-header">
+          <div>
+            <div class="page-title card-title">步骤明细（{{ steps.length }}）</div>
+            <div class="page-subtitle">按步骤查看工具调用、输出内容和失败信息</div>
+          </div>
+        </div>
+      </template>
       <el-table :data="steps" empty-text="暂无步骤">
         <el-table-column prop="stepNo" label="步骤" width="70" />
         <el-table-column prop="stepName" label="名称" min-width="200" show-overflow-tooltip />
         <el-table-column prop="stepType" label="类型" width="90" />
+        <el-table-column label="角色" width="110">
+          <template #default="{ row }">
+            {{ row.agentRole ? (AGENT_ROLE_MAP[row.agentRole] ?? row.agentRole) : '—' }}
+          </template>
+        </el-table-column>
         <el-table-column prop="toolName" label="工具" width="140" />
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
@@ -170,10 +196,17 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.detail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.detail {
+  gap: 16px;
+}
+
+.card-title {
+  font-size: 16px;
+}
+
+.soft-descriptions :deep(.el-descriptions__body) {
+  border-radius: 16px;
+  overflow: hidden;
 }
 </style>
 

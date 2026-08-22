@@ -74,6 +74,7 @@ docker-compose.yml      开源环境一键启动
 9. **实体数据访问收敛到实体自己的 Service**：每个实体的查询/更新**只允许出现在该实体对应的 Service 内**（Mapper 仅被其专属 Service 持有）；编排器 / Controller / MQ 消费者等外部组件需要数据时，**注入对应实体的 Service**，禁止直接持有不属于本类的 Mapper 或把其他实体的查询/更新实现写在外部类里（如 `AgentOrchestrator` 不得持有 `AgentTaskMapper`，步骤数据须经 `AgentTaskStepService`）
 10. **批量新增与自定义 SQL 统一 XML 写法**：Mapper 接口加 `@Mapper`，**只声明方法签名**，SQL 一律写在 `src/main/resources/mapper/<XxxMapper>.xml`（namespace 为接口全限定名，`<insert id>` 与接口方法同名），**禁止 `@Insert` 注解内联 SQL**；**批量新增用单条多行 INSERT**（`<foreach>` 拼 VALUES），禁止 for 循环逐行 insert；JSON 列显式指定 `typeHandler=...JacksonTypeHandler`，`id` 自增、`created_at`/`updated_at` 走数据库默认值，`deleted` 显式写 0
 11. **批量按 ID 查询禁止使用 `BaseMapper.selectBatchIds`（3.5.12 已废弃，警告为弃用状态）**：统一用 `LambdaQueryWrapper.in(实体::getId, ids)` + `selectList`；**先判空再查询**（空集合直接返回 `List.of()`，避免生成非法 `IN ()`）。如 `FileService.listByIds`、`FileService.validateAllOwned`、`SysRoleService.getByIds`
+12. **Controller 单次委托，编排收敛到编排器/门面**：Controller 只做参数装配、请求头校验与**单次 Service 委托**，禁止在端点内串联多个 Service 完成一段业务（如「先 A 鉴权再 B 查询」应合并为同类 Service 的一个方法，如 `AgentTaskService.listSteps` 收敛可见性校验 + 步骤查询）；跨实体/跨域编排只允许出现在 `AgentOrchestrator`（跨实体状态机/编排器，可注入所有领域 Service）或独立门面（Application/Facade）Service 中。**领域 Service 之间禁止反向依赖成环**（如 `AuditTicketService` 依赖 `ReimbursementService`，则 `ReimbursementService` 不得反向注入 `AuditTicketService` 或编排器）——跨边界触发若无法下沉（如 `ReimbursementController.resubmit` 的「工单动作 + 编排器续跑」链），保留在 Controller 对 Orchestrator/门面的单点委托，勿强造贫血门面
 
 ## 6. Git 规范
 

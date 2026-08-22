@@ -23,7 +23,9 @@ INSERT IGNORE INTO finance_rule (id, tenant_id, rule_code, rule_name, rule_type,
      1, 1, '1.0');
 
 -- 3. rule_check 入参 schema 展开 items 子字段（差旅/补贴评估数据源；参照 amount_verify schema 风格）
-UPDATE tool_registry SET input_schema = '{"type":"object","properties":{"expenseType":{"type":"string"},"claimDate":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":"string"},"quantity":{"type":"number"},"unitPrice":{"type":"number"},"date":{"type":"string"},"city":{"type":"string"},"hotelDays":{"type":"integer"},"hotelAmount":{"type":"number"},"transportAmount":{"type":"number"},"subsidyAmount":{"type":"number"}},"required":["name","amount"]}},"totalAmount":{"type":"number"}},"required":["expenseType","claimDate","items","totalAmount"]}'
+--    可选数值/整数字段声明为 ["number","null"] 等联合类型：允许前端未填（null）时传入，
+--    与 RuleCheckItem「字段缺失→该规则跳过该明细」设计一致（勿改回纯 type，否则 null 直接校验失败）
+UPDATE tool_registry SET input_schema = '{"type":"object","properties":{"expenseType":{"type":"string"},"claimDate":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":["string","null"]},"quantity":{"type":["number","null"]},"unitPrice":{"type":["number","null"]},"date":{"type":["string","null"]},"city":{"type":["string","null"]},"hotelDays":{"type":["integer","null"]},"hotelAmount":{"type":["number","null"]},"transportAmount":{"type":["number","null"]},"subsidyAmount":{"type":["number","null"]}},"required":["name","amount"]}},"totalAmount":{"type":"number"}},"required":["expenseType","claimDate","items","totalAmount"]}'
 WHERE tool_code = 'rule_check';
 
 -- =====================================================================

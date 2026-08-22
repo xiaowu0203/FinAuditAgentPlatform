@@ -1,9 +1,9 @@
 -- =====================================================================
 -- FinAuditAgentPlatform 数据库初始化脚本
--- 版本: P2b（审核工具做厚：budget/finance_rule 表 + tool_registry 加 scenario/cacheable） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
+-- 版本: P3b（多 Agent 角色化与规则流水线 + 审批工单闭环） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
 -- 说明: 可直接整体执行；DROP TABLE IF EXISTS 保证幂等（会清空重灌）。
 --       本机执行: mysql -uroot -p < docs/database/finaudit-schema.sql
---       已有数据的环境只跑增量: mysql -uroot -p < docs/database/migration-P2b.sql
+--       已有数据的环境只跑增量: mysql -uroot -p < docs/database/migration-P3a.sql（再跑 migration-P3b.sql）
 -- =====================================================================
 
 CREATE DATABASE IF NOT EXISTS finaudit DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -15,6 +15,8 @@ DROP TABLE IF EXISTS file_record;
 DROP TABLE IF EXISTS expense_reimbursement;
 DROP TABLE IF EXISTS budget;
 DROP TABLE IF EXISTS finance_rule;
+DROP TABLE IF EXISTS audit_record;
+DROP TABLE IF EXISTS audit_ticket;
 DROP TABLE IF EXISTS tool_execution_log;
 DROP TABLE IF EXISTS tool_registry;
 DROP TABLE IF EXISTS agent_task_step;
@@ -92,7 +94,8 @@ CREATE TABLE sys_user_role (
 
 -- ---------------------------------------------------------------------
 -- 5. Agent 任务表（任务持久化 + 状态机载体）
---    状态机: PENDING -> RUNNING -> SUCCESS / FAILED（预留 MANUAL_REVIEW）
+--    状态机: PENDING -> RUNNING -> SUCCESS / FAILED / APPROVAL_PENDING / REJECTED
+--    P3a 的 APPROVAL_PENDING 仅表示待人工复核；审批工单与审计记录属于 P3b
 -- ---------------------------------------------------------------------
 CREATE TABLE agent_task (
     id            BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -128,6 +131,7 @@ CREATE TABLE agent_task_step (
     step_name   VARCHAR(64)   NOT NULL COMMENT '步骤名称',
     step_type   VARCHAR(16)   NOT NULL COMMENT '步骤类型: LLM/TOOL',
     tool_name   VARCHAR(64)   DEFAULT NULL COMMENT 'TOOL 步骤的工具编码',
+    agent_role  VARCHAR(32)   DEFAULT NULL COMMENT '执行角色（AgentRole: SCHEDULER/DOCUMENT_PARSER/BUDGET_CALCULATOR/RULE_VALIDATOR/RISK_AUDITOR；历史与 GENERIC 步骤为空）',
     input_params JSON         DEFAULT NULL COMMENT '步骤入参',
     output      JSON          DEFAULT NULL COMMENT '步骤输出',
     status      VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '步骤状态',
@@ -135,9 +139,9 @@ CREATE TABLE agent_task_step (
     retry_count INT           NOT NULL DEFAULT 0 COMMENT '重试次数',
     created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted     TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    deleted     BIGINT        NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0 未删 / 主键id 已删（配合 uk_task_step）',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_task_step (task_id, step_no),
+    UNIQUE KEY uk_task_step (task_id, step_no, deleted) COMMENT '任务内步骤唯一（含 deleted，重规划历史行不冲突）',
     KEY idx_task (task_id),
     KEY idx_status (status)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Agent 任务步骤表';
@@ -184,7 +188,8 @@ CREATE TABLE tool_execution_log (
 
 -- ---------------------------------------------------------------------
 -- 9. 报销单表（P2a 单据闭环）
---    status 对齐任务状态机: PENDING -> RUNNING -> SUCCESS / FAILED（预留 MANUAL_REVIEW）
+--    status 对齐任务状态机: PENDING -> RUNNING -> SUCCESS / FAILED / APPROVAL_PENDING / REJECTED
+--    P3a 进入 APPROVAL_PENDING 时，报销单展示 MANUAL_REVIEW；审批工单闭环属于 P3b
 --    items 存提交明细，仅作存储不参与 WHERE 过滤（MySQL 5.7 JSON 检索限制）
 -- ---------------------------------------------------------------------
 CREATE TABLE expense_reimbursement (
@@ -255,7 +260,7 @@ CREATE TABLE file_record (
 
 -- ---------------------------------------------------------------------
 -- 12. 部门预算表（P2b 预算核算工具 budget_query）
---    period 预算周期 YYYY-MM；used_amount 审核通过后累加（P3 审批流承接）
+--    period 预算周期 YYYY-MM；P3b 审批通过后 used_amount 累加（待实现）
 -- ---------------------------------------------------------------------
 CREATE TABLE budget (
     id           BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -293,6 +298,64 @@ CREATE TABLE finance_rule (
     UNIQUE KEY uk_rule_type (tenant_id, rule_type, deleted)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '财务规则表（同租户同 rule_type 唯一，业务层 + 唯一索引双层兜底）';
 
+-- ---------------------------------------------------------------------
+-- 14. 审批工单表（P3b 人机协同审批闭环）
+--    触发: 任务流水线判定 NEED_REVIEW（复核原因 review_reasons + 触发类型 trigger_type 确定性映射）
+--    流转: PENDING -> APPROVED/REJECTED/TERMINATED/WITHDRAWN/AMENDED
+--          AMENDED（提交人 resubmit 重跑中）: 重跑命中复位 PENDING / AUTO_PASS 转 APPROVED / 失败 onRerunFail 复位 PENDING
+--          APPROVED -> WITHDRAW_PENDING -> WITHDRAWN（同意）/ APPROVED（拒绝）
+--    rerun_count: 提交人 resubmit 重跑次数，上限 3（P3 §9 防死循环）；audit_level: 审批级数，P3 恒为 1（预留多级审批 TODO P5+）
+-- ---------------------------------------------------------------------
+CREATE TABLE audit_ticket (
+    id             BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id      BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    task_id        BIGINT        NOT NULL COMMENT '关联 agent_task.id',
+    ticket_no      VARCHAR(64)   NOT NULL COMMENT '工单编号，如 AT-{taskNo}',
+    title          VARCHAR(128)  NOT NULL COMMENT '任务标题（冗余展示）',
+    trigger_type   VARCHAR(32)   NOT NULL COMMENT '触发类型: OVER_LIMIT 大额/超标 / RULE_FAIL 规则校验不通过 / RISK_HIT 风控命中（LLM_DECISION 兜底归此类）',
+    risk_desc      VARCHAR(512)  DEFAULT NULL COMMENT '复核原因描述（review_reasons join 截断）',
+    step_no        INT           DEFAULT NULL COMMENT '触发步骤（预留：决策跨步骤，暂置 NULL）',
+    origin_amount  DECIMAL(12,2) DEFAULT NULL COMMENT '申报总额（任务入参 claimedTotal）',
+    adjusted_amount DECIMAL(12,2) DEFAULT NULL COMMENT '重跑后修正总额（提交人 resubmit 时写，重跑后为最终金额）',
+    status         VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '工单状态: PENDING/APPROVED/REJECTED/AMENDED(重跑中)/TERMINATED/WITHDRAW_PENDING(撤销待审)/WITHDRAWN(已撤回或已撤销)',
+    audit_level    TINYINT       NOT NULL DEFAULT 1 COMMENT '审批级数（预留多级审批 TODO P5+，P3 恒 1）',
+    rerun_count    INT           NOT NULL DEFAULT 0 COMMENT '提交人 resubmit 重跑次数（P3b 起财务不再 amend），上限 3',
+    review_reasons JSON          DEFAULT NULL COMMENT '复核原因列表（JacksonTypeHandler 映射；重跑命中复位时刷新）',
+    auditor_id     BIGINT        DEFAULT NULL COMMENT '最近处理人用户ID（提交人 resubmit/撤回/撤销申请动作不改此字段）',
+    audit_comment  VARCHAR(512)  DEFAULT NULL COMMENT '最近处理意见',
+    created_by     BIGINT        DEFAULT NULL COMMENT '申请人用户ID（任务提交人，工单动作权限归属）',
+    created_at     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted        TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0未删 1已删',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_ticket_no (tenant_id, ticket_no),
+    UNIQUE KEY uk_task (tenant_id, task_id) COMMENT '一个 task 至多一个工单（同单续跑 1:1）',
+    KEY idx_tenant_status (tenant_id, status)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '审批工单表';
+
+-- ---------------------------------------------------------------------
+-- 15. 审批留痕表（append-only：每次审批动作追加一条，审计溯源）
+-- ---------------------------------------------------------------------
+CREATE TABLE audit_record (
+    id             BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id      BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    ticket_id      BIGINT        NOT NULL COMMENT '工单ID',
+    action         VARCHAR(20)   NOT NULL COMMENT '动作: SUBMIT 建单/APPROVE 通过/REJECT 驳回/AMEND 提交人修改重跑/TERMINATE 终止/RERUN 重跑复位/RERUN_FAILED 重跑失败复位/WITHDRAW 撤回/WITHDRAW_REQ 发起撤销/WITHDRAW_AGREE 同意撤销/WITHDRAW_REFUSE 拒绝撤销',
+    before_amount  DECIMAL(12,2) DEFAULT NULL COMMENT '变更前金额',
+    after_amount   DECIMAL(12,2) DEFAULT NULL COMMENT '变更后金额',
+    before_data    JSON          DEFAULT NULL COMMENT '变更前快照（首条 SUBMIT 为 NULL；含 reimb 顶层字段+明细+附件，不含预签名URL/OSS路径）',
+    after_data     JSON          DEFAULT NULL COMMENT '变更后快照（每次动作落一条，审批时点数据现场，可 before→after diff）',
+    comment        VARCHAR(512)  DEFAULT NULL COMMENT '操作意见',
+    operator_id    BIGINT        DEFAULT NULL COMMENT '操作人用户ID',
+    operator_name  VARCHAR(64)   DEFAULT NULL COMMENT '操作人姓名',
+    operator_roles VARCHAR(128)  DEFAULT NULL COMMENT '操作人当时角色（审计溯源）',
+    created_at     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted        TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0未删 1已删',
+    PRIMARY KEY (id),
+    KEY idx_ticket (ticket_id),
+    KEY idx_tenant (tenant_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '审批留痕表（append-only）';
+
 -- =====================================================================
 -- Seed 数据（默认租户 + 管理员 + 角色 + 内置工具 + 预算 + 财务规则）
 -- =====================================================================
@@ -315,7 +378,7 @@ INSERT INTO sys_user_role (id, tenant_id, user_id, role_id) VALUES
 INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, input_schema, enabled, version) VALUES
     (1, 1, 'amount_verify', '金额核验工具',
      '加总明细金额并与申报总额比对，返回是否一致及差额。入参 items:[{name,amount}] + claimedTotal；items 元素可含 amountType/quantity/unitPrice/date 等辅助字段（仅核验 amount）。',
-     '{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":"string"},"quantity":{"type":"number"},"unitPrice":{"type":"number"},"date":{"type":"string"}},"required":["name","amount"]}},"claimedTotal":{"type":"number"}},"required":["items","claimedTotal"]}',
+     '{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":["string","null"]},"quantity":{"type":["number","null"]},"unitPrice":{"type":["number","null"]},"date":{"type":["string","null"]}},"required":["name","amount"]}},"claimedTotal":{"type":"number"}},"required":["items","claimedTotal"]}',
      1, '1.0');
 
 -- P2b 四个审核工具（scenario=FINANCE 供 TaskPlanner 收敛；cacheable=0 有状态查询不缓存）
@@ -330,7 +393,7 @@ INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, inp
      1, '1.0', 'FINANCE', 0),
     (4, 1, 'rule_check', '财务规则校验',
      '按财务规则（大额限额/报销时效/差旅标准/补贴限额）校验报销单，返回命中规则与超标标记。入参 expenseType + claimDate + items + totalAmount。',
-     '{"type":"object","properties":{"expenseType":{"type":"string"},"claimDate":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":"string"},"quantity":{"type":"number"},"unitPrice":{"type":"number"},"date":{"type":"string"},"city":{"type":"string"},"hotelDays":{"type":"integer"},"hotelAmount":{"type":"number"},"transportAmount":{"type":"number"},"subsidyAmount":{"type":"number"}},"required":["name","amount"]}},"totalAmount":{"type":"number"}},"required":["expenseType","claimDate","items","totalAmount"]}',
+     '{"type":"object","properties":{"expenseType":{"type":"string"},"claimDate":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":["string","null"]},"quantity":{"type":["number","null"]},"unitPrice":{"type":["number","null"]},"date":{"type":["string","null"]},"city":{"type":["string","null"]},"hotelDays":{"type":["integer","null"]},"hotelAmount":{"type":["number","null"]},"transportAmount":{"type":["number","null"]},"subsidyAmount":{"type":["number","null"]}},"required":["name","amount"]}},"totalAmount":{"type":"number"}},"required":["expenseType","claimDate","items","totalAmount"]}',
      1, '1.0', 'FINANCE', 0),
     (5, 1, 'duplicate_check', '重复报销检测',
      '按申请人+商户+金额+日期区间查历史报销单，返回疑似重复。入参 reimbId（报销单ID，agent-core 按此读当前+历史 OCR 商户）。',

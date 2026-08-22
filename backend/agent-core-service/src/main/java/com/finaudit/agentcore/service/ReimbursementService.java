@@ -7,6 +7,8 @@ import com.finaudit.agentcore.enums.ReimbursementStatus;
 import com.finaudit.agentcore.enums.TaskType;
 import com.finaudit.agentcore.mapper.ExpenseReimbursementMapper;
 import com.finaudit.agentcore.pojo.dto.ReimbursementItemRequest;
+import com.finaudit.agentcore.pojo.dto.ReimbursementResubmitRequest;
+import com.finaudit.agentcore.pojo.dto.ReimbursementResubmitResult;
 import com.finaudit.agentcore.pojo.dto.ReimbursementSubmitRequest;
 import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
 import com.finaudit.agentcore.pojo.entity.ExpenseAttachment;
@@ -21,6 +23,7 @@ import com.finaudit.starter.web.feign.FileServiceFeign;
 import com.finaudit.starter.web.feign.dto.DuplicateCheckVO;
 import com.finaudit.starter.web.feign.dto.DuplicateItemVO;
 import com.finaudit.starter.web.feign.dto.FileRecordVO;
+import com.finaudit.starter.web.mask.util.MaskUtil;
 import com.finaudit.starter.web.result.R;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -194,20 +197,19 @@ public class ReimbursementService {
     }
 
     /**
-     * 员工分页查询本人报销单
-     * 多租户拦截器自动隔离其他租户数据；
-     * 筛选规则：指定申请人仅查询本人单据，status传空则查询全部状态单据；
-     * 排序：单据ID倒序，最新单据靠前。
-     * @param pageNum 页码
-     * @param pageSize 每页条数
-     * @param status 单据审核状态（为空查全部）
-     * @param applicantId 当前登录员工ID
-     * @return 分页报销单基础VO
+     * 报销单分页查询（P3b 可见性统一：finance 看本租户全量，普通用户仅本人）。
+     * 多租户拦截器自动隔离其他租户数据；status 传空则查询全部状态单据；单据 ID 倒序。
+     *
+     * @param pageNum     页码
+     * @param pageSize    每页条数
+     * @param status      单据审核状态（为空查全部）
+     * @param applicantId 当前登录员工 ID
+     * @param finance     财务角色（admin/auditor）：跳过申请人过滤，看本租户全量
      */
-    public Page<ReimbursementVO> page(int pageNum, int pageSize, String status, Long applicantId) {
+    public Page<ReimbursementVO> page(int pageNum, int pageSize, String status, Long applicantId, boolean finance) {
         LambdaQueryWrapper<ExpenseReimbursement> wrapper = new LambdaQueryWrapper<ExpenseReimbursement>()
                 .orderByDesc(ExpenseReimbursement::getId)
-                .eq(applicantId != null, ExpenseReimbursement::getApplicantId, applicantId);
+                .eq(!finance && applicantId != null, ExpenseReimbursement::getApplicantId, applicantId);
         if (status != null && !status.isBlank()) {
             wrapper.eq(ExpenseReimbursement::getStatus, status);
         }
@@ -218,25 +220,169 @@ public class ReimbursementService {
     }
 
     /**
-     * 报销单详情查询（含明细+附件预览链接）
-     * 鉴权：仅单据提交人可查看，其他员工禁止访问；
-     * 租户隔离由MybatisPlus多租户拦截器自动控制。
-     * @param id 报销单主键ID
-     * @param applicantId 当前登录员工ID
-     * @return 完整详情VO（单据信息+明细+附件带预签名URL）
-     * @throws BizException 单据不存在、查看人非单据提交人时抛出
+     * 报销单详情查询（含明细+附件预览链接）。
+     * 鉴权（P3b 可见性统一）：非财务角色仅单据提交人可查看；财务可看本租户任意单据
+     * （租户隔离由多租户拦截器自动控制，防跨租户）。
+     *
+     * @param id          报销单主键 ID
+     * @param applicantId 当前登录员工 ID
+     * @param finance     财务角色（admin/auditor）：跳过本人校验
      */
-    public ReimbursementDetailVO detail(Long id, Long applicantId) {
+    public ReimbursementDetailVO detail(Long id, Long applicantId, boolean finance) {
         ExpenseReimbursement reimb = reimbursementMapper.selectById(id);
         if (reimb == null) {
             throw new BizException("报销单不存在: " + id);
         }
-        if (applicantId != null && !applicantId.equals(reimb.getApplicantId())) {
+        if (!finance && applicantId != null && !applicantId.equals(reimb.getApplicantId())) {
             throw new BizException("无权查看他人报销单");
         }
+        return toDetail(reimb);
+    }
+
+    /**
+     * 按任务 ID 查报销单详情（P3b 工单详情供财务查看，**无申请人过滤**——鉴权由工单读接口控制）。
+     * GENERIC 任务无关联报销单时返回 null。
+     */
+    public ReimbursementDetailVO detailByTaskId(Long taskId) {
+        ExpenseReimbursement reimb = reimbursementMapper.selectOne(new LambdaQueryWrapper<ExpenseReimbursement>()
+                .eq(ExpenseReimbursement::getTaskId, taskId)
+                .last("limit 1"));
+        return reimb == null ? null : toDetail(reimb);
+    }
+
+    /**
+     * 按报销单 ID 查关联任务 ID（P3b 提交人动作入口：报销单 → task_id 反写 → 工单 uk_task 解析）。
+     * <p>报销单不存在或未关联任务返回 null，由调用方（工单状态机）落业务异常。</p>
+     */
+    public Long getTaskIdByReimbId(Long reimbId) {
+        ExpenseReimbursement reimb = reimbursementMapper.selectById(reimbId);
+        return reimb == null ? null : reimb.getTaskId();
+    }
+
+    /**
+     * amend 重跑覆盖报销单明细与总额（P3b）：明细转 JSON Map + total_amount 重算覆盖 + 状态回 RUNNING。
+     * <p>由 {@code AuditTicketService.amend} 在工单动作事务内调用；报销单不存在仅告警（GENERIC 任务无单据）。</p>
+     */
+    @Transactional
+    public void updateAmountAndItemsByTaskId(Long taskId, List<ReimbursementItemRequest> items, BigDecimal total) {
+        ExpenseReimbursement reimb = reimbursementMapper.selectOne(new LambdaQueryWrapper<ExpenseReimbursement>()
+                .eq(ExpenseReimbursement::getTaskId, taskId)
+                .last("limit 1"));
+        if (reimb == null) {
+            log.warn("任务 {} 无关联报销单，跳过明细/总额覆盖", taskId);
+            return;
+        }
+        reimb.setItems(ExpenseReimbursement.itemsToMaps(items));
+        reimb.setTotalAmount(total);
+        reimb.setStatus(ReimbursementStatus.RUNNING.name());
+        reimbursementMapper.updateById(reimb);
+    }
+
+    /**
+     * 修改重跑覆盖报销单（P3b 工作流重设计，提交人 resubmit 的数据侧）。
+     * <p>与 {@link #submit} 同事务语义：附件权限校验 → 服务端重算总额 → 覆盖明细相关字段
+     * （expenseType/claimDate/remark/items/totalAmount/status=RUNNING）→ 附件重绑（解绑移除项 +
+     * 绑定新增项）→ 组装新任务快照入参。</p>
+     * <p><b>title / deptName 服务端强制沿用库内旧值</b>（请求体不含这两字段，用户确认决策 2），
+     * 防提交人借重跑改标题/部门。</p>
+     *
+     * @param reimbId  报销单 ID（须已关联审核任务，否则无法定位同单续跑的工单）
+     * @param request  修改后明细请求（无 title/deptName）
+     * @param tenantId 租户 ID
+     * @return 重跑编排契约：taskId + 新任务快照入参 + 重算总额（供工单状态机继续）
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ReimbursementResubmitResult resubmit(Long reimbId, ReimbursementResubmitRequest request,
+                                                Long tenantId) {
+        ExpenseReimbursement reimb = reimbursementMapper.selectById(reimbId);
+        if (reimb == null) {
+            throw new BizException("报销单不存在: " + reimbId);
+        }
+        if (reimb.getTaskId() == null) {
+            throw new BizException("报销单未关联审核任务，无法修改重跑: " + reimbId);
+        }
+        // 1. 费用类型枚举合法性
+        ExpenseType.of(request.expenseType());
+        // 2. 附件存在且归属租户校验
+        List<FileRecordVO> files = fetchFiles(tenantId, request.fileRecordIds());
+        // 3. 服务端重算总额（不信任前端）
+        BigDecimal total = computeTotal(request.items());
+        // 4. 覆盖明细相关字段（title/deptName 保留库内旧值，见方法注释）
+        reimb.setExpenseType(request.expenseType());
+        reimb.setClaimDate(request.claimDate());
+        reimb.setRemark(request.remark());
+        reimb.setItems(ExpenseReimbursement.itemsToMaps(request.items()));
+        reimb.setTotalAmount(total);
+        reimb.setStatus(ReimbursementStatus.RUNNING.name());
+        reimbursementMapper.updateById(reimb);
+        // 5. 附件重绑（解绑移除项 + 绑定新增项，未变项不动）
+        attachmentService.rebindForReimb(request.fileRecordIds(), reimb.getId(), tenantId);
+        // 6. 组装新任务快照入参（字段结构与提交链路一致，供 RuleBasedFlowEngine 重规划投影）
+        Map<String, Object> inputParams = new LinkedHashMap<>();
+        inputParams.put("reimbId", reimb.getId());
+        inputParams.put("reimbNo", reimb.getReimbNo());
+        inputParams.put("title", reimb.getTitle());
+        inputParams.put("expenseType", reimb.getExpenseType());
+        inputParams.put("deptName", reimb.getDeptName());
+        inputParams.put("claimDate", reimb.getClaimDate());
+        inputParams.put("applicantId", reimb.getApplicantId());
+        inputParams.put("items", ExpenseReimbursement.itemsToMaps(request.items()));
+        inputParams.put("attachments", fileRefs(files));
+        inputParams.put("claimedTotal", total);
+        return new ReimbursementResubmitResult(reimb.getTaskId(), inputParams, total);
+    }
+
+    /**
+     * 构建报销单数据快照（P3b 快照留痕）：顶层字段 + 明细 + 附件结构化信息。
+     * <p>用于 audit_record.before_data/after_data：<b>不含预签名 URL 与 OSS 路径</b>
+     * （项目约定不透传）；日期转字符串，避免快照序列化遇 LocalDate 缺 JavaTimeModule 报错。</p>
+     */
+    public Map<String, Object> buildSnapshot(Long reimbId) {
+        ExpenseReimbursement reimb = reimbursementMapper.selectById(reimbId);
+        if (reimb == null) {
+            return null;
+        }
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("reimbId", reimb.getId());
+        snapshot.put("reimbNo", reimb.getReimbNo());
+        snapshot.put("title", reimb.getTitle());
+        snapshot.put("expenseType", reimb.getExpenseType());
+        snapshot.put("deptName", reimb.getDeptName());
+        snapshot.put("totalAmount", reimb.getTotalAmount());
+        snapshot.put("claimDate", reimb.getClaimDate() == null ? null : reimb.getClaimDate().toString());
+        snapshot.put("remark", reimb.getRemark());
+        snapshot.put("status", reimb.getStatus());
+        snapshot.put("items", reimb.getItems());
+        List<Map<String, Object>> atts = new ArrayList<>();
+        for (ExpenseAttachment a : attachmentService.listByReimbId(reimb.getId())) {
+            Map<String, Object> ref = new LinkedHashMap<>();
+            ref.put("fileRecordId", a.getFileRecordId());
+            ref.put("fileType", a.getFileType());
+            ref.put("ocrStatus", a.getOcrStatus());
+            // OCR结果进行脱敏
+            ref.put("ocrResult", MaskUtil.maskSensitiveMap(a.getOcrResult(), null));
+            atts.add(ref);
+        }
+        snapshot.put("attachments", atts);
+        return snapshot;
+    }
+
+    /**
+     * 查询报销单归属租户
+     * <p>仅返回 tenant_id，跨域只读，数据访问收敛本类；不存在返回 null（由调用方判定为越权/不存在）。</p>
+     * @param reimbId 报销单ID
+     * @return 该报销单的 tenantId；不存在返回 null
+     */
+    public Long findTenantIdByReimb(Long reimbId) {
+        ExpenseReimbursement reimb = reimbursementMapper.selectById(reimbId);
+        return reimb == null ? null : reimb.getTenantId();
+    }
+
+    /** 公共详情组装：明细 + 附件（含 OCR 字段）。 */
+    private ReimbursementDetailVO toDetail(ExpenseReimbursement reimb) {
         List<ReimbursementItemVO> items = reimb.getItems() == null ? List.of()
                 : reimb.getItems().stream().map(ReimbursementItemVO::from).toList();
-        List<AttachmentVO> attachments = attachmentService.listVOsByReimbId(id);
+        List<AttachmentVO> attachments = attachmentService.listVOsByReimbId(reimb.getId());
         return ReimbursementDetailVO.from(reimb, items, attachments);
     }
 
@@ -263,6 +409,34 @@ public class ReimbursementService {
         reimb.setStatus(status.name());
         reimbursementMapper.updateById(reimb);
         log.info("报销单 {} 审核状态回写: {} → {}", reimb.getReimbNo(), oldStatus, status);
+    }
+
+    /**
+     * 按任务 ID 作废报销单（P3b：提交人撤回 / 财务同意撤销）：状态置 CANCELLED + 附件解绑。
+     * <p>作废即释放附件占用（同 file_record 可复用），重复报销检测已排除 CANCELLED 单据。</p>
+     * <p><b>TODO（后置，登记于 future-roadmap §2）</b>：产品诉求「废单也可查看当时的票据」未落地。
+     * 现状：作废解绑后废单详情附件区为空，历史票据引用仅存在于审计留痕
+     * （audit_record.before_data 快照，含 fileRecordId/fileType/ocrStatus/ocrResult，无路径/预签名 URL）。
+     * 候选落地：作废时把当前附件引用快照持久到报销单新增 JSON 列（如 attachments_snapshot），
+     * toDetail 遇状态 CANCELLED 且活附件为空时按快照重建 VO（联取元数据 + 预签名 URL）——
+     * 无新服务依赖、无循环；勿回改作废解绑语义（作废为终态，保留绑定会锁死 file_record 复用到新单）。</p>
+     */
+    @Transactional
+    public void markCancelledByTaskId(Long taskId) {
+        ExpenseReimbursement reimb = reimbursementMapper.selectOne(
+                new LambdaQueryWrapper<ExpenseReimbursement>()
+                        .eq(ExpenseReimbursement::getTaskId, taskId)
+                        .last("limit 1"));
+        if (reimb == null) {
+            log.warn("任务 {} 无关联报销单，跳过作废回写", taskId);
+            return;
+        }
+        if (!ReimbursementStatus.CANCELLED.name().equals(reimb.getStatus())) {
+            reimb.setStatus(ReimbursementStatus.CANCELLED.name());
+            reimbursementMapper.updateById(reimb);
+        }
+        attachmentService.unbindByReimb(reimb.getId());
+        log.info("报销单 {} 已作废（CANCELLED），附件解绑", reimb.getReimbNo());
     }
 
     /**
@@ -297,6 +471,8 @@ public class ReimbursementService {
                         .eq(ExpenseReimbursement::getApplicantId, current.getApplicantId())
                         // 排除自身单据
                         .ne(ExpenseReimbursement::getId, reimbId)
+                        // 排除已作废单据（撤回/撤销后不得再当疑似重复候选）
+                        .ne(ExpenseReimbursement::getStatus, ReimbursementStatus.CANCELLED.name())
                         // 报销总金额完全相等
                         .eq(ExpenseReimbursement::getTotalAmount, current.getTotalAmount())
                         // 有日期才加30天区间过滤

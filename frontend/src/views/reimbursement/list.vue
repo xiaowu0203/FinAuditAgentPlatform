@@ -42,10 +42,13 @@ onMounted(() => load())
 </script>
 
 <template>
-  <el-card>
+  <el-card class="page-card">
     <template #header>
       <div class="list-header">
-        <span>我的报销单</span>
+        <div>
+          <div class="page-title card-title">我的报销单</div>
+          <div class="page-subtitle">查看个人报销记录、审核状态及对应任务</div>
+        </div>
         <div class="filters">
           <el-select
             v-model="query.status"
@@ -112,16 +115,8 @@ onMounted(() => load())
 </template>
 
 <style scoped>
-.list-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.filters {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.card-title {
+  font-size: 16px;
 }
 
 .pager {

@@ -39,4 +39,29 @@ public class BudgetService {
         return new BudgetVO(budget.getId(), budget.getDeptName(), budget.getPeriod(),
                 budget.getTotalBudget(), budget.getUsedAmount());
     }
+
+    /**
+     * 校验部门是否属于当前租户
+     * <p>以「该租户 budget 表是否出现过该部门名」为已知部门依据（无部门实体表，P5 再引入）。
+     * 租户完全没有预算记录（新租户）时按放行处理，避免破坏合法流程。</p>
+     *
+     * @param tenantId 租户ID
+     * @param deptName 待校验部门
+     * @return true=该部门为租户已知部门（或无预算记录）；false=非本租户部门（越权/虚构）
+     */
+    public boolean isTenantDept(Long tenantId, String deptName) {
+        if (deptName == null || deptName.isBlank()) {
+            return false;
+        }
+        Long anyDeptCount = budgetMapper.selectCount(
+                new LambdaQueryWrapper<Budget>().eq(Budget::getTenantId, tenantId));
+        // 该租户完全没有预算记录：无法判定部门归属，放行（新租户/未配置预算场景）
+        if (anyDeptCount == null || anyDeptCount == 0) {
+            return true;
+        }
+        Long match = budgetMapper.selectCount(new LambdaQueryWrapper<Budget>()
+                .eq(Budget::getTenantId, tenantId)
+                .eq(Budget::getDeptName, deptName));
+        return match != null && match > 0;
+    }
 }

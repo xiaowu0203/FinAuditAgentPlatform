@@ -1,5 +1,7 @@
 package com.finaudit.agentcore.domain;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -20,13 +22,13 @@ import java.util.List;
  * @param missingFields 缺失字段/材料清单（可空）
  */
 public record AuditConclusion(
-        String summary,
-        String decision,
-        Boolean matched,
-        BigDecimal claimedTotal,
-        BigDecimal verifiedTotal,
-        BigDecimal diff,
-        List<String> issues,
-        List<String> missingFields
+        @Schema(description = "审核结论文本") String summary,
+        @Schema(description = "审核处置") String decision,
+        @Schema(description = "金额是否一致") Boolean matched,
+        @Schema(description = "申报总额（可空）") BigDecimal claimedTotal,
+        @Schema(description = "核验总额（可空）") BigDecimal verifiedTotal,
+        @Schema(description = "差额（可空）") BigDecimal diff,
+        @Schema(description = "发现的问题清单（可空）") List<String> issues,
+        @Schema(description = "缺失字段/材料清单（可空）") List<String> missingFields
 ) {
 }
