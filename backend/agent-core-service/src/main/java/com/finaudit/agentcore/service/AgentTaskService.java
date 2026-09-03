@@ -1,6 +1,7 @@
 package com.finaudit.agentcore.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.finaudit.agentcore.enums.TaskStatus;
 import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -146,13 +148,22 @@ public class AgentTaskService {
     }
 
     // ---------- 状态迁移（编排器调用） ----------
+    // P3.5d 起状态迁移统一 CAS 化：UPDATE ... WHERE id=? AND status IN (期望态)，
+    // 返回 false 表示状态已被并发迁移（多实例部署 / MQ at-least-once 重复投递 / 迟到回调），
+    // 调用方必须放弃本次推进——这是多实例水平扩容前必须的状态机护栏。
 
     /**
-     * 更新任务状态为执行中
+     * 更新任务状态为执行中，并刷新本次执行开始时间（任务级超时预算计时起点）。
+     * <p>允许 PENDING → RUNNING（首次启动）与 RUNNING → RUNNING（断点续跑/重跑重新计时）。</p>
+     *
+     * @return false = 状态已被并发迁移，调用方应放弃启动
      */
-    public void markRunning(AgentTask task) {
+    public boolean markRunning(AgentTask task) {
         task.setStatus(TaskStatus.RUNNING.name());
-        taskMapper.updateById(task);
+        task.setStartedAt(LocalDateTime.now());
+        return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, task.getId())
+                .in(AgentTask::getStatus, TaskStatus.PENDING.name(), TaskStatus.RUNNING.name())) > 0;
     }
 
     /**
@@ -165,77 +176,123 @@ public class AgentTaskService {
     }
 
     /**
-     * 更新任务为成功状态，写入相应结果
+     * 更新任务为成功状态，写入相应结果。
+     * <p>期望态含 RUNNING（编排正常收尾）与 APPROVAL_PENDING（财务审批通过，工单动作）。</p>
+     *
+     * @return false = 状态已被并发迁移，调用方应放弃收尾
      */
-    public void markSuccess(AgentTask task, Map<String, Object> result, int finishedSteps) {
+    public boolean markSuccess(AgentTask task, Map<String, Object> result, int finishedSteps) {
         task.setResult(result);
         task.setStatus(TaskStatus.SUCCESS.name());
         task.setFinishedSteps(finishedSteps);
-        taskMapper.updateById(task);
+        return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, task.getId())
+                .in(AgentTask::getStatus, TaskStatus.RUNNING.name(), TaskStatus.APPROVAL_PENDING.name())) > 0;
     }
 
     /**
      * 更新任务为待审批（P3a 结果分支 NEED_REVIEW），写入流水线结果与进度。
      * <p>镜像 markSuccess，仅状态为 APPROVAL_PENDING；审批动作由 P3b 工单模块流转
      * （通过→SUCCESS、驳回→REJECTED）。</p>
+     *
+     * @return false = 状态已被并发迁移，调用方应放弃建单
      */
-    public void markApprovalPending(AgentTask task, Map<String, Object> result, int finishedSteps) {
+    public boolean markApprovalPending(AgentTask task, Map<String, Object> result, int finishedSteps) {
         task.setResult(result);
         task.setStatus(TaskStatus.APPROVAL_PENDING.name());
         task.setFinishedSteps(finishedSteps);
-        taskMapper.updateById(task);
+        return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, task.getId())
+                .eq(AgentTask::getStatus, TaskStatus.RUNNING.name())) > 0;
     }
 
     /**
-     * 更新任务为失败状态，写入相关错误信息
+     * 更新任务为失败状态，写入相关错误信息。
+     *
+     * @return false = 状态已被并发迁移，调用方应放弃失败联动（报销单回写/工单复位）
      */
-    public void markFailed(AgentTask task, String errorMsg) {
+    public boolean markFailed(AgentTask task, String errorMsg) {
         task.setStatus(TaskStatus.FAILED.name());
         task.setErrorMsg(errorMsg);
-        taskMapper.updateById(task);
+        return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, task.getId())
+                .eq(AgentTask::getStatus, TaskStatus.RUNNING.name())) > 0;
     }
 
     /**
-     * 更新任务为人工驳回终态
+     * 更新任务为人工驳回终态。
+     *
+     * @return false = 状态已被并发迁移
      */
-    public void markRejected(AgentTask task) {
+    public boolean markRejected(AgentTask task) {
         task.setStatus(TaskStatus.REJECTED.name());
-        taskMapper.updateById(task);
+        return casFromApprovalPending(task);
     }
 
     /**
      * 更新任务为终止终态。
+     *
+     * @return false = 状态已被并发迁移
      */
-    public void markTerminated(AgentTask task) {
+    public boolean markTerminated(AgentTask task) {
         task.setStatus(TaskStatus.REJECTED.name());
         task.setErrorMsg("审批工单终止");
-        taskMapper.updateById(task);
+        return casFromApprovalPending(task);
     }
 
     /**
      * 更新任务为作废终态，记录原因供展示，
      * resume/onToolResult 均以 CANCELLED 拒绝，防迟到回调写脏状态。
+     *
+     * @return false = 状态已被并发迁移
      */
-    public void markCancelled(AgentTask task, String reason) {
+    public boolean markCancelled(AgentTask task, String reason) {
         task.applyCancelled(reason);
-        taskMapper.updateById(task);
+        return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, task.getId())
+                .in(AgentTask::getStatus, TaskStatus.PENDING.name(), TaskStatus.RUNNING.name(),
+                        TaskStatus.APPROVAL_PENDING.name())) > 0;
     }
 
     /**
      * amend 重跑准备、清空结果与错误、
-     * 状态回 RUNNING、已完成步骤清零——单次 updateById 原子完成。
-     * <p>由 {@code AuditTicketService.amend} 在工单动作事务内调用；重跑由编排器 continueTask 驱动
-     * （Controller 在事务提交后触发），首个重跑步骤恒为 TOOL→MQ。</p>
+     * 状态回 RUNNING、已完成步骤清零、刷新本次执行开始时间——单条条件 UPDATE 原子完成。
+     * <p>期望态含 APPROVAL_PENDING（工单待审批时修改）与 REJECTED（工单已驳回后修改）。
+     * 注意 result/errorMsg 置空必须用 wrapper 的 {@code set(..., null)} 显式写 NULL——
+     * entity 参数的 null 字段不会进 SET 子句，{@code updateById} 清不掉列值。</p>
      *
      * @param inputParams 修正后的任务快照入参（含新 items 与重算 claimedTotal）
+     * @return false = 状态已被并发迁移，调用方应放弃重跑
      */
-    public void prepareRerun(AgentTask task, Map<String, Object> inputParams) {
-        task.setInputParams(inputParams);
-        task.setResult(null);
-        task.setErrorMsg(null);
-        task.setStatus(TaskStatus.RUNNING.name());
-        task.setFinishedSteps(0);
-        taskMapper.updateById(task);
+    public boolean prepareRerun(AgentTask task, Map<String, Object> inputParams) {
+        boolean applied = taskMapper.update(null, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, task.getId())
+                .in(AgentTask::getStatus, TaskStatus.APPROVAL_PENDING.name(), TaskStatus.REJECTED.name())
+                .set(AgentTask::getInputParams, inputParams)
+                .set(AgentTask::getResult, null)
+                .set(AgentTask::getErrorMsg, null)
+                .set(AgentTask::getStatus, TaskStatus.RUNNING.name())
+                .set(AgentTask::getStartedAt, LocalDateTime.now())
+                .set(AgentTask::getFinishedSteps, 0)) > 0;
+        if (applied) {
+            // 内存实体同步（调用方随后 flowEngine.plan(task) 依赖新入参）
+            task.setInputParams(inputParams);
+            task.setResult(null);
+            task.setErrorMsg(null);
+            task.setStatus(TaskStatus.RUNNING.name());
+            task.setStartedAt(LocalDateTime.now());
+            task.setFinishedSteps(0);
+        }
+        return applied;
+    }
+
+    /**
+     * 审批终态迁移（驳回/终止）共用的 CAS：仅 APPROVAL_PENDING 可流转，防止对已收尾任务重复写终态。
+     */
+    private boolean casFromApprovalPending(AgentTask task) {
+        return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, task.getId())
+                .eq(AgentTask::getStatus, TaskStatus.APPROVAL_PENDING.name())) > 0;
     }
 
     /**

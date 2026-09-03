@@ -80,6 +80,7 @@
 | task_type | VARCHAR(20) | 业务类型：`REIMBURSEMENT` 报销审核 / `GENERIC` 通用分析（P2a 新增，规划器按业务注入提示词/工具） |
 | input_params | JSON | 任务入参（原始输入，含明细金额等） |
 | status | VARCHAR(20) | 任务状态，见下方状态机 |
+| started_at | DATETIME | 本次执行开始时间（启动/修改重跑刷新；任务级超时预算计时起点，P3.5d） |
 | total_steps | INT | 总步骤数 |
 | finished_steps | INT | 已完成步骤数 |
 | result | JSON | 最终结果（P3a 汇总 JSON；REIMBURSEMENT 可含 `steps`、`flowBranch`（`AUTO_PASS`/`NEED_REVIEW`）及 `reviewReasons`） |

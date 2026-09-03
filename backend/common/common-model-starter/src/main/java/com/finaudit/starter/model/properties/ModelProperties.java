@@ -22,7 +22,7 @@ public class ModelProperties {
     private String apiKey;
     /** Base URL，为空则用各模型默认地址 */
     private String baseUrl;
-    /** 请求超时（秒） */
+    /** 请求超时（秒）：模型 HTTP 客户端的连接/读取超时（DeepSeekAiClient 已接线，<=0 回退 60s） */
     private int timeoutSeconds = 60;
     /** 备用模型类型（默认模型故障时切换；可为 null，P1 未实现 Qwen/Claude 时保持空） */
     private ModelType fallbackType;

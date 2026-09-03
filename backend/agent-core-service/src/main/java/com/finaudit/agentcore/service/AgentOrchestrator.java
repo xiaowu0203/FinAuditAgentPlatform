@@ -2,6 +2,7 @@ package com.finaudit.agentcore.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.finaudit.agentcore.config.AgentExecutionProperties;
 import com.finaudit.agentcore.domain.AuditConclusion;
 import com.finaudit.agentcore.domain.FlowDecision;
 import com.finaudit.agentcore.domain.RiskAssessment;
@@ -27,6 +28,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -69,6 +72,8 @@ public class AgentOrchestrator {
     private final ReimbursementService reimbursementService;
     /** 审批工单服务（P3b：NEED_REVIEW 进入审批态 / AUTO_PASS 闭合 AMENDED 工单） */
     private final AuditTicketService auditTicketService;
+    /** 执行加固配置（P3.5d：任务级超时预算） */
+    private final AgentExecutionProperties executionProperties;
 
     /**
      * 构造注入所有依赖组件
@@ -81,12 +86,14 @@ public class AgentOrchestrator {
      * @param modelFactory 大模型客户端工厂，获取DeepSeek对话实例
      * @param reimbursementService 报销单服务（终态回写审核状态）
      * @param auditTicketService 审批工单服务（P3b 审批态进入/闭合）
+     * @param executionProperties 执行加固配置（任务级超时预算）
      */
     public AgentOrchestrator(AgentTaskService taskService, AgentTaskStepService stepService,
                              TaskPlanner planner, RuleBasedFlowEngine flowEngine,
                              ReviewFlowDecider reviewFlowDecider, TaskEventPublisher eventPublisher,
                              ChatClientFactory modelFactory, ReimbursementService reimbursementService,
-                             AuditTicketService auditTicketService) {
+                             AuditTicketService auditTicketService,
+                             AgentExecutionProperties executionProperties) {
         this.taskService = taskService;
         this.stepService = stepService;
         this.planner = planner;
@@ -96,6 +103,7 @@ public class AgentOrchestrator {
         this.modelClient = modelFactory.getClient(ModelType.DEEPSEEK);
         this.reimbursementService = reimbursementService;
         this.auditTicketService = auditTicketService;
+        this.executionProperties = executionProperties;
     }
 
     /**
@@ -117,8 +125,12 @@ public class AgentOrchestrator {
             log.warn("任务 {} 状态为 {}，跳过启动", taskId, task.getStatus());
             return;
         }
-        // 修改任务状态为【执行中】
-        taskService.markRunning(task);
+        // CAS 修改任务状态为【执行中】：失败说明已被并发实例/线程启动（多实例部署下
+        // task.submit 重复消费的防线），放弃本次启动，避免双份规划+双份步骤
+        if (!taskService.markRunning(task)) {
+            log.warn("任务 {} 启动竞争失败（状态已被并发迁移），跳过", taskId);
+            return;
+        }
         // 报销单状态同步为【审核中】
         syncReimbStatus(task, ReimbursementStatus.RUNNING);
         /**
@@ -157,10 +169,17 @@ public class AgentOrchestrator {
                 .filter(s -> !StepStatus.SUCCESS.name().equals(s.getStatus()))
                 .findFirst()
                 .orElse(null);
-        // 所有步骤均执行成功，任务整体收尾
+        // 所有步骤均执行成功，任务整体收尾（收尾不做超时拦截：工作已完成，失败反而丢结果）
         if (next == null) {
             // 标记任务成功
             finalizeSuccess(task, steps);
+            return;
+        }
+        // 任务级超时防线（P3.5d）：本次执行超过预算仍未到收尾，强制失败终止，
+        // 防止重试风暴/极端慢步骤无限占用任务与 MQ 消费线程
+        if (isTaskTimeout(task)) {
+            failTask(task, "任务执行超时（预算 " + executionProperties.getTaskTimeoutMinutes()
+                    + " 分钟），已终止，可通过续跑接口人工恢复");
             return;
         }
         // 当前步骤正在执行中，等待MQ回调结果，不重复分发
@@ -169,6 +188,20 @@ public class AgentOrchestrator {
         }
         // 分发执行当前待执行步骤
         dispatch(task, next);
+    }
+
+    /**
+     * 任务级超时判定：以本次执行开始时间（started_at，启动/重跑刷新）为计时起点；
+     * 存量行 started_at 为空时回退 createdAt。预算 &lt;=0 视为关闭检查。
+     */
+    private boolean isTaskTimeout(AgentTask task) {
+        int budget = executionProperties.getTaskTimeoutMinutes();
+        if (budget <= 0) {
+            return false;
+        }
+        LocalDateTime startedAt = task.getStartedAt() != null ? task.getStartedAt() : task.getCreatedAt();
+        return startedAt != null
+                && Duration.between(startedAt, LocalDateTime.now()).toMinutes() >= budget;
     }
 
     /**
@@ -181,8 +214,12 @@ public class AgentOrchestrator {
      * @param step 当前待执行步骤实体
      */
     private void dispatch(AgentTask task, AgentTaskStep step) {
-        // 更新步骤状态为【执行中】
-        stepService.markRunning(step);
+        // CAS 更新步骤状态为【执行中】：失败说明该步骤已被并发分发（多实例重复投递防线），
+        // 放弃执行——否则 LLM 步骤会双份调用计费、TOOL 步骤会双份执行
+        if (!stepService.markRunning(step)) {
+            log.warn("步骤 {} 分发竞争失败（状态已被并发迁移），跳过执行", step.getId());
+            return;
+        }
         // 若为LLM类型，执行LLM步骤
         if ("LLM".equalsIgnoreCase(step.getStepType())) {
             executeLlmStep(task, step);
@@ -258,8 +295,12 @@ public class AgentOrchestrator {
                             null, null, null, null, List.of(injection.detail()), null);
                 }
                 // 将data转为Map<String, Object> 入库，状态置SUCCESS
-                stepService.markSuccess(step,
-                        OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}));
+                // CAS 失败说明步骤已被并发迁移（如断点续跑重置），丢弃本次结果避免脏写
+                if (!stepService.markSuccess(step,
+                        OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}))) {
+                    log.warn("步骤 {} 结果写入竞争失败（状态已被并发迁移），丢弃", step.getId());
+                    return;
+                }
                 // 刷新完成的步骤数
                 refreshFinishedSteps(task.getId());
                 // 正常推进（finalizeSuccess 将按 NEED_REVIEW 进入审批工单）
@@ -277,19 +318,23 @@ public class AgentOrchestrator {
             else {
                 data = modelClient.chatStructured(system, user, AuditConclusion.class).data();
             }
-            // 将data转为Map<String, Object> 入库，状态置SUCCESS
-            stepService.markSuccess(step,
-                    OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}));
+            // 将data转为Map<String, Object> 入库，状态置SUCCESS（CAS 同上，竞争失败丢弃）
+            if (!stepService.markSuccess(step,
+                    OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}))) {
+                log.warn("步骤 {} 结果写入竞争失败（状态已被并发迁移），丢弃", step.getId());
+                return;
+            }
             // 刷新任务已完成步骤数量
             refreshFinishedSteps(task.getId());
             // 自动推进执行下一个步骤
             continueTask(task.getId());
         } catch (Exception e) {
             log.error("LLM 步骤 {} 失败: {}", step.getStepName(), e.getMessage(), e);
-            // 异常记录步骤错误信息，标记步骤失败
-            stepService.markFailed(step, e.getMessage());
-            // 整个任务标记失败终止流程
-            failTask(task, "LLM 步骤[" + step.getStepName() + "] 失败: " + e.getMessage());
+            // 异常记录步骤错误信息，标记步骤失败（CAS 失败=已被并发迁移，放弃任务级失败联动）
+            if (stepService.markFailed(step, e.getMessage())) {
+                // 整个任务标记失败终止流程
+                failTask(task, "LLM 步骤[" + step.getStepName() + "] 失败: " + e.getMessage());
+            }
         }
     }
 
@@ -326,19 +371,23 @@ public class AgentOrchestrator {
         }
         // 校验任务是否存在，不存在抛出异常
         AgentTask task = taskService.getRequired(msg.taskId());
-        // P3b 防御：任务已作废/已驳回（含终止）时丢弃迟到的 tool.result，防把已终结任务的步骤标 SUCCESS（脏状态）
+        // 迟到回调防御（P3.5d 收紧为白名单）：仅 RUNNING 任务允许消费工具结果。
+        // 此前只拉黑 CANCELLED/REJECTED，FAILED/APPROVAL_PENDING/SUCCESS 的迟到结果仍会把
+        // 步骤改写成 SUCCESS（脏状态）；改为白名单后一律丢弃。
         String taskStatus = task.getStatus();
-        if (TaskStatus.CANCELLED.name().equals(taskStatus)
-                || TaskStatus.REJECTED.name().equals(taskStatus)) {
-            log.warn("任务 {} 已终结（{}），丢弃迟到的 tool.result: stepId={}",
+        if (!TaskStatus.RUNNING.name().equals(taskStatus)) {
+            log.warn("任务 {} 非执行中（{}），丢弃迟到的 tool.result: stepId={}",
                     msg.taskId(), taskStatus, msg.stepId());
             return;
         }
 
         // 若工具执行成功
         if (msg.success()) {
-            // 更新步骤为成功
-            stepService.markSuccess(step, msg.result());
+            // CAS 更新步骤为成功：失败说明步骤已被并发迁移（重复投递/迟到结果），丢弃本次结果
+            if (!stepService.markSuccess(step, msg.result())) {
+                log.warn("步骤 {} 结果写入竞争失败（状态已被并发迁移），丢弃 tool.result", msg.stepId());
+                return;
+            }
             // 刷新任务已完成步骤数量
             refreshFinishedSteps(task.getId());
             log.info("工具 {} 步骤成功: stepId={}", msg.toolCode(), msg.stepId());
@@ -350,16 +399,20 @@ public class AgentOrchestrator {
         // 若工具执行失败，执行重试机制（最多3次）
         int retry = step.getRetryCount() == null ? 0 : step.getRetryCount();
         if (retry < MAX_RETRY) {
-            // 重试次数自增，重置步骤状态为执行中，重新发布执行事件
-            stepService.markRetrying(step, retry + 1, msg.errorMsg());
+            // 重试次数自增，CAS 重置步骤状态为执行中；失败则不重发，防双份工具执行
+            if (!stepService.markRetrying(step, retry + 1, msg.errorMsg())) {
+                log.warn("步骤 {} 重试置位竞争失败（状态已被并发迁移），放弃重试", msg.stepId());
+                return;
+            }
             log.warn("工具 {} 失败，第 {} 次重试: {}", msg.toolCode(), retry + 1, msg.errorMsg());
             eventPublisher.publishToolExecute(task, step);
         } else {
-            // 重试次数已达到最大次数，标记步骤失败
-            stepService.markFailed(step, msg.errorMsg());
-            // 任务终止失败
-            failTask(task, "步骤[" + step.getStepName() + "] 重试 " + MAX_RETRY
-                    + " 次仍失败: " + msg.errorMsg());
+            // 重试次数已达到最大次数，CAS 标记步骤失败；失败说明已被并发迁移，放弃任务级联动
+            if (stepService.markFailed(step, msg.errorMsg())) {
+                // 任务终止失败
+                failTask(task, "步骤[" + step.getStepName() + "] 重试 " + MAX_RETRY
+                        + " 次仍失败: " + msg.errorMsg());
+            }
         }
     }
 
@@ -395,8 +448,11 @@ public class AgentOrchestrator {
         stepService.listByTask(taskId).stream()
                 .filter(s -> StepStatus.RUNNING.name().equals(s.getStatus()))
                 .forEach(stepService::resetRunningToPending);
-        // 重新驱动任务执行
-        taskService.markRunning(task);
+        // CAS 重回【执行中】并刷新本次执行开始时间（续跑重新计时）；竞争失败则放弃续跑
+        if (!taskService.markRunning(task)) {
+            log.warn("任务 {} 续跑竞争失败（状态已被并发迁移），跳过", taskId);
+            return;
+        }
         // 自动推进执行下一个步骤
         continueTask(taskId);
     }
@@ -441,8 +497,11 @@ public class AgentOrchestrator {
                 log.info("任务 {} 命中人工复核分支，原因: {}", task.getTaskNo(), decision.reviewReasons());
                 return;
             }
-            // 更新任务为成功状态
-            taskService.markSuccess(task, result, steps.size());
+            // CAS 更新任务为成功状态（AUTO_PASS）
+            if (!taskService.markSuccess(task, result, steps.size())) {
+                log.warn("任务 {} 收尾竞争失败（状态已被并发迁移），放弃 AUTO_PASS 收尾", task.getId());
+                return;
+            }
             log.info("任务 {} 自动通过（AUTO_PASS），共 {} 步", task.getTaskNo(), steps.size());
             // 报销单审核状态回写
             syncReimbStatus(task, ReimbursementStatus.SUCCESS);
@@ -451,8 +510,11 @@ public class AgentOrchestrator {
             return;
         }
 
-        // 更新任务为成功
-        taskService.markSuccess(task, result, steps.size());
+        // CAS 更新任务为成功（GENERIC）
+        if (!taskService.markSuccess(task, result, steps.size())) {
+            log.warn("任务 {} 收尾竞争失败（状态已被并发迁移），放弃收尾", task.getId());
+            return;
+        }
         log.info("任务 {} 执行成功，共 {} 步", task.getTaskNo(), steps.size());
         // 报销单状态回写：按 LLM 汇总决策细化（REJECT→FAILED、NEED_INFO→MANUAL_REVIEW，其余→SUCCESS）
         syncReimbStatus(task, resolveSuccessStatus(extractDecision(steps)));
@@ -464,7 +526,11 @@ public class AgentOrchestrator {
      * @param error 失败原因描述
      */
     private void failTask(AgentTask task, String error) {
-        taskService.markFailed(task, error);
+        // CAS 标记失败：竞争失败说明任务已被并发迁移（如已作废），放弃全部失败联动
+        if (!taskService.markFailed(task, error)) {
+            log.warn("任务 {} 失败标记竞争失败（状态已被并发迁移），放弃失败联动", task.getId());
+            return;
+        }
         log.error("任务 {} 失败: {}", task.getTaskNo(), error);
         // 报销单状态回写【审核失败】
         syncReimbStatus(task, ReimbursementStatus.FAILED);

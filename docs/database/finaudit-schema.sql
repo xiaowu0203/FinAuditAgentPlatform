@@ -1,6 +1,6 @@
 -- =====================================================================
 -- FinAuditAgentPlatform 数据库初始化脚本
--- 版本: P3b（多 Agent 角色化与规则流水线 + 审批工单闭环） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
+-- 版本: P3.5d（RBAC 权限体系 + 部门实体 + 安全可靠性加固） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
 -- 说明: 可直接整体执行；DROP TABLE IF EXISTS 保证幂等（会清空重灌）。
 --       本机执行: mysql -uroot -p < docs/database/finaudit-schema.sql
 --       已有数据的环境只跑增量: mysql -uroot -p < docs/database/migration-P3a.sql（再跑 migration-P3b.sql）
@@ -127,6 +127,7 @@ CREATE TABLE agent_task (
     task_type     VARCHAR(20)   NOT NULL DEFAULT 'GENERIC' COMMENT '业务类型：REIMBURSEMENT 报销审核 / GENERIC 通用分析（P2a 新增，规划器按业务注入提示词/工具）',
     input_params  JSON          NOT NULL COMMENT '任务入参（原始输入，含明细金额等）',
     status        VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '任务状态',
+    started_at    DATETIME      DEFAULT NULL COMMENT '本次执行开始时间（启动/修改重跑刷新；任务级超时预算计时起点，P3.5d）',
     total_steps   INT           NOT NULL DEFAULT 0 COMMENT '总步骤数',
     finished_steps INT          NOT NULL DEFAULT 0 COMMENT '已完成步骤数',
     result        JSON          DEFAULT NULL COMMENT '最终结果（汇总 JSON）',

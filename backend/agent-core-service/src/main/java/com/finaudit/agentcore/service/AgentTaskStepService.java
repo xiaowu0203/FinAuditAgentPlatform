@@ -1,6 +1,7 @@
 package com.finaudit.agentcore.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.finaudit.agentcore.domain.TaskPlanStep;
 import com.finaudit.agentcore.enums.StepStatus;
 import com.finaudit.agentcore.mapper.AgentTaskStepMapper;
@@ -61,49 +62,72 @@ public class AgentTaskStepService {
     }
 
     // ---------- 状态迁移 ----------
+    // P3.5d 起步骤状态迁移统一 CAS 化（WHERE id=? AND status=期望态）：
+    // 步骤是 LLM 调用 / 工具执行的实际分发单元，CAS 失败即放弃执行，从根上杜绝
+    // 多实例重复投递 / 迟到回调导致的「同一步骤双跑」（LLM 重复计费、工具重复执行）。
 
     /**
      * 步骤进入执行中（PENDING → RUNNING）。
+     *
+     * @return false = 步骤已被并发分发/迁移，调用方必须跳过执行
      */
-    public void markRunning(AgentTaskStep step) {
+    public boolean markRunning(AgentTaskStep step) {
         step.setStatus(StepStatus.RUNNING.name());
-        stepMapper.updateById(step);
+        return stepMapper.update(step, new LambdaUpdateWrapper<AgentTaskStep>()
+                .eq(AgentTaskStep::getId, step.getId())
+                .eq(AgentTaskStep::getStatus, StepStatus.PENDING.name())) > 0;
     }
 
     /**
-     * 步骤执行成功（→ SUCCESS），写入输出。
+     * 步骤执行成功（RUNNING → SUCCESS），写入输出。
+     *
+     * @return false = 步骤状态已被并发迁移（如迟到结果/断点续跑重置），调用方应丢弃本次结果
      */
-    public void markSuccess(AgentTaskStep step, Map<String, Object> output) {
+    public boolean markSuccess(AgentTaskStep step, Map<String, Object> output) {
         step.setOutput(output);
         step.setStatus(StepStatus.SUCCESS.name());
-        stepMapper.updateById(step);
+        return stepMapper.update(step, new LambdaUpdateWrapper<AgentTaskStep>()
+                .eq(AgentTaskStep::getId, step.getId())
+                .eq(AgentTaskStep::getStatus, StepStatus.RUNNING.name())) > 0;
     }
 
     /**
-     * 步骤执行失败（→ FAILED），写入错误信息。
+     * 步骤执行失败（RUNNING → FAILED），写入错误信息。
+     *
+     * @return false = 步骤状态已被并发迁移，调用方应放弃任务级失败联动
      */
-    public void markFailed(AgentTaskStep step, String errorMsg) {
+    public boolean markFailed(AgentTaskStep step, String errorMsg) {
         step.setStatus(StepStatus.FAILED.name());
         step.setErrorMsg(errorMsg);
-        stepMapper.updateById(step);
+        return stepMapper.update(step, new LambdaUpdateWrapper<AgentTaskStep>()
+                .eq(AgentTaskStep::getId, step.getId())
+                .eq(AgentTaskStep::getStatus, StepStatus.RUNNING.name())) > 0;
     }
 
     /**
-     * 工具失败后重试（→ RUNNING），累计重试次数并记录错误信息。
+     * 工具失败后重试（RUNNING → RUNNING），累计重试次数并记录错误信息。
+     *
+     * @return false = 步骤状态已被并发迁移，调用方不应重发执行事件
      */
-    public void markRetrying(AgentTaskStep step, int retryCount, String errorMsg) {
+    public boolean markRetrying(AgentTaskStep step, int retryCount, String errorMsg) {
         step.setRetryCount(retryCount);
         step.setStatus(StepStatus.RUNNING.name());
         step.setErrorMsg(errorMsg);
-        stepMapper.updateById(step);
+        return stepMapper.update(step, new LambdaUpdateWrapper<AgentTaskStep>()
+                .eq(AgentTaskStep::getId, step.getId())
+                .eq(AgentTaskStep::getStatus, StepStatus.RUNNING.name())) > 0;
     }
 
     /**
      * 断点续跑时，将残留 RUNNING 步骤重置为 PENDING（服务重启后无消息在途）。
+     *
+     * @return false = 步骤状态已被并发迁移
      */
-    public void resetRunningToPending(AgentTaskStep step) {
+    public boolean resetRunningToPending(AgentTaskStep step) {
         step.setStatus(StepStatus.PENDING.name());
-        stepMapper.updateById(step);
+        return stepMapper.update(step, new LambdaUpdateWrapper<AgentTaskStep>()
+                .eq(AgentTaskStep::getId, step.getId())
+                .eq(AgentTaskStep::getStatus, StepStatus.RUNNING.name())) > 0;
     }
 
     /**

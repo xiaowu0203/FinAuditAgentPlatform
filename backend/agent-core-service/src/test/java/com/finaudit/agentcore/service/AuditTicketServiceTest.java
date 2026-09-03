@@ -40,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -85,6 +86,13 @@ class AuditTicketServiceTest {
         });
         // 默认审批人上下文（P3.5 起 action 权限判定走 UserContext 的 audit:approve，替换角色字符串）
         UserContextHolder.set(approverContext());
+        // P3.5d CAS 状态迁移默认放行（Mockito 对 boolean 默认返回 false，会误触发"竞争失败"分支）
+        lenient().when(taskService.markApprovalPending(any(), any(), anyInt())).thenReturn(true);
+        lenient().when(taskService.markSuccess(any(), any(), anyInt())).thenReturn(true);
+        lenient().when(taskService.markRejected(any(AgentTask.class))).thenReturn(true);
+        lenient().when(taskService.markTerminated(any(AgentTask.class))).thenReturn(true);
+        lenient().when(taskService.markCancelled(any(AgentTask.class), anyString())).thenReturn(true);
+        lenient().when(taskService.prepareRerun(any(AgentTask.class), any())).thenReturn(true);
     }
 
     @AfterEach
