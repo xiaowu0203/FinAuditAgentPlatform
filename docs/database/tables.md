@@ -265,6 +265,35 @@ PENDING → WITHDRAWN（提交人撤回，直接生效）
 | created_at | DATETIME | 操作时间 |
 | deleted | TINYINT | 逻辑删除 |
 
+## 16. sys_permission 权限目录表（P3.5a 轻量资源级 RBAC）
+
+> 归属 tenant-service。**平台级全局表，无 tenant_id**（所有租户共用同一套权限标识符）；权限码由迁移脚本种子定义（代码即目录），运行期不增删。⚠️ 查询必须走多租户拦截器 ignore 名单（common-mybatisplus-starter 已注册 `sys_permission`）。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | 种子固定主键 |
+| perm_code | VARCHAR(64) UK | 权限标识符：系统管理操作级（`资源:操作`，如 user:create） / 业务资源级（如 reimb:viewAll） |
+| perm_name | VARCHAR(64) | 权限名称（分配界面展示） |
+| perm_type | VARCHAR(8) | MENU 菜单+接口 / API 仅接口 |
+| group_name | VARCHAR(32) | 分组（系统管理/财务业务/预留，分配界面分区） |
+| status | TINYINT | 1 启用 0 禁用 |
+| created_at / updated_at | DATETIME | |
+
+> 目录 v1：系统管理操作级 15 码（user:list/create/update/delete/assign-role、role:list/create/update/delete/assign-perm、dept:manage/create/update/delete、tenant:manage）+ 业务资源级 7 码（rule:manage、reimb/task/audit:viewAll、audit:approve、budget:viewAll）+ P4 预留 dashboard:admin。**`GET /api/v1/depts` 树查询不挂码**（报销选择器公用，读开写收）。
+
+## 17. sys_role_permission 角色权限映射表（P3.5a）
+
+> 归属 tenant-service。角色是权限的分配单位，分配为替换式（PUT 全量覆盖）。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| role_id | BIGINT | 角色 ID，索引 `idx_role` |
+| perm_id | BIGINT | 权限 ID（sys_permission.id），`uk_role_perm(tenant_id, role_id, perm_id)` |
+| created_at | DATETIME | |
+| deleted | TINYINT | 逻辑删除 |
+
 ## Seed 数据（脚本内置）
 
 | 表 | 数据 |
@@ -273,6 +302,8 @@ PENDING → WITHDRAWN（提交人撤回，直接生效）
 | sys_role | `admin`（管理员）、`auditor`（审核员） |
 | sys_user | `admin` / 密码 `admin123`（BCrypt） |
 | sys_user_role | admin 绑定 admin 角色 |
+| sys_permission | 权限目录 23 码种子（系统管理操作级 15 + 业务资源级 7 + 预留 1，P3.5a） |
+| sys_role_permission | admin 全量 22 码；auditor 财务业务 5 码（rule:manage + 三个 viewAll + audit:approve）；普通用户不授码 |
 | tool_registry | 预置 `amount_verify`（金额核验工具，含 JSON Schema）+ P2b 四个审核工具（ocr_extract/budget_query/rule_check/duplicate_check，scenario=FINANCE） |
 | budget | 默认租户 2026-08 四个部门预算种子 |
 | finance_rule | 四类规则种子（amount_limit/reimburse_expire/travel_standard/subsidy_limit，P2c 起 `published=1` 生效集） |

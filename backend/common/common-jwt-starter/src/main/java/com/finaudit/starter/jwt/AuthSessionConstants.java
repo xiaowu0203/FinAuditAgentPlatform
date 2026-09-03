@@ -17,4 +17,11 @@ public final class AuthSessionConstants {
 
     /** 用户级作废版本 key 前缀：{@code finaudit:auth:blackver:{userId}}，value=作废时间戳(epoch 秒) */
     public static final String BLACKVER_PREFIX = AUTH_PREFIX + "blackver:";
+
+    /**
+     * 用户权限快照 key 前缀（P3.5 实时生效）：{@code finaudit:auth:snapshot:{userId}}，
+     * value={@link AuthSnapshot} JSON 字符串（StringRedisTemplate 纯字符串），
+     * TTL=token 生命周期上界；角色/权限/部门变更时 tenant-service 重写。
+     */
+    public static final String SNAPSHOT_PREFIX = AUTH_PREFIX + "snapshot:";
 }

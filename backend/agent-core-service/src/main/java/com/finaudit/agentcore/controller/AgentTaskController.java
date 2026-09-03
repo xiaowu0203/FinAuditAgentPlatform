@@ -6,7 +6,9 @@ import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
 import com.finaudit.agentcore.pojo.vo.TaskVO;
 import com.finaudit.agentcore.service.AgentOrchestrator;
 import com.finaudit.agentcore.service.AgentTaskService;
-import com.finaudit.agentcore.util.FinanceRoles;
+import com.finaudit.starter.web.auth.RequirePerm;
+import com.finaudit.starter.web.auth.UserContext;
+import com.finaudit.starter.web.auth.UserContextHolder;
 import com.finaudit.starter.web.result.R;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -16,13 +18,15 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
+/**
+ * Agent 任务接口（P3.5 起可见性判定从角色字符串改为权限标识符 task:viewAll）。
+ */
 @Tag(name = "Agent 任务", description = "任务提交 / 详情 / 步骤 / 分页 / 断点续跑")
 @RestController
 @RequestMapping("/api/v1/tasks")
@@ -39,40 +43,44 @@ public class AgentTaskController {
     @Operation(summary = "提交任务", description = "创建一条 Agent 任务（taskType 缺省 GENERIC 通用分析；报销单走 POST /reimbursements 自动标记 REIMBURSEMENT），返回任务详情")
     @ApiResponse(responseCode = "200", description = "操作成功，body 为 R 包装的 TaskVO")
     @PostMapping
-    public R<TaskVO> submit(@Valid @RequestBody TaskSubmitRequest request,
-                            @RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId,
-                            @RequestHeader(name = "X-User-Id", required = false) Long userId) {
-        return R.success(taskService.createTask(request, tenantId, userId));
+    public R<TaskVO> submit(@Valid @RequestBody TaskSubmitRequest request) {
+        UserContext user = UserContextHolder.get();
+        Long tenantId = user == null || user.getTenantId() == null ? 1L : user.getTenantId();
+        return R.success(taskService.createTask(request, tenantId, user == null ? null : user.getUserId()));
     }
 
-    @Operation(summary = "任务详情", description = "按任务 ID 查询任务状态与概要信息；非财务角色仅本人可查")
+    @Operation(summary = "任务详情", description = "按任务 ID 查询任务状态与概要信息；无 task:viewAll 权限仅本人可查")
     @GetMapping("/{id}")
-    public R<TaskVO> detail(@PathVariable Long id,
-                            @RequestHeader(value = "X-User-Id", required = false) Long userId,
-                            @RequestHeader(value = "X-User-Roles", required = false) String roles) {
-        return R.success(taskService.getTask(id, userId, FinanceRoles.isFinance(roles)));
+    public R<TaskVO> detail(@PathVariable Long id) {
+        UserContext user = UserContextHolder.get();
+        return R.success(taskService.getTask(id,
+                user == null ? null : user.getUserId(),
+                UserContextHolder.hasPerm("task:viewAll")));
     }
 
-    @Operation(summary = "任务步骤", description = "查询任务已生成/已执行的步骤列表；非财务角色仅本人任务")
+    @Operation(summary = "任务步骤", description = "查询任务已生成/已执行的步骤列表；无 task:viewAll 权限仅本人任务")
     @GetMapping("/{id}/steps")
-    public R<List<StepVO>> steps(@PathVariable Long id,
-                                 @RequestHeader(value = "X-User-Id", required = false) Long userId,
-                                 @RequestHeader(value = "X-User-Roles", required = false) String roles) {
-        return R.success(taskService.listSteps(id, userId, FinanceRoles.isFinance(roles)));
+    public R<List<StepVO>> steps(@PathVariable Long id) {
+        UserContext user = UserContextHolder.get();
+        return R.success(taskService.listSteps(id,
+                user == null ? null : user.getUserId(),
+                UserContextHolder.hasPerm("task:viewAll")));
     }
 
-    @Operation(summary = "任务分页查询", description = "按状态分页查询任务，status 为空查全部；非财务角色仅本人创建，finance 看本租户全量")
+    @Operation(summary = "任务分页查询", description = "按状态分页查询任务，status 为空查全部；无 task:viewAll 权限仅本人创建，有权者看本租户全量")
     @GetMapping
     public R<Page<TaskVO>> page(@RequestParam(defaultValue = "1") int pageNum,
                                 @RequestParam(defaultValue = "10") int pageSize,
-                                @RequestParam(required = false) String status,
-                                @RequestHeader(value = "X-User-Id", required = false) Long userId,
-                                @RequestHeader(value = "X-User-Roles", required = false) String roles) {
-        return R.success(taskService.pageTask(pageNum, pageSize, status, userId, FinanceRoles.isFinance(roles)));
+                                @RequestParam(required = false) String status) {
+        UserContext user = UserContextHolder.get();
+        return R.success(taskService.pageTask(pageNum, pageSize, status,
+                user == null ? null : user.getUserId(),
+                UserContextHolder.hasPerm("task:viewAll")));
     }
 
     @Operation(summary = "断点续跑", description = "失败任务从失败步骤继续执行")
     @PostMapping("/{id}/resume")
+    @RequirePerm("task:viewAll")
     public R<Void> resume(@PathVariable Long id) {
         orchestrator.resume(id);
         return R.success();

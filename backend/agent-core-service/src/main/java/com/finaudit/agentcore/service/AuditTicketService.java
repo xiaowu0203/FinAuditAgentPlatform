@@ -20,8 +20,8 @@ import com.finaudit.agentcore.pojo.vo.AuditRecordVO;
 import com.finaudit.agentcore.pojo.vo.AuditTicketDetailVO;
 import com.finaudit.agentcore.pojo.vo.AuditTicketVO;
 import com.finaudit.agentcore.pojo.vo.ReimbursementDetailVO;
-import com.finaudit.agentcore.util.FinanceRoles;
 import com.finaudit.starter.redis.lock.DistributedLockTemplate;
+import com.finaudit.starter.web.auth.UserContextHolder;
 import com.finaudit.starter.web.exception.BizException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -198,10 +198,10 @@ public class AuditTicketService {
      * @param status 工单状态过滤，可为null
      * @param taskId 关联任务id过滤，可为null
      * @param userId 当前登录用户id
-     * @param roles 当前登录用户角色字符串
+     * @param viewAll 是否全量可见（audit:viewAll 权限码，网关快照权威）
      * @return 分页VO
      */
-    public Page<AuditTicketVO> page(int pageNum, int pageSize, String status, Long taskId, Long userId, String roles) {
+    public Page<AuditTicketVO> page(int pageNum, int pageSize, String status, Long taskId, Long userId, boolean viewAll) {
         LambdaQueryWrapper<AuditTicket> wrapper = new LambdaQueryWrapper<AuditTicket>()
                 .orderByDesc(AuditTicket::getId);
         if (status != null && !status.isBlank()) {
@@ -210,8 +210,8 @@ public class AuditTicketService {
         if (taskId != null) {
             wrapper.eq(AuditTicket::getTaskId, taskId);
         }
-        // 非财务角色，只能查看自己提交的工单
-        if (!FinanceRoles.isFinance(roles)) {
+        // 无 audit:viewAll 权限，只能查看自己提交的工单
+        if (!viewAll) {
             wrapper.eq(AuditTicket::getCreatedBy, userId);
         }
         Page<AuditTicket> page = ticketMapper.selectPage(new Page<>(pageNum, pageSize), wrapper);
@@ -224,24 +224,24 @@ public class AuditTicketService {
      * 获取工单详情：工单本体 + 报销单详情 + 全部操作留痕
      * @param id 工单id
      * @param userId 当前登录用户id
-     * @param roles 当前用户角色
+     * @param viewAll 是否全量可见（audit:viewAll 权限码）
      * @return 完整详情VO
      */
-    public AuditTicketDetailVO detail(Long id, Long userId, String roles) {
-        AuditTicketVO ticket = requireReadable(id, userId, roles);
+    public AuditTicketDetailVO detail(Long id, Long userId, boolean viewAll) {
+        AuditTicketVO ticket = requireReadable(id, userId, viewAll);
         ReimbursementDetailVO reimbursement = reimbursementService.detailByTaskId(ticket.getTaskId());
-        return AuditTicketDetailVO.from(ticket, reimbursement, records(id, userId, roles));
+        return AuditTicketDetailVO.from(ticket, reimbursement, records(id, userId, viewAll));
     }
 
     /**
      * 查询工单全部操作留痕记录，时间升序
      * @param id 工单id
      * @param userId 当前登录用户id
-     * @param roles 当前用户角色
+     * @param viewAll 是否全量可见（audit:viewAll 权限码）
      * @return 留痕VO列表
      */
-    public List<AuditRecordVO> records(Long id, Long userId, String roles) {
-        requireReadable(id, userId, roles);
+    public List<AuditRecordVO> records(Long id, Long userId, boolean viewAll) {
+        requireReadable(id, userId, viewAll);
         return recordMapper.selectList(new LambdaQueryWrapper<AuditRecord>()
                 .eq(AuditRecord::getTicketId, id)
                 .orderByAsc(AuditRecord::getId)).stream().map(AuditRecordVO::from).toList();
@@ -252,13 +252,14 @@ public class AuditTicketService {
      * <p>租户隔离由mybatis‑plus多租户拦截器自动注入条件；非财务只能读取自己创建工单</p>
      * @param id 工单id
      * @param userId 当前登录用户id
-     * @param roles 当前用户角色
+     * @param viewAll 是否全量可见（audit:viewAll 权限码）
      * @return 工单VO
      * @throws BizException 工单不存在 / 无权访问
      */
-    private AuditTicketVO requireReadable(Long id, Long userId, String roles) {
+    private AuditTicketVO requireReadable(Long id, Long userId, boolean viewAll) {
         AuditTicket ticket = getRequired(id);
-        if (!FinanceRoles.isFinance(roles) && !userId.equals(ticket.getCreatedBy())) {
+        // 无 audit:viewAll 权限仅本人可读；无身份上下文一律拒绝
+        if (!viewAll && (userId == null || !userId.equals(ticket.getCreatedBy()))) {
             throw new BizException("无权查看他人审批工单");
         }
         return AuditTicketVO.from(ticket);
@@ -470,7 +471,7 @@ public class AuditTicketService {
      * @param target 审批动作枚举
      * @param userId 财务操作人id
      * @param username 财务操作人名称
-     * @param roles 操作人角色
+     * @param roles 操作人角色（落审计留痕 operatorRoles；快照/JWT 降级源）
      * @param request 审批请求（审批意见等）
      * @return 动作执行完成后的工单VO
      */
@@ -484,9 +485,9 @@ public class AuditTicketService {
         return lockTemplate.executeInTx("audit:ticket:" + id, () -> {
             // 根据ID查询工单信息
             AuditTicket ticket = getRequired(id);
-            // 校验是否具备财务审批角色
-            if (!FinanceRoles.isFinance(roles)) {
-                throw new BizException("无审批权限：需要 admin/auditor 角色");
+            // 权限兜底（Controller 已挂 @RequirePerm("audit:approve")；此处防内部直连/遗漏调用，fail-closed）
+            if (!UserContextHolder.hasPerm("audit:approve")) {
+                throw new BizException("无审批权限：需要 audit:approve 权限");
             }
             // 校验当前工单状态是否允许执行该动作
             if (!allowedByStatus(target, ticket.getStatus())) {

@@ -1,6 +1,7 @@
 package com.finaudit.tenant.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.finaudit.starter.web.auth.RequirePerm;
 import com.finaudit.starter.web.result.R;
 import com.finaudit.tenant.pojo.dto.TenantCreateRequest;
 import com.finaudit.tenant.pojo.dto.TenantUpdateRequest;
@@ -20,12 +21,14 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 租户管理接口。
- * <p>sys_tenant 为全局表（多租户拦截器 ignore），CRUD 不受租户上下文过滤。</p>
+ * 租户管理接口（P3.5a 起类级 @RequirePerm 收口——原实现仅登录即可调）。
+ * <p>sys_tenant 为全局表（多租户拦截器 ignore），CRUD 不受租户上下文过滤；
+ * 类级注解对全部端点生效（本 Controller 无方法级差异化权限）。</p>
  */
 @Tag(name = "租户管理", description = "租户增删改查")
 @RestController
 @RequestMapping("/api/v1/tenants")
+@RequirePerm("tenant:manage")
 public class SysTenantController {
 
     private final SysTenantService tenantService;

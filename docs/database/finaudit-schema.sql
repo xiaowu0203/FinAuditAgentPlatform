@@ -21,6 +21,8 @@ DROP TABLE IF EXISTS tool_execution_log;
 DROP TABLE IF EXISTS tool_registry;
 DROP TABLE IF EXISTS agent_task_step;
 DROP TABLE IF EXISTS agent_task;
+DROP TABLE IF EXISTS sys_role_permission;
+DROP TABLE IF EXISTS sys_permission;
 DROP TABLE IF EXISTS sys_user_role;
 DROP TABLE IF EXISTS sys_role;
 DROP TABLE IF EXISTS sys_user;
@@ -356,6 +358,40 @@ CREATE TABLE audit_record (
     KEY idx_tenant (tenant_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '审批留痕表（append-only）';
 
+-- ---------------------------------------------------------------------
+-- 16. 权限目录表（P3.5a 轻量资源级 RBAC；平台级全局表，无 tenant_id）
+--     ⚠️ 无 tenant_id：权限码由迁移脚本种子定义（代码即目录），运行期不增删；
+--     查询必须走多租户拦截器 ignore 名单（common-mybatisplus-starter 已注册）
+-- ---------------------------------------------------------------------
+CREATE TABLE sys_permission (
+    id          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    perm_code   VARCHAR(64)  NOT NULL COMMENT '权限标识符: 资源:操作（系统管理操作级）/ 资源级（业务）',
+    perm_name   VARCHAR(64)  NOT NULL COMMENT '权限名称（分配界面展示）',
+    perm_type   VARCHAR(8)   NOT NULL DEFAULT 'API' COMMENT '类型: MENU 菜单+接口 / API 仅接口',
+    group_name  VARCHAR(32)  NOT NULL DEFAULT '业务' COMMENT '分组（分配界面分区展示）: 系统管理/财务业务/预留',
+    status      TINYINT      NOT NULL DEFAULT 1 COMMENT '状态: 1启用 0禁用',
+    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_perm_code (perm_code)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '权限目录表（平台级全局，多租户拦截器须忽略）';
+
+-- ---------------------------------------------------------------------
+-- 17. 角色权限映射表（P3.5a：角色是权限的分配单位，替换式分配）
+-- ---------------------------------------------------------------------
+CREATE TABLE sys_role_permission (
+    id          BIGINT   NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id   BIGINT   NOT NULL DEFAULT 1 COMMENT '租户ID',
+    role_id     BIGINT   NOT NULL COMMENT '角色ID（sys_role.id）',
+    perm_id     BIGINT   NOT NULL COMMENT '权限ID（sys_permission.id）',
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted     TINYINT  NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0未删 1已删',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_role_perm (tenant_id, role_id, perm_id),
+    KEY idx_role (role_id),
+    KEY idx_tenant (tenant_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '角色权限映射表';
+
 -- =====================================================================
 -- Seed 数据（默认租户 + 管理员 + 角色 + 内置工具 + 预算 + 财务规则）
 -- =====================================================================
@@ -373,6 +409,40 @@ INSERT INTO sys_user (id, tenant_id, username, password, real_name, status) VALU
 
 INSERT INTO sys_user_role (id, tenant_id, user_id, role_id) VALUES
     (1, 1, 1, 1);
+
+-- P3.5a 权限目录种子（固定主键；系统管理操作级 + 业务资源级，明细见 migration-P3.5a.sql）
+INSERT INTO sys_permission (id, perm_code, perm_name, perm_type, group_name) VALUES
+    (1,  'user:list',        '用户查询',     'MENU', '系统管理'),
+    (2,  'user:create',      '用户新增',     'API',  '系统管理'),
+    (3,  'user:update',      '用户编辑',     'API',  '系统管理'),
+    (4,  'user:delete',      '用户删除',     'API',  '系统管理'),
+    (5,  'user:assign-role', '用户角色绑定', 'API',  '系统管理'),
+    (6,  'role:list',        '角色查询',     'MENU', '系统管理'),
+    (7,  'role:create',      '角色新增',     'API',  '系统管理'),
+    (8,  'role:update',      '角色编辑',     'API',  '系统管理'),
+    (9,  'role:delete',      '角色删除',     'API',  '系统管理'),
+    (10, 'role:assign-perm', '角色权限分配', 'API',  '系统管理'),
+    (11, 'dept:manage',      '部门管理页',   'MENU', '系统管理'),
+    (12, 'dept:create',      '部门新增',     'API',  '系统管理'),
+    (13, 'dept:update',      '部门编辑',     'API',  '系统管理'),
+    (14, 'dept:delete',      '部门删除',     'API',  '系统管理'),
+    (15, 'tenant:manage',    '租户管理',     'API',  '系统管理'),
+    (20, 'rule:manage',      '财务规则配置',     'MENU', '财务业务'),
+    (21, 'reimb:viewAll',    '报销单全量可见',   'API',  '财务业务'),
+    (22, 'task:viewAll',     '任务全量可见',     'API',  '财务业务'),
+    (23, 'audit:viewAll',    '审批工单全量可见', 'API',  '财务业务'),
+    (24, 'audit:approve',    '审批动作',         'API',  '财务业务'),
+    (25, 'budget:viewAll',   '预算全部门查询',   'API',  '财务业务'),
+    (30, 'dashboard:admin',  '管理员风控大盘',   'MENU', '预留');
+
+-- P3.5a 内置角色默认权限（admin 全量；auditor 财务业务资源级；普通用户不授码）
+INSERT INTO sys_role_permission (tenant_id, role_id, perm_id) VALUES
+    (1, 1, 1), (1, 1, 2), (1, 1, 3), (1, 1, 4), (1, 1, 5),
+    (1, 1, 6), (1, 1, 7), (1, 1, 8), (1, 1, 9), (1, 1, 10),
+    (1, 1, 11), (1, 1, 12), (1, 1, 13), (1, 1, 14), (1, 1, 15),
+    (1, 1, 20), (1, 1, 21), (1, 1, 22), (1, 1, 23), (1, 1, 24),
+    (1, 1, 25), (1, 1, 30),
+    (1, 2, 20), (1, 2, 21), (1, 2, 22), (1, 2, 23), (1, 2, 24);
 
 -- 内置金额核验工具（P1 首个落地工具，金额一律 Decimal）
 INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, input_schema, enabled, version) VALUES

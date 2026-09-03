@@ -2,7 +2,6 @@ package com.finaudit.tenant.pojo.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
-import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Getter;
@@ -34,8 +33,13 @@ public class SysUserRole {
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
 
-    @TableLogic
-    @Schema(description = "逻辑删除标记（0 未删 / 1 已删）")
+    /**
+     * <b>P3.5a 起不挂 {@code @TableLogic}（物理删除语义）</b>：uk_user_role(tenant_id, user_id, role_id)
+     * 不含 deleted 列，逻辑删后再绑同一角色必撞唯一键（替换式绑定高频触发；P3b uk_task_step 同款坑）。
+     * 纯映射表无审计需求，replaceRoles 的旧行直接物理 DELETE。deleted 列保留恒 0 兼容建表，
+     * 历史 deleted=1 行由 migration-P3.5a.sql 清理。
+     */
+    @Schema(description = "逻辑删除列（已废弃，恒 0，兼容建表）")
     private Integer deleted;
 
     /** 由租户/用户/角色构造关联记录。 */
