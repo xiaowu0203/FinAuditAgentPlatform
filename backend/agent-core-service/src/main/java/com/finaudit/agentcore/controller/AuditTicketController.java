@@ -25,11 +25,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
-/**
- * 审批工单接口（P3.5 起：可见性判定从角色字符串改为审计权限码 {@code audit:viewAll}（无码仅看本人），
- * 审批动作挂 {@code @RequirePerm("audit:approve")} 硬闸（无码返回 403 fail-closed），
- * 身份从 {@link UserContext} 读取，不再手写解析 X-User-* 头）。
- */
 @Tag(name = "审批工单", description = "P3b 审批工单闭环：工单列表 / 详情 / 留痕 / 审批动作")
 @RestController
 @RequestMapping("/api/v1/audit/tickets")

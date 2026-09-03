@@ -183,6 +183,7 @@
 |---|---|---|
 | id | BIGINT PK | |
 | tenant_id | BIGINT | 租户 ID |
+| created_by | BIGINT | 上传人 ID（P3.5c 直接预览/下载归属校验：本人或 reimb/audit:viewAll） |
 | file_name | VARCHAR(255) | 原始文件名 |
 | object_name | VARCHAR(255) | **对象存储 key（含租户前缀 `{tenantId}/{yyyyMM}/{uuid}{ext}`，防跨租户碰撞）** |
 | content_type | VARCHAR(128) | MIME 类型，默认 `application/octet-stream` |
@@ -295,7 +296,7 @@ PENDING → WITHDRAWN（提交人撤回，直接生效）
 | status | TINYINT | 1 启用 0 禁用 |
 | created_at / updated_at | DATETIME | |
 
-> 目录 v1：系统管理操作级 15 码（user:list/create/update/delete/assign-role、role:list/create/update/delete/assign-perm、dept:manage/create/update/delete、tenant:manage）+ 业务资源级 7 码（rule:manage、reimb/task/audit:viewAll、audit:approve、budget:viewAll）+ P4 预留 dashboard:admin。**`GET /api/v1/depts` 树查询不挂码**（报销选择器公用，读开写收）。
+> 目录 v1（+P3.5c 工具码）：系统管理操作级 17 码（user:list/create/update/delete/assign-role、role:list/create/update/delete/assign-perm、dept:manage/create/update/delete、tenant:manage、tool:manage、tool:execute）+ 业务资源级 7 码（rule:manage、reimb/task/audit:viewAll、audit:approve、budget:viewAll）+ P4 预留 dashboard:admin。**`GET /api/v1/depts` 树查询不挂码**（报销选择器公用，读开写收）。
 
 ## 17. sys_role_permission 角色权限映射表（P3.5a）
 

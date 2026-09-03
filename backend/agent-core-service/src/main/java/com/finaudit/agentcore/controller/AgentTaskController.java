@@ -24,9 +24,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
-/**
- * Agent 任务接口（P3.5 起可见性判定从角色字符串改为权限标识符 task:viewAll）。
- */
 @Tag(name = "Agent 任务", description = "任务提交 / 详情 / 步骤 / 分页 / 断点续跑")
 @RestController
 @RequestMapping("/api/v1/tasks")

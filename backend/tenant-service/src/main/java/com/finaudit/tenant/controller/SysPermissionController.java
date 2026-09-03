@@ -12,11 +12,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
-/**
- * 权限接口（P3.5a 权限标识符体系）：权限目录查询（角色分配界面勾选树）。
- * <p>权限目录为平台级种子数据（代码即目录，运行期不增删），无管理端点；
- * 角色权限的查看/分配见 {@code SysRoleController}（/api/v1/roles/{id}/permissions）。</p>
- */
 @Tag(name = "权限管理", description = "权限目录查询")
 @RestController
 @RequestMapping("/api/v1/permissions")

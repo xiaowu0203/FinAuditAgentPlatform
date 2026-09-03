@@ -36,8 +36,9 @@ public class FileController {
     @Operation(summary = "上传文件（multipart → 对象存储）")
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public R<FileVO> upload(@RequestParam("file") MultipartFile file,
-                            @RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId) {
-        return R.success(fileService.upload(file, tenantId));
+                            @RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId,
+                            @RequestHeader(name = "X-User-Id", required = false) Long userId) {
+        return R.success(fileService.upload(file, tenantId, userId));
     }
 
     @Operation(summary = "文件详情（含预签名预览 URL）")

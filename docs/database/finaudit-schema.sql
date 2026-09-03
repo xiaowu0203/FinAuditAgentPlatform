@@ -270,6 +270,7 @@ CREATE TABLE expense_attachment (
 CREATE TABLE file_record (
     id           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
     tenant_id    BIGINT       NOT NULL DEFAULT 1 COMMENT '租户ID',
+    created_by   BIGINT       DEFAULT NULL COMMENT '上传人ID（P3.5c 归属校验；历史无主为 null）',
     file_name    VARCHAR(255) NOT NULL COMMENT '原始文件名',
     object_name  VARCHAR(255) NOT NULL COMMENT '对象存储 key（含租户前缀 {tenantId}/{yyyyMM}/{uuid}{ext}）',
     content_type VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream' COMMENT 'MIME 类型',
@@ -457,6 +458,8 @@ INSERT INTO sys_permission (id, perm_code, perm_name, perm_type, group_name) VAL
     (13, 'dept:update',      '部门编辑',     'API',  '系统管理'),
     (14, 'dept:delete',      '部门删除',     'API',  '系统管理'),
     (15, 'tenant:manage',    '租户管理',     'API',  '系统管理'),
+    (16, 'tool:manage',      '工具管理（注册/维护）', 'API', '系统管理'),
+    (17, 'tool:execute',     '工具调试直调', 'API',  '系统管理'),
     (20, 'rule:manage',      '财务规则配置',     'MENU', '财务业务'),
     (21, 'reimb:viewAll',    '报销单全量可见',   'API',  '财务业务'),
     (22, 'task:viewAll',     '任务全量可见',     'API',  '财务业务'),
@@ -472,6 +475,7 @@ INSERT INTO sys_role_permission (tenant_id, role_id, perm_id) VALUES
     (1, 1, 11), (1, 1, 12), (1, 1, 13), (1, 1, 14), (1, 1, 15),
     (1, 1, 20), (1, 1, 21), (1, 1, 22), (1, 1, 23), (1, 1, 24),
     (1, 1, 25), (1, 1, 30),
+    (1, 1, 16), (1, 1, 17),
     (1, 2, 20), (1, 2, 21), (1, 2, 22), (1, 2, 23), (1, 2, 24);
 
 -- 内置金额核验工具（P1 首个落地工具，金额一律 Decimal）

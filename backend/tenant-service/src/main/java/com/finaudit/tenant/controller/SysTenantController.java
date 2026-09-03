@@ -20,11 +20,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * 租户管理接口（P3.5a 起类级 @RequirePerm 收口——原实现仅登录即可调）。
- * <p>sys_tenant 为全局表（多租户拦截器 ignore），CRUD 不受租户上下文过滤；
- * 类级注解对全部端点生效（本 Controller 无方法级差异化权限）。</p>
- */
 @Tag(name = "租户管理", description = "租户增删改查")
 @RestController
 @RequestMapping("/api/v1/tenants")

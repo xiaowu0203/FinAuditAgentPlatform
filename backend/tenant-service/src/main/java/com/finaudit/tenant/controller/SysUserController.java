@@ -23,10 +23,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * 用户管理接口（P3.5a 起按操作级权限标识符收口——原实现仅登录即可调，存在提权风险）。
- * <p>所属租户取请求上下文（网关注入 X-Tenant-Id）。</p>
- */
 @Tag(name = "用户管理", description = "用户增删改查 / 角色绑定")
 @RestController
 @RequestMapping("/api/v1/users")

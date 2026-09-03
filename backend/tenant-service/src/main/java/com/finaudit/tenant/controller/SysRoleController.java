@@ -23,11 +23,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
-/**
- * 角色管理接口（P3.5a 起按操作级权限标识符收口）。
- * <p>所属租户取请求上下文（网关注入 X-Tenant-Id），不信任请求体；
- * 删除角色会同步清理两类映射并刷新受影响用户权限快照。</p>
- */
 @Tag(name = "角色管理", description = "角色增删改查 / 角色权限分配")
 @RestController
 @RequestMapping("/api/v1/roles")

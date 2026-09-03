@@ -6,6 +6,7 @@ import com.finaudit.tenant.pojo.entity.SysUser;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * 当前登录用户信息（含角色编码与权限标识符，P3.5）。
@@ -27,7 +28,7 @@ public record UserInfoVO(
         @Schema(description = "角色编码列表") List<String> roles,
         @Schema(description = "权限标识符列表") List<String> perms) {
 
-    public static UserInfoVO from(SysUser user, List<String> roles, java.util.Set<String> perms) {
+    public static UserInfoVO from(SysUser user, List<String> roles, Set<String> perms) {
         return new UserInfoVO(user.getId(), user.getTenantId(), user.getUsername(),
                 user.getRealName(), user.getPhone(), roles,
                 perms == null ? List.of() : List.copyOf(perms));

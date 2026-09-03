@@ -6,41 +6,61 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 当前请求登录用户上下文（P3.5 权限标识符体系）。
- * <p>由 {@link UserContextFilter} 从网关注入的请求头解析写入
- * {@link UserContextHolder}；网关侧权威来源为 Redis 用户快照（角色/权限变更实时生效），
- * 快照缺失时降级用 JWT 内角色。业务代码禁止再手写解析 X-User-* 请求头。</p>
- *
- * <p>权限判定语义：{@code @RequirePerm} 任一命中即通过（any-of）；
- * 上下文缺失（内部调用/未登录）视为无任何权限，由拦截器 fail-closed 拒绝。</p>
+ * 用户登录上下文对象
+ * <p>由Token解析过滤器构建，存放当前登录用户会话信息，存入ThreadLocal({@code UserContextHolder})，供拦截器、业务层读取</p>
+ * <p>部分字段可从请求Header（X‑User‑Id / X‑Tenant‑Id等）解析得到；JWT或者Redis权限快照来源</p>
  */
 @Data
 public class UserContext {
 
-    /** 用户 ID（X-User-Id） */
+    /**
+     * 用户ID，来源于请求头 X‑User‑Id
+     */
     private Long userId;
 
-    /** 租户 ID（X-Tenant-Id，与 TenantContextHolder 同源） */
+    /**
+     * 租户ID，来源于请求头 X‑Tenant‑Id
+     * <p>与 {@code TenantContextHolder} 租户上下文同源，保证全链路租户一致</p>
+     */
     private Long tenantId;
 
-    /** 登录名（X-Username） */
+    /**
+     * 登录用户名，来源于请求头 X‑Username
+     */
     private String username;
 
-    /** 角色编码列表（X-User-Roles 逗号分隔，快照/JWT 降级） */
+    /**
+     * 角色编码集合，来源于请求头 X‑User‑Roles（原始为逗号分隔字符串，解析为List）
+     * <p>JWT降级场景直接携带角色快照；完整权限优先使用perms集合</p>
+     */
     private List<String> roles;
 
-    /** 权限标识符集合（X-User-Perms 逗号分隔；系统管理操作级 + 业务资源级） */
+    /**
+     * 权限标识符集合，来源于请求头 X‑User‑Perms（原始为逗号分隔字符串，解析为Set）
+     * <p>存放系统操作级、业务资源级权限编码，用于接口权限判断，对应@RequirePerm注解校验</p>
+     */
     private Set<String> perms;
 
-    /** 部门 ID（X-Dept-Id；P3.5b 部门实体落地前可为空） */
+    /**
+     * 用户所属部门ID，来源于请求头 X‑Dept‑Id
+     */
     private Long deptId;
 
-    /** 是否拥有指定权限标识符。 */
+    /**
+     * 判断用户是否拥有某一个指定权限
+     * @param code 权限标识符
+     * @return true=拥有该权限；perms为null直接返回false
+     */
     public boolean hasPerm(String code) {
         return perms != null && perms.contains(code);
     }
 
-    /** 任一权限命中即返回 true（@RequirePerm 的 any-of 语义）。 */
+    /**
+     * 多个权限，满足任意一个即返回true
+     * <p>对应注解{@link RequirePerm}的“或”校验语义，供PermissionInterceptor调用</p>
+     * @param codes 待校验的多个权限标识符数组
+     * @return true：命中任意一个权限；false：无匹配权限 / 参数为空
+     */
     public boolean hasAnyPerm(String... codes) {
         if (perms == null || codes == null) {
             return false;

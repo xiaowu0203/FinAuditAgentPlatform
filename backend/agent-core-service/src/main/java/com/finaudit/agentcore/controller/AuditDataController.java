@@ -4,6 +4,8 @@ import com.finaudit.agentcore.service.AttachmentService;
 import com.finaudit.agentcore.service.BudgetService;
 import com.finaudit.agentcore.service.FinanceRuleService;
 import com.finaudit.agentcore.service.ReimbursementService;
+import com.finaudit.starter.web.auth.UserContext;
+import com.finaudit.starter.web.auth.UserContextHolder;
 import com.finaudit.starter.web.exception.BizException;
 import com.finaudit.starter.web.feign.dto.BudgetVO;
 import com.finaudit.starter.web.feign.dto.DuplicateCheckVO;
@@ -59,6 +61,7 @@ public class AuditDataController {
                                    @RequestParam("period") String period,
                                    @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
         requireTenant(tenantId);
+        requireBudgetOrInternal();
         BudgetVO vo = deptId != null
                 ? budgetService.findByDeptIdPeriod(tenantId, deptId, period)
                 : budgetService.findByDeptPeriod(tenantId, deptName, period);
@@ -101,6 +104,18 @@ public class AuditDataController {
     private void requireTenant(Long tenantId) {
         if (tenantId == null) {
             throw new BizException("缺少租户标识 X-Tenant-Id，请通过网关访问");
+        }
+    }
+
+    /**
+     * budget_query 工具路径与预算数据对外读的边界（P3.5c）：
+     * 内部链路（MQ 消费 / Feign 无用户上下文）放行——工具经 ToolAccessGuard 完成了部门归属校验；
+     * 网关登录用户直呼 → 须持有 budget:viewAll（与预算全部门查询豁免位一致）。
+     */
+    private void requireBudgetOrInternal() {
+        UserContext user = UserContextHolder.get();
+        if (user != null && !user.hasPerm("budget:viewAll")) {
+            throw new BizException("无预算查询权限");
         }
     }
 }

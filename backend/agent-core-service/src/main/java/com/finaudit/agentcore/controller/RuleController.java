@@ -21,10 +21,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
-/**
- * 规则配置接口（P3.5a 起类级 @RequirePerm("rule:manage") 统一收口，
- * 替换 P2 期角色字符串 + 用户 ID 白名单判定；AdminProperties 白名单随之退役）。
- */
 @Tag(name = "规则配置", description = "财务规则配置管理端点（P2c）")
 @RestController
 @RequestMapping("/api/v1/rules")

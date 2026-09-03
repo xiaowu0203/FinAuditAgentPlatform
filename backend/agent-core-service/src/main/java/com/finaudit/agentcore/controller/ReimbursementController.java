@@ -24,10 +24,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * 报销单接口（P3.5 起可见性判定从角色字符串改为权限标识符 reimb:viewAll，
- * 身份从 UserContext 读取，不再手写解析 X-User-* 头）。
- */
 @Tag(name = "报销单", description = "报销单提交/审核闭环/提交人修改重跑与撤回撤销")
 @RestController
 @RequestMapping("/api/v1/reimbursements")

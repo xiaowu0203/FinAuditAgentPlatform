@@ -28,6 +28,9 @@ public class FileRecord {
     @Schema(description = "租户ID")
     private Long tenantId;
 
+    @Schema(description = "上传人ID（P3.5c 归属校验：直接预览/下载须本人或财务；内部 Feign 无上下文放行）")
+    private Long createdBy;
+
     @Schema(description = "原始文件名")
     private String fileName;
 
@@ -53,9 +56,10 @@ public class FileRecord {
     /**
      * 由上传结果构造文件元数据（转换封装在实体类，业务层不手写 set 组装，见 CLAUDE.md §5.6）。
      */
-    public static FileRecord from(String fileName, String objectName, String contentType, Long size, Long tenantId) {
+    public static FileRecord from(String fileName, String objectName, String contentType, Long size, Long tenantId, Long createdBy) {
         FileRecord record = new FileRecord();
         record.setTenantId(tenantId);
+        record.setCreatedBy(createdBy);
         record.setFileName(fileName);
         record.setObjectName(objectName);
         record.setContentType(contentType);
