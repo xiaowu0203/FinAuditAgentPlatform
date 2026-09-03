@@ -103,13 +103,14 @@ finaudit:
     secret: ${FINAUDIT_JWT_SECRET}
 
 # SpringBoot Actuator监控端点配置
+# ⚠️安全收口（P3.5d）：禁止暴露 gateway 端点——该端点支持运行期增删路由，一旦被未认证访问
+# 等于绕过网关鉴权/SSRF；仅保留 health/info 做存活探测，详细信息不再对外展示
 management:
   endpoints:
     web:
       exposure:
-        # 对外暴露的监控端点：健康、服务信息、gateway网关路由信息
-        include: health,info,gateway
+        include: health,info
   endpoint:
-    # 健康检查接口展示完整详细信息，生产可按需关闭
     health:
-      show-details: always
+      # 不展示健康检查详细信息（组件级细节仅限内网管理端口排查时临时开启）
+      show-details: never

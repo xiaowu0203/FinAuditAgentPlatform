@@ -10,7 +10,7 @@
 | 路由 ID | 路径谓词 | 目标 |
 |---|---|---|
 | `tenant-service-auth` | `/api/v1/auth/**` | `lb://tenant-service` |
-| `tenant-service-mgmt` | `/api/v1/users/**`, `/api/v1/tenants/**`, `/api/v1/roles/**` | `lb://tenant-service` |
+| `tenant-service-mgmt` | `/api/v1/users/**`, `/api/v1/tenants/**`, `/api/v1/roles/**`, `/api/v1/permissions/**`, `/api/v1/depts/**`（P3.5） | `lb://tenant-service` |
 | `agent-core-service` | `/api/v1/tasks/**` | `lb://agent-core-service` |
 | `tool-service` | `/api/v1/tools/**` | `lb://tool-service` |
 | `file-service` | `/api/v1/files/**` | `lb://file-service` |
@@ -27,7 +27,7 @@ Discovery locator 已关闭，仅走上述显式路由。
 | 路径 | 说明 |
 |---|---|
 | `POST /api/v1/auth/login` | 登录（需凭据） |
-| `/actuator/**` | 健康检查 |
+| `/actuator/health` | 健康检查（P3.5d 收口：仅放行 health，其余 actuator 端点须鉴权，`gateway` 端点已从 exposure 移除） |
 | `/swagger-ui/**`, `/swagger-ui.html`, `/v3/api-docs/**`, `/webjars/**` | 各服务接口文档 |
 
 其余请求必须携带 `Authorization: Bearer <token>`，否则返回 401。
@@ -41,7 +41,9 @@ JWT 校验通过后，网关用 **JWT 载荷覆盖**同名请求头再转发给�
 | `X-Tenant-Id` | `claims.tenantId` | 下游多租户拦截器/`TenantIdFilter` 读取 |
 | `X-User-Id` | `claims.userId` | 下游业务（如 `/auth/me`）读取 |
 | `X-Username` | `claims.username` | 登录名（有值才注入） |
-| `X-User-Roles` | `claims.roles` | 角色编码，逗号拼接（非空才注入） |
+| `X-User-Roles` | 快照 `roles`（缺失降级 `claims.roles`） | 角色编码，逗号拼接（非空才注入） |
+| `X-User-Perms` | 快照 `perms`（P3.5，仅快照命中注入） | 权限标识符，逗号拼接；缺失时下游 `@RequirePerm` 端点 fail-closed |
+| `X-Dept-Id` | 快照 `deptId`（P3.5b，仅快照命中注入） | 用户部门 ID |
 | `X-Jwt-Jti` | `claims.jti` | token 唯一 ID，下游 `/auth/logout` 据此写黑名单 |
 
 ## 会话作废校验
