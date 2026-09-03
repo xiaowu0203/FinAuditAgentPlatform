@@ -1,0 +1,375 @@
+/* =====================================================================
+   全局基座：排版、账页基元、Element Plus 微调
+   设计约定见 ./tokens.css 与 REDESIGN.md
+   ===================================================================== */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+html {
+  overflow-y: scroll;
+}
+
+body {
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  color: var(--ink);
+  background: var(--paper);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* 键盘可见焦点（质量底线） */
+:focus-visible {
+  outline: 2px solid var(--ledger);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection {
+  background: var(--ledger-weak);
+}
+
+::webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---- 排版基元 ---- */
+
+/* 展示级标题：衬线（凭证/公文体） */
+.display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* 金额：衬线 + 等宽数字，永远右对齐出现 */
+.money {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums lining-nums;
+  letter-spacing: 0.01em;
+}
+
+.muted {
+  color: var(--ink-2);
+}
+
+.faint {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+/* ---- 页面骨架 ---- */
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.page-head-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+.page-head-sub {
+  margin-top: 4px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.page-head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* 面板：代替圆角大卡，账线分隔 */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.panel-body {
+  padding: 20px;
+}
+
+.panel-body--flush {
+  padding: 0;
+}
+
+/* 工具行：筛选条/操作行 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.toolbar .spacer {
+  flex: 1;
+}
+
+/* ---- 账页表格 ---- */
+
+.ledger-table {
+  --el-table-border-color: var(--line);
+  --el-table-header-bg-color: var(--surface-2);
+  --el-table-header-text-color: var(--ink-2);
+  --el-table-row-hover-bg-color: var(--surface-2);
+  --el-table-tr-bg-color: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.ledger-table .el-table__header th.el-table__cell {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--surface-2);
+}
+
+.ledger-table .el-table__row .el-table__cell {
+  padding: 11px 0;
+}
+
+/* 表格列内金额请加 .money 并设置 align="right" */
+.ledger-table .el-table__cell .money {
+  color: var(--ink);
+}
+
+/* 空表占位收敛 */
+.ledger-table .el-table__empty-block {
+  padding: 40px 0;
+}
+
+/* ---- 状态戳（表单据/任务/工单通用，语义色见 tokens） ----
+   用法：<span class="stamp stamp--running">进行中</span> */
+.stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 8px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.stamp::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.stamp--running {
+  color: var(--flow);
+  background: var(--flow-weak);
+}
+
+.stamp--success {
+  color: var(--ledger);
+  background: var(--ledger-weak);
+}
+
+.stamp--danger {
+  color: var(--seal);
+  background: var(--seal-weak);
+}
+
+.stamp--pending {
+  color: var(--ochre);
+  background: var(--ochre-weak);
+}
+
+.stamp--muted {
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+
+/* ---- 代码/JSON 输出块 ---- */
+
+.output-block {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.output-block--scroll {
+  max-height: 280px;
+  overflow: auto;
+}
+
+/* ---- LLM 步骤输出的 markdown 渲染 ---- */
+
+.md-body {
+  line-height: 1.8;
+  font-size: 13.5px;
+}
+
+.md-body h1,
+.md-body h2,
+.md-body h3 {
+  font-family: var(--font-display);
+  margin: 14px 0 8px;
+  font-size: 15px;
+}
+
+.md-body p {
+  margin: 8px 0;
+}
+
+.md-body ul,
+.md-body ol {
+  padding-left: 22px;
+  margin: 8px 0;
+}
+
+.md-body table {
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+
+.md-body th,
+.md-body td {
+  border: 1px solid var(--line);
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
+.md-body code {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.md-body blockquote {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--ink-2);
+}
+
+/* ---- Element Plus 微调 ---- */
+
+.el-button {
+  font-weight: 500;
+}
+
+.el-tag {
+  border-radius: var(--radius-sm);
+}
+
+.el-dialog {
+  border-radius: var(--radius-md);
+}
+
+.el-descriptions__label.el-descriptions__cell {
+  color: var(--ink-2);
+}
+
+.el-pagination {
+  padding-top: 6px;
+}
+
+/* 分页右置 */
+.pager {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---- 动效纪律 ---- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---- 响应式 ---- */
+
+@media (max-width: 768px) {
+  .page-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .panel-head {
+    flex-wrap: wrap;
+  }
+}

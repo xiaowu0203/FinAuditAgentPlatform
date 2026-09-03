@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { Moon, Sunny } from '@element-plus/icons-vue'
 import { logout as apiLogout } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 
@@ -22,6 +23,35 @@ const displayName = computed(() => auth.user?.realName || auth.user?.username ||
 /** 系统管理菜单组可见性：任一管理页权限即可（权限码 P3.5 取代角色字符串） */
 const canManageSystem = computed(() => auth.hasAnyPerm(['user:list', 'role:list', 'dept:manage']))
 
+/** 面包屑：明细/表单页经 meta.parent* 挂到父列表，其余只有当前页 */
+const crumbs = computed(() => {
+  const items: Array<{ title: string; path?: string }> = []
+  const parentPath = route.meta.parentPath as string | undefined
+  const parentTitle = route.meta.parentTitle as string | undefined
+  if (parentPath && parentTitle) items.push({ title: parentTitle, path: parentPath })
+  if (pageTitle.value) items.push({ title: pageTitle.value })
+  return items
+})
+
+/* ---- 深色模式：首次访问跟随系统，此后记住用户选择 ---- */
+type Theme = 'light' | 'dark'
+const stored = localStorage.getItem('finaudit-theme')
+const theme = ref<Theme>(
+  stored === 'dark' || stored === 'light'
+    ? stored
+    : window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light',
+)
+function applyTheme(t: Theme) {
+  document.documentElement.classList.toggle('dark', t === 'dark')
+}
+applyTheme(theme.value)
+watch(theme, (t) => {
+  applyTheme(t)
+  localStorage.setItem('finaudit-theme', t)
+})
+
 async function handleCommand(command: string) {
   if (command !== 'logout') return
   try {
@@ -37,279 +67,310 @@ async function handleCommand(command: string) {
 </script>
 
 <template>
-  <el-container class="layout">
-    <el-aside width="220px" class="aside">
+  <div class="shell">
+    <aside class="aside">
       <div class="brand">
-        <div class="brand-mark">FA</div>
-        <div>
-          <div class="brand-title">FinAudit</div>
-          <div class="brand-subtitle">财务智能审核平台</div>
-        </div>
+        <span class="brand-seal display">审</span>
+        <span class="brand-name">
+          <strong class="display">FinAudit</strong>
+          <small>财务费用智能审核</small>
+        </span>
       </div>
+
       <el-menu :default-active="activeMenu" router class="menu">
         <el-menu-item index="/dashboard">
-          <el-icon><DataBoard /></el-icon>
-          <span>任务工作台</span>
+          <span>工作台</span>
         </el-menu-item>
         <el-menu-item index="/tasks">
-          <el-icon><List /></el-icon>
-          <span>任务列表</span>
+          <span>审核任务</span>
         </el-menu-item>
         <el-menu-item index="/reimbursements">
-          <el-icon><Tickets /></el-icon>
           <span>报销单</span>
         </el-menu-item>
-        <el-menu-item v-if="auth.hasPerm('rule:manage')" index="/rules">
-          <el-icon><Setting /></el-icon>
-          <span>规则配置</span>
-        </el-menu-item>
-        <!-- 审批工单：所有登录用户可见——申请人只读查看本人工单（后端按 createdBy 过滤），财务角色执行审批操作 -->
         <el-menu-item index="/audits">
-          <el-icon><Checked /></el-icon>
           <span>审批工单</span>
+        </el-menu-item>
+        <el-menu-item v-if="auth.hasPerm('rule:manage')" index="/rules">
+          <span>规则配置</span>
         </el-menu-item>
         <!-- 系统管理（P3.5）：按管理页权限码显隐，子项按各自权限 -->
         <el-sub-menu v-if="canManageSystem" index="/system">
           <template #title>
-            <el-icon><Menu /></el-icon>
             <span>系统管理</span>
           </template>
-          <el-menu-item v-if="auth.hasPerm('user:list')" index="/system/users">用户管理</el-menu-item>
-          <el-menu-item v-if="auth.hasPerm('role:list')" index="/system/roles">角色管理</el-menu-item>
-          <el-menu-item v-if="auth.hasPerm('dept:manage')" index="/system/depts">部门管理</el-menu-item>
+          <el-menu-item v-if="auth.hasPerm('user:list')" index="/system/users">用户</el-menu-item>
+          <el-menu-item v-if="auth.hasPerm('role:list')" index="/system/roles">角色</el-menu-item>
+          <el-menu-item v-if="auth.hasPerm('dept:manage')" index="/system/depts">部门</el-menu-item>
         </el-sub-menu>
       </el-menu>
-      <div class="aside-footer">
-        <div class="aside-tip">更清晰的任务、报销与规则视图</div>
+
+      <div class="aside-foot">
+        <span class="foot-line" />
+        <span class="foot-text">账簿 · 印章 · 留痕</span>
       </div>
-    </el-aside>
-    <el-container>
-      <el-header class="header">
-        <div>
-          <div class="page-title">{{ pageTitle }}</div>
-          <div class="page-subtitle">统一查看审核任务、报销单和规则配置</div>
-        </div>
-        <el-dropdown @command="handleCommand">
-          <span class="user-info">
-            <span class="avatar-badge">{{ (displayName || 'U').slice(0, 1) }}</span>
-            <span class="user-meta">
-              <strong>{{ displayName }}</strong>
-              <small>当前已登录</small>
+    </aside>
+
+    <div class="frame">
+      <header class="topbar">
+        <el-breadcrumb separator="/">
+          <el-breadcrumb-item
+            v-for="(c, i) in crumbs"
+            :key="i"
+            :to="c.path ? { path: c.path } : undefined"
+          >
+            {{ c.title }}
+          </el-breadcrumb-item>
+        </el-breadcrumb>
+
+        <div class="topbar-right">
+          <button
+            class="theme-toggle"
+            type="button"
+            :title="theme === 'dark' ? '切换为浅色' : '切换为深色'"
+            @click="theme = theme === 'dark' ? 'light' : 'dark'"
+          >
+            <el-icon><Sunny v-if="theme === 'dark'" /><Moon v-else /></el-icon>
+          </button>
+
+          <el-dropdown trigger="click" @command="handleCommand">
+            <span class="who">
+              <span class="who-seal display">{{ (displayName || 'U').slice(0, 1) }}</span>
+              <span class="who-name">{{ displayName }}</span>
+              <span class="who-caret">▾</span>
             </span>
-            <el-icon><ArrowDown /></el-icon>
-          </span>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="logout">退出登录</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-      </el-header>
-      <el-main class="main">
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+      </header>
+
+      <main class="content">
         <router-view />
-      </el-main>
-    </el-container>
-  </el-container>
+      </main>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.layout {
+.shell {
+  display: flex;
   height: 100%;
 }
+
+/* ---- 墨青侧栏 ---- */
 
 .aside {
   position: relative;
   display: flex;
   flex-direction: column;
-  padding: 18px 14px 14px;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  background:
-    radial-gradient(circle at top, rgba(96, 165, 250, 0.22), transparent 32%),
-    linear-gradient(180deg, #0f172a 0%, #111c35 45%, #0f172a 100%);
+  flex-shrink: 0;
+  width: var(--aside-width);
+  background: var(--aside-bg);
+  border-right: 1px solid var(--aside-line);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px 18px;
-  color: #fff;
+  gap: 10px;
+  padding: 20px 18px 18px;
 }
 
-.brand-mark {
+/* 印章式品牌标：方章「审」 */
+.brand-seal {
   display: grid;
-  width: 42px;
-  height: 42px;
   place-items: center;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #60a5fa, #4f46e5);
-  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.28);
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-}
-
-.brand-title {
+  width: 34px;
+  height: 34px;
+  border: 1.5px solid var(--ledger);
+  border-radius: 6px;
+  color: var(--ledger);
   font-size: 18px;
-  font-weight: 700;
+  line-height: 1;
+  transform: rotate(-4deg);
 }
 
-.brand-subtitle {
-  margin-top: 2px;
-  color: rgba(255, 255, 255, 0.64);
-  font-size: 12px;
+.brand-name {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.brand-name strong {
+  color: var(--aside-text-strong);
+  font-size: 17px;
+}
+
+.brand-name small {
+  color: var(--aside-text);
+  font-size: 11px;
+  letter-spacing: 0.04em;
 }
 
 .menu {
   flex: 1;
+  margin-top: 6px;
+  padding: 0 10px;
   border-right: none;
   background: transparent;
-  /* 深色侧边栏统一菜单配色（el-sub-menu 标题/展开内联子列表同样吃到） */
   --el-menu-bg-color: transparent;
-  --el-menu-text-color: rgba(255, 255, 255, 0.72);
-  --el-menu-active-color: #fff;
-  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.08);
+  --el-menu-text-color: var(--aside-text);
+  --el-menu-active-color: var(--aside-text-strong);
+  --el-menu-hover-bg-color: rgba(244, 246, 243, 0.06);
 }
 
 .menu :deep(.el-menu-item),
 .menu :deep(.el-sub-menu__title) {
-  height: 48px;
-  margin-bottom: 8px;
-  border-radius: 14px;
-  transition: all 0.22s ease;
+  height: 42px;
+  margin-bottom: 2px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  transition: background-color 0.15s ease;
 }
 
-.menu :deep(.el-menu-item:hover),
-.menu :deep(.el-sub-menu__title:hover) {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-  transform: translateX(2px);
+/* 选中项：左缘账簿绿细条 + 微衬底（印章压痕感），不用渐变与阴影 */
+.menu :deep(.el-menu-item.is-active) {
+  position: relative;
+  background: var(--aside-active-bg);
+  color: var(--aside-text-strong);
 }
 
-.menu :deep(.el-sub-menu .el-menu) {
-  background: transparent;
+.menu :deep(.el-menu-item.is-active)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 2px;
+  background: var(--ledger);
 }
 
 .menu :deep(.el-sub-menu .el-menu-item) {
   min-width: 0;
-  border-radius: 12px;
-  padding-left: 48px !important;
+  padding-left: 40px !important;
 }
 
-.menu :deep(.el-sub-menu .el-menu-item.is-active) {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.9), rgba(79, 70, 229, 0.92));
-  color: #fff;
-  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.22);
-}
-
-.menu :deep(.el-menu-item.is-active) {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.9), rgba(79, 70, 229, 0.92));
-  color: #fff;
-  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.22);
-}
-
-.menu :deep(.el-menu-item [class*='el-icon']) {
-  font-size: 16px;
-}
-
-.aside-footer {
-  padding: 10px 8px 0;
-}
-
-.aside-tip {
-  padding: 12px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 76px;
-  margin: 18px 18px 0;
-  padding: 0 20px;
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(14px);
-}
-
-.page-title {
-  margin-bottom: 4px;
-}
-
-.user-info {
+.aside-foot {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 168px;
-  padding: 8px 10px 8px 8px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
-  cursor: pointer;
-  color: #334155;
-  outline: none;
+  padding: 14px 18px;
 }
 
-.avatar-badge {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #2563eb, #4f46e5);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.user-meta {
-  display: flex;
+.foot-line {
   flex: 1;
+  height: 1px;
+  background: var(--aside-line);
+}
+
+.foot-text {
+  color: var(--aside-text);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+/* ---- 右侧框架 ---- */
+
+.frame {
+  display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
 }
 
-.user-meta strong {
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 52px;
+  padding: 0 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.theme-toggle {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  color: var(--ledger);
+  border-color: var(--ledger);
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--ink);
+  outline: none;
+}
+
+.who-seal {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--ledger);
+  border-radius: var(--radius-sm);
+  color: var(--ledger);
+  font-size: 14px;
+  transform: rotate(-4deg);
+}
+
+.who-name {
+  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
-  font-weight: 700;
 }
 
-.user-meta small {
-  color: #64748b;
-  font-size: 11px;
+.who-caret {
+  color: var(--ink-3);
+  font-size: 10px;
 }
 
-.main {
-  padding: 18px;
-  background:
-    radial-gradient(circle at right top, rgba(96, 165, 250, 0.15), transparent 26%),
-    radial-gradient(circle at left bottom, rgba(79, 70, 229, 0.08), transparent 28%);
+/* ---- 内容区：纸面底 + 宽度约束 ---- */
+
+.content {
+  flex: 1;
+  padding: 22px 24px 40px;
+  overflow-x: hidden;
+}
+
+.content > :deep(*) {
+  max-width: var(--shell-max);
+  margin-left: auto;
+  margin-right: auto;
 }
 
 @media (max-width: 992px) {
   .aside {
-    padding: 14px 10px 10px;
+    width: 190px;
   }
 
-  .header {
-    margin: 12px 12px 0;
-  }
-
-  .main {
-    padding: 12px;
+  .content {
+    padding: 16px 14px 32px;
   }
 }
 </style>
