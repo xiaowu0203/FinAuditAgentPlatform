@@ -138,33 +138,31 @@ function handleSearch() {
 </script>
 
 <template>
-  <el-card v-loading="loading" class="page-card">
-    <template #header>
-      <div class="page-header">
-        <div>
-          <div class="page-title card-title">用户管理</div>
-          <div class="page-subtitle">新增/编辑用户（部门绑定 + 角色分配），变更即时生效无需重新登录</div>
-        </div>
-        <div class="filters">
-          <el-input
-            v-model="keyword"
-            class="search-input"
-            placeholder="用户名 / 姓名 / 手机号"
-            :prefix-icon="Search"
-            clearable
-            @keyup.enter="handleSearch"
-          />
-          <el-button type="primary" @click="handleSearch">查询</el-button>
-          <el-button type="primary" :icon="Plus" v-perm="'user:create'" @click="openCreate">新增用户</el-button>
-        </div>
+  <div v-loading="loading">
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">用户管理</div>
+        <div class="page-head-sub">新增/编辑用户（部门绑定 + 角色分配），变更即时生效、无需重新登录</div>
       </div>
-    </template>
+      <div class="page-head-actions">
+        <el-input
+          v-model="keyword"
+          class="search-input"
+          placeholder="用户名 / 姓名 / 手机号"
+          :prefix-icon="Search"
+          clearable
+          @keyup.enter="handleSearch"
+        />
+        <el-button @click="handleSearch">查询</el-button>
+        <el-button type="primary" :icon="Plus" v-perm="'user:create'" @click="openCreate">新增用户</el-button>
+      </div>
+    </div>
 
-    <el-table :data="rows" empty-text="暂无用户">
+    <el-table :data="rows" class="ledger-table">
       <el-table-column label="用户" min-width="200">
         <template #default="{ row }">
           <div class="user-cell">
-            <span class="avatar">{{ avatarOf(row) }}</span>
+            <span class="avatar">{{ avatarOf(row as SystemUserVO) }}</span>
             <div class="user-meta2">
               <span class="user-name">{{ row.realName || row.username }}</span>
               <span class="user-login">@{{ row.username }}</span>
@@ -174,7 +172,7 @@ function handleSearch() {
       </el-table-column>
       <el-table-column label="部门" min-width="130">
         <template #default="{ row }">
-          <el-tag v-if="row.deptName" type="success" effect="soft" round>{{ row.deptName }}</el-tag>
+          <span v-if="row.deptName" class="stamp stamp--success">{{ row.deptName }}</span>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
@@ -183,17 +181,17 @@ function handleSearch() {
       </el-table-column>
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
-          <el-tag :type="row.status === 1 ? 'success' : 'danger'" effect="light" round>
+          <span class="stamp" :class="row.status === 1 ? 'stamp--success' : 'stamp--danger'">
             {{ row.status === 1 ? '启用' : '禁用' }}
-          </el-tag>
+          </span>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" size="small" v-perm="'user:update'" :icon="Edit" @click="openEdit(row)">
+          <el-button link type="primary" size="small" v-perm="'user:update'" :icon="Edit" @click="openEdit(row as SystemUserVO)">
             编辑
           </el-button>
-          <el-button link type="danger" size="small" v-perm="'user:delete'" :icon="Delete" @click="handleDelete(row)">
+          <el-button link type="danger" size="small" v-perm="'user:delete'" :icon="Delete" @click="handleDelete(row as SystemUserVO)">
             删除
           </el-button>
         </template>
@@ -211,7 +209,7 @@ function handleSearch() {
         @size-change="load"
       />
     </div>
-  </el-card>
+  </div>
 
   <el-dialog
     v-model="dialogVisible"
@@ -295,15 +293,15 @@ function handleSearch() {
 }
 .avatar {
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   place-items: center;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #2563eb, #4f46e5);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.22);
+  border: 1px solid var(--ledger);
+  border-radius: var(--radius-sm);
+  color: var(--ledger);
+  font-size: 14px;
+  font-weight: 600;
+  transform: rotate(-4deg);
 }
 .user-meta2 {
   display: flex;
@@ -312,10 +310,10 @@ function handleSearch() {
 }
 .user-name {
   font-weight: 600;
-  color: var(--text-1);
+  color: var(--ink);
 }
 .user-login {
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 12px;
 }
 

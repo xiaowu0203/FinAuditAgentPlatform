@@ -4,11 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Back, Refresh } from '@element-plus/icons-vue'
 import { getTaskDetail, getTaskSteps, resumeTask } from '@/api/task'
-import { TASK_STATUS_MAP, AGENT_ROLE_MAP, canResume, isActive, reimbIdOf } from '@/utils/task'
+import { TASK_STATUS_MAP, canResume, isActive, reimbIdOf } from '@/utils/task'
 import { useAuthStore } from '@/stores/auth'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
-import type { TaskStatus, TaskStepVO, TaskVO } from '@/types'
+import StatusStamp from '@/components/StatusStamp.vue'
+import PipelineTimeline from '@/components/PipelineTimeline.vue'
+import type { TaskStepVO, TaskVO } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,21 +29,6 @@ function pretty(obj: unknown): string {
   } catch {
     return String(obj)
   }
-}
-
-/** LLM 步骤输出形如 { content: "Markdown 文本" }，判断为需渲染的 Markdown */
-function isMarkdownText(o: unknown): o is { content: string } {
-  return (
-    typeof o === 'object' &&
-    o !== null &&
-    'content' in o &&
-    typeof (o as { content: unknown }).content === 'string'
-  )
-}
-
-/** Markdown → 安全 HTML（DOMPurify 清洗防 XSS） */
-function renderMarkdown(text: string): string {
-  return DOMPurify.sanitize(marked.parse(text) as string)
 }
 
 async function load() {
@@ -92,188 +77,116 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page-shell detail">
-    <el-card v-loading="loading" class="page-card mb">
-      <template #header>
-        <div class="detail-header">
-          <div>
-            <div class="page-title card-title">任务详情：{{ task?.taskNo }}</div>
-            <div class="page-subtitle">查看任务基础信息、入参、结果和运行进度</div>
+  <div>
+    <!-- 页头：任务号即凭证号 -->
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">{{ task?.taskNo || `任务 #${taskId}` }}</div>
+        <div class="page-head-sub detail-sub">
+          <span v-if="task">{{ task.title }}</span>
+          <StatusStamp
+            v-if="task"
+            :label="TASK_STATUS_MAP[task.status].label"
+            :tone="TASK_STATUS_MAP[task.status].tone"
+          />
+          <span v-if="task" class="muted">进度 {{ task.finishedSteps }} / {{ task.totalSteps }}</span>
+        </div>
+      </div>
+      <div class="page-head-actions">
+        <el-button
+          v-if="task && reimbIdOf(task) != null"
+          @click="router.push(`/reimbursements/${reimbIdOf(task)}`)"
+        >
+          查看报销单
+        </el-button>
+        <!-- 任意用户可见（申请人本人工单只读查看）；audit:viewAll 持有者跳转后执行审批 -->
+        <el-button
+          v-if="task?.status === 'APPROVAL_PENDING'"
+          :type="auth.hasPerm('audit:viewAll') ? 'danger' : 'primary'"
+          @click="router.push(`/audits?taskId=${task!.id}`)"
+        >
+          查看审批工单
+        </el-button>
+        <el-button
+          v-if="task && canResume(task.status)"
+          v-perm="'task:viewAll'"
+          type="warning"
+          :icon="Refresh"
+          @click="handleResume"
+        >
+          续跑
+        </el-button>
+        <el-button :icon="Back" @click="router.back()">返回</el-button>
+      </div>
+    </div>
+
+    <!-- 流水线：分录式步骤时间线 -->
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">执行流水（{{ steps.length }} 步）</span>
+        <span class="faint">进行中任务每 2.5 秒自动刷新</span>
+      </div>
+      <div v-loading="stepsLoading" class="panel-body">
+        <PipelineTimeline v-if="steps.length" :steps="steps" />
+        <p v-else class="muted">暂无步骤记录</p>
+      </div>
+    </div>
+
+    <!-- 单据信息：入参 / 结果 / 错误 -->
+    <template v-if="task">
+      <div class="panel info-panel">
+        <div class="panel-head">
+          <span class="panel-title">单据信息</span>
+        </div>
+        <div class="panel-body">
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="创建时间">{{ task.createdAt }}</el-descriptions-item>
+            <el-descriptions-item label="业务类型">{{ task.taskType }}</el-descriptions-item>
+            <el-descriptions-item label="错误信息" :span="2">
+              <span v-if="task.errorMsg" class="detail-error">{{ task.errorMsg }}</span>
+              <span v-else class="faint">无</span>
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <div class="io-block">
+            <div class="io-label">任务入参</div>
+            <pre class="output-block">{{ pretty(task.inputParams) }}</pre>
           </div>
-          <div class="header-actions">
-            <el-button
-              v-if="task && reimbIdOf(task) != null"
-              type="primary"
-              @click="router.push(`/reimbursements/${reimbIdOf(task)}`)"
-            >
-              查看报销单
-            </el-button>
-            <!-- 任意用户可见（申请人本人工单只读查看）；audit:viewAll 持有者跳转后执行审批，故 danger 强调 -->
-            <el-button
-              v-if="task?.status === 'APPROVAL_PENDING'"
-              :type="auth.hasPerm('audit:viewAll') ? 'danger' : 'primary'"
-              @click="router.push(`/audits?taskId=${task!.id}`)"
-            >
-              查看审批工单
-            </el-button>
-            <el-button
-              v-if="task && canResume(task.status)"
-              v-perm="'task:viewAll'"
-              type="warning"
-              :icon="Refresh"
-              @click="handleResume"
-            >
-              续跑
-            </el-button>
-            <el-button :icon="Back" @click="router.back()">返回</el-button>
+
+          <div v-if="task.result" class="io-block">
+            <div class="io-label">审核结果</div>
+            <pre class="output-block">{{ pretty(task.result) }}</pre>
           </div>
         </div>
-      </template>
-
-      <template v-if="task">
-        <el-descriptions :column="2" border class="soft-descriptions">
-          <el-descriptions-item label="标题">{{ task.title }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tag :type="TASK_STATUS_MAP[task.status].tag">{{ TASK_STATUS_MAP[task.status].label }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="创建时间">{{ task.createdAt }}</el-descriptions-item>
-          <el-descriptions-item label="进度">{{ task.finishedSteps }} / {{ task.totalSteps }}</el-descriptions-item>
-          <el-descriptions-item label="入参" :span="2">
-            <pre class="json-block">{{ pretty(task.inputParams) }}</pre>
-          </el-descriptions-item>
-          <el-descriptions-item v-if="task.errorMsg" label="错误信息" :span="2">
-            <span class="error-text">{{ task.errorMsg }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item v-if="task.result" label="结果" :span="2">
-            <pre class="json-block">{{ pretty(task.result) }}</pre>
-          </el-descriptions-item>
-        </el-descriptions>
-      </template>
-    </el-card>
-
-    <el-card v-loading="stepsLoading" class="page-card">
-      <template #header>
-        <div class="page-header">
-          <div>
-            <div class="page-title card-title">步骤明细（{{ steps.length }}）</div>
-            <div class="page-subtitle">按步骤查看工具调用、输出内容和失败信息</div>
-          </div>
-        </div>
-      </template>
-      <el-table :data="steps" empty-text="暂无步骤">
-        <el-table-column prop="stepNo" label="步骤" width="70" />
-        <el-table-column prop="stepName" label="名称" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="stepType" label="类型" width="90" />
-        <el-table-column label="角色" width="110">
-          <template #default="{ row }">
-            {{ row.agentRole ? (AGENT_ROLE_MAP[row.agentRole] ?? row.agentRole) : '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="toolName" label="工具" width="140" />
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="TASK_STATUS_MAP[row.status as TaskStatus].tag">{{ TASK_STATUS_MAP[row.status as TaskStatus].label }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="retryCount" label="重试" width="70" />
-        <el-table-column label="输出" min-width="280">
-          <template #default="{ row }">
-            <div v-if="row.output">
-              <div
-                v-if="isMarkdownText(row.output)"
-                class="markdown-body"
-                v-html="renderMarkdown(row.output.content)"
-              />
-              <pre v-else class="json-block compact">{{ pretty(row.output) }}</pre>
-            </div>
-            <span v-else-if="row.errorMsg" class="error-text">{{ row.errorMsg }}</span>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
+      </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
-.detail {
-  gap: 16px;
+.detail-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
-.card-title {
-  font-size: 16px;
+.detail-error {
+  color: var(--seal);
 }
 
-.soft-descriptions :deep(.el-descriptions__body) {
-  border-radius: 16px;
-  overflow: hidden;
+.info-panel {
+  margin-top: 18px;
 }
-</style>
 
-<!-- LLM 输出 Markdown 渲染样式：v-html 内容无 scope 属性，须用非 scoped 样式（.markdown-body 前缀隔离） -->
-<style>
-.markdown-body {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--el-text-color-primary);
+.io-block {
+  margin-top: 16px;
 }
-.markdown-body p {
-  margin: 4px 0;
-}
-.markdown-body h1,
-.markdown-body h2,
-.markdown-body h3,
-.markdown-body h4 {
-  margin: 8px 0 4px;
+
+.io-label {
+  margin-bottom: 6px;
+  color: var(--ink-2);
+  font-size: 12.5px;
   font-weight: 600;
-}
-.markdown-body table {
-  border-collapse: collapse;
-  margin: 6px 0;
-  width: 100%;
-}
-.markdown-body th,
-.markdown-body td {
-  border: 1px solid var(--el-border-color-lighter);
-  padding: 4px 8px;
-  text-align: left;
-}
-.markdown-body th {
-  background: var(--el-fill-color-light);
-}
-.markdown-body ul,
-.markdown-body ol {
-  margin: 4px 0;
-  padding-left: 20px;
-}
-.markdown-body li {
-  margin: 2px 0;
-}
-.markdown-body code {
-  background: var(--el-fill-color-light);
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 12px;
-}
-.markdown-body pre {
-  background: var(--el-fill-color-light);
-  padding: 8px;
-  border-radius: 4px;
-  overflow-x: auto;
-}
-.markdown-body pre code {
-  background: none;
-  padding: 0;
-}
-.markdown-body blockquote {
-  border-left: 3px solid var(--el-border-color);
-  margin: 6px 0;
-  padding-left: 8px;
-  color: var(--el-text-color-secondary);
-}
-.markdown-body hr {
-  border: none;
-  border-top: 1px solid var(--el-border-color-lighter);
-  margin: 8px 0;
 }
 </style>

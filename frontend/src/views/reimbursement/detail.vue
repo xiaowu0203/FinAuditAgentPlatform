@@ -8,6 +8,8 @@ import { getFileDownloadUrl } from '@/api/file'
 import { getReimbursementDetail, withdrawReimbursement, withdrawRequestReimbursement } from '@/api/reimbursement'
 import { TASK_STATUS_MAP } from '@/utils/task'
 import { useAuthStore } from '@/stores/auth'
+import StatusStamp from '@/components/StatusStamp.vue'
+import EmptyState from '@/components/EmptyState.vue'
 import type { AuditTicketStatus, AuditTicketVO, ReimbursementDetailVO } from '@/types'
 
 const route = useRoute()
@@ -129,15 +131,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page-shell detail">
-    <el-card v-loading="loading" class="page-card mb">
-      <template #header>
-        <div class="detail-header">
-          <div>
-            <div class="page-title card-title">报销单详情：{{ reimb?.reimbNo }}</div>
-            <div class="page-subtitle">集中查看报销基础信息、明细汇总和附件资料</div>
-          </div>
-          <div class="header-actions">
+  <div v-loading="loading">
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">{{ reimb?.reimbNo || `报销单 #${reimbId}` }}</div>
+        <div class="page-head-sub detail-sub">
+          <StatusStamp
+            v-if="reimb"
+            :label="TASK_STATUS_MAP[reimb.status].label"
+            :tone="TASK_STATUS_MAP[reimb.status].tone"
+          />
+          <span v-if="ticketStatus === 'WITHDRAW_PENDING'" class="stamp stamp--pending">撤销待审</span>
+          <span v-else-if="ticketStatus === 'WITHDRAWN'" class="stamp stamp--muted">已撤回/撤销</span>
+        </div>
+      </div>
+      <div class="page-head-actions">
             <template v-if="isOwner && reimb">
               <!-- 待审批 / 已驳回：提交人可修改明细重跑（标题/部门不可改） -->
               <el-button
@@ -174,25 +182,22 @@ onBeforeUnmount(() => {
             >
               查看审批工单
             </el-button>
-            <el-button :icon="Back" @click="router.back()">返回</el-button>
-          </div>
-        </div>
-      </template>
+        <el-button :icon="Back" @click="router.back()">返回</el-button>
+      </div>
+    </div>
 
-      <template v-if="reimb">
-        <el-descriptions :column="3" border class="soft-descriptions">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">单据信息</span>
+        <span class="faint">集中查看报销基础信息、明细汇总和附件资料</span>
+      </div>
+      <div class="panel-body">
+        <template v-if="reimb">
+        <el-descriptions :column="3" border>
           <el-descriptions-item label="标题">{{ reimb.title }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tag :type="TASK_STATUS_MAP[reimb.status].tag">{{ TASK_STATUS_MAP[reimb.status].label }}</el-tag>
-            <el-tag v-if="ticketStatus === 'WITHDRAW_PENDING'" type="warning" effect="dark" class="status-tag">
-              撤销待审
-            </el-tag>
-            <el-tag v-else-if="ticketStatus === 'WITHDRAWN'" type="info" effect="dark" class="status-tag">
-              已撤回/撤销
-            </el-tag>
-          </el-descriptions-item>
+          <el-descriptions-item label="费用类型">{{ reimb.expenseType }}</el-descriptions-item>
           <el-descriptions-item label="申报总金额">
-            <span class="amount">￥{{ reimb.totalAmount.toFixed(2) }}</span>
+            <span class="money detail-amount">¥{{ reimb.totalAmount.toFixed(2) }}</span>
           </el-descriptions-item>
           <el-descriptions-item label="费用类型">{{ reimb.expenseType }}</el-descriptions-item>
           <el-descriptions-item label="部门">{{ reimb.deptName }}</el-descriptions-item>
@@ -207,22 +212,20 @@ onBeforeUnmount(() => {
           <el-descriptions-item label="申请人 ID">{{ reimb.applicantId }}</el-descriptions-item>
           <el-descriptions-item v-if="reimb.remark" label="备注" :span="3">{{ reimb.remark }}</el-descriptions-item>
         </el-descriptions>
-      </template>
-    </el-card>
+        </template>
+      </div>
+    </div>
 
-    <!-- 提交人可见：待审批 / 已驳回时的复核原因与处理意见（审批工单页是财务工具面，普通用户经此了解驳回点） -->
-    <el-card
+    <!-- 提交人可见：待审批 / 已驳回时的复核原因与处理意见 -->
+    <div
       v-if="isOwner && ticket && (ticket.status === 'PENDING' || ticket.status === 'REJECTED')"
-      class="page-card mb"
+      class="panel"
     >
-      <template #header>
-        <div class="page-header">
-          <div>
-            <div class="page-title card-title">{{ ticket.status === 'REJECTED' ? '驳回意见' : '待审批复核原因' }}</div>
-            <div class="page-subtitle">了解原因后可「修改明细重跑」修正（标题/部门不可改，重跑上限 3 次）</div>
-          </div>
-        </div>
-      </template>
+      <div class="panel-head">
+        <span class="panel-title">{{ ticket.status === 'REJECTED' ? '驳回意见' : '待审批复核原因' }}</span>
+        <span class="faint">了解原因后可「修改明细重跑」修正（标题/部门不可改，重跑上限 3 次）</span>
+      </div>
+      <div class="panel-body">
       <el-alert
         :type="ticket.status === 'REJECTED' ? 'error' : 'warning'"
         :closable="false"
@@ -234,23 +237,23 @@ onBeforeUnmount(() => {
         "
       />
       <div v-if="ticket.reviewReasons && ticket.reviewReasons.length" class="reason-list">
-        <el-tag v-for="(r, i) in ticket.reviewReasons" :key="i" type="warning" effect="plain">{{ r }}</el-tag>
+        <span v-for="(r, i) in ticket.reviewReasons" :key="i" class="stamp stamp--pending">{{ r }}</span>
       </div>
-    </el-card>
+      </div>
+    </div>
 
-    <el-card class="page-card mb">
-      <template #header>
-        <div class="page-header">
-          <div>
-            <div class="page-title card-title">报销明细（{{ (detail?.items || []).length }} 项）</div>
-            <div class="page-subtitle">明细合计与服务端核验金额保持一致</div>
-          </div>
-        </div>
-      </template>
-      <el-table :data="detail?.items || []" empty-text="暂无明细">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">报销明细（{{ (detail?.items || []).length }} 项）</span>
+        <span class="faint">明细合计与服务端核验金额保持一致</span>
+      </div>
+      <div class="panel-body">
+      <el-table :data="detail?.items || []" class="ledger-table ledger-table--bare">
         <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
-        <el-table-column label="金额" width="130">
-          <template #default="{ row }">￥{{ Number(row.amount).toFixed(2) }}</template>
+        <el-table-column label="金额" width="120" align="right">
+          <template #default="{ row }">
+            <span class="money">¥{{ Number(row.amount).toFixed(2) }}</span>
+          </template>
         </el-table-column>
         <el-table-column prop="amountType" label="金额类型" width="110">
           <template #default="{ row }">{{ row.amountType || '—' }}</template>
@@ -258,8 +261,8 @@ onBeforeUnmount(() => {
         <el-table-column label="数量" width="90">
           <template #default="{ row }">{{ row.quantity ?? '—' }}</template>
         </el-table-column>
-        <el-table-column label="单价" width="120">
-          <template #default="{ row }">{{ row.unitPrice != null ? `￥${Number(row.unitPrice).toFixed(2)}` : '—' }}</template>
+        <el-table-column label="单价" width="110" align="right">
+          <template #default="{ row }">{{ row.unitPrice != null ? `¥${Number(row.unitPrice).toFixed(2)}` : '—' }}</template>
         </el-table-column>
         <el-table-column label="发生日期" width="120">
           <template #default="{ row }">{{ row.date || '—' }}</template>
@@ -271,76 +274,72 @@ onBeforeUnmount(() => {
         <el-table-column label="住宿天数" width="90">
           <template #default="{ row }">{{ row.hotelDays ?? '—' }}</template>
         </el-table-column>
-        <el-table-column label="住宿金额" width="110">
-          <template #default="{ row }">{{ row.hotelAmount != null ? `￥${Number(row.hotelAmount).toFixed(2)}` : '—' }}</template>
+        <el-table-column label="住宿金额" width="105" align="right">
+          <template #default="{ row }">{{ row.hotelAmount != null ? `¥${Number(row.hotelAmount).toFixed(2)}` : '—' }}</template>
         </el-table-column>
-        <el-table-column label="交通金额" width="110">
-          <template #default="{ row }">{{ row.transportAmount != null ? `￥${Number(row.transportAmount).toFixed(2)}` : '—' }}</template>
+        <el-table-column label="交通金额" width="105" align="right">
+          <template #default="{ row }">{{ row.transportAmount != null ? `¥${Number(row.transportAmount).toFixed(2)}` : '—' }}</template>
         </el-table-column>
-        <el-table-column label="补贴金额" width="110">
-          <template #default="{ row }">{{ row.subsidyAmount != null ? `￥${Number(row.subsidyAmount).toFixed(2)}` : '—' }}</template>
+        <el-table-column label="补贴金额" width="105" align="right">
+          <template #default="{ row }">{{ row.subsidyAmount != null ? `¥${Number(row.subsidyAmount).toFixed(2)}` : '—' }}</template>
         </el-table-column>
         <template #append>
           <div class="table-total">
             <span>合计</span>
-            <span class="amount">￥{{ totalAmount.toFixed(2) }}</span>
+            <span class="money">{{ totalAmount.toFixed(2) }}</span>
           </div>
         </template>
       </el-table>
-    </el-card>
+      </div>
+    </div>
 
-    <el-card class="page-card">
-      <template #header>
-        <div class="page-header">
-          <div>
-            <div class="page-title card-title">附件（{{ (detail?.attachments || []).length }}）</div>
-            <div class="page-subtitle">支持预览和下载，方便对照审核材料</div>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">附件（{{ (detail?.attachments || []).length }}）</span>
+        <span class="faint">支持预览和下载，方便对照审核材料</span>
+      </div>
+      <div class="panel-body">
+        <EmptyState
+          v-if="!detail?.attachments || detail.attachments.length === 0"
+          title="没有附件"
+          description="提交时上传的发票与行程单会显示在这里"
+        />
+        <div v-else class="attachment-grid">
+          <div v-for="att in detail.attachments" :key="att.id" class="att-card">
+            <div class="att-name" :title="att.fileName || '未命名文件'">
+              {{ att.fileName || `file_${att.fileRecordId}` }}
+            </div>
+            <div class="att-meta">
+              <span class="stamp stamp--muted">{{ att.fileType }}</span>
+              <span class="stamp" :class="att.ocrStatus === 'SUCCESS' ? 'stamp--success' : 'stamp--muted'">
+                OCR {{ att.ocrStatus }}
+              </span>
+            </div>
+            <div class="att-actions">
+              <el-button v-if="att.url" size="small" :icon="View" @click="preview(att)">预览</el-button>
+              <el-button size="small" :icon="Download" @click="download(att.fileRecordId)">下载</el-button>
+            </div>
           </div>
         </div>
-      </template>
-      <el-empty v-if="!detail?.attachments || detail.attachments.length === 0" description="暂无附件" />
-      <div v-else class="attachment-grid">
-        <el-card v-for="att in detail.attachments" :key="att.id" shadow="hover" class="attachment-card">
-          <div class="att-name" :title="att.fileName || '未命名文件'">
-            📎 {{ att.fileName || `file_${att.fileRecordId}` }}
-          </div>
-          <div class="att-meta">
-            <el-tag size="small" type="info">{{ att.fileType }}</el-tag>
-            <el-tag size="small" :type="att.ocrStatus === 'SUCCESS' ? 'success' : 'info'">
-              OCR: {{ att.ocrStatus }}
-            </el-tag>
-          </div>
-          <div class="att-actions">
-            <el-button
-              v-if="att.url"
-              size="small"
-              :icon="View"
-              @click="preview(att)"
-            >预览</el-button>
-            <el-button size="small" :icon="Download" @click="download(att.fileRecordId)">下载</el-button>
-          </div>
-        </el-card>
       </div>
-    </el-card>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.detail {
-  gap: 16px;
+.detail-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
-.card-title {
+.panel {
+  margin-bottom: 18px;
+}
+
+.detail-amount {
   font-size: 16px;
-}
-
-.amount {
-  color: #f56c6c;
-  font-weight: 600;
-}
-
-.status-tag {
-  margin-left: 6px;
 }
 
 .reason-list {
@@ -360,12 +359,15 @@ onBeforeUnmount(() => {
 
 .attachment-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
 }
 
-.attachment-card {
-  text-align: center;
+.att-card {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
 }
 
 .att-name {
@@ -378,19 +380,12 @@ onBeforeUnmount(() => {
 
 .att-meta {
   display: flex;
-  justify-content: center;
   gap: 6px;
   margin-bottom: 8px;
 }
 
 .att-actions {
   display: flex;
-  justify-content: center;
   gap: 8px;
-}
-
-.soft-descriptions :deep(.el-descriptions__body) {
-  border-radius: 16px;
-  overflow: hidden;
 }
 </style>

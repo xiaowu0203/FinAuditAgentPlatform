@@ -142,20 +142,18 @@ async function handleDelete(row: RoleVO) {
 </script>
 
 <template>
-  <el-card v-loading="loading" class="page-card">
-    <template #header>
-      <div class="page-header">
-        <div>
-          <div class="page-title card-title">角色管理</div>
-          <div class="page-subtitle">角色是权限的分配单位；权限变更后在线用户下一请求即生效</div>
-        </div>
-        <div class="filters">
-          <el-button type="primary" :icon="Plus" v-perm="'role:create'" @click="openCreate">新增角色</el-button>
-        </div>
+  <div v-loading="loading">
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">角色管理</div>
+        <div class="page-head-sub">角色是权限的分配单位；权限变更后在线用户下一请求即生效</div>
       </div>
-    </template>
+      <div class="page-head-actions">
+        <el-button type="primary" :icon="Plus" v-perm="'role:create'" @click="openCreate">新增角色</el-button>
+      </div>
+    </div>
 
-    <el-table :data="rows" empty-text="暂无角色">
+    <el-table :data="rows" class="ledger-table">
       <el-table-column label="角色" min-width="220">
         <template #default="{ row }">
           <div class="role-cell">
@@ -163,7 +161,7 @@ async function handleDelete(row: RoleVO) {
             <div class="role-meta">
               <span class="role-name">
                 {{ row.roleName }}
-                <el-tag v-if="SYSTEM_ROLES.has(row.roleCode)" size="small" type="info" effect="plain" round>系统</el-tag>
+                <span v-if="SYSTEM_ROLES.has(row.roleCode)" class="chip chip--plain role-chip">系统</span>
               </span>
               <span class="role-code">{{ row.roleCode }}</span>
             </div>
@@ -175,19 +173,19 @@ async function handleDelete(row: RoleVO) {
       </el-table-column>
       <el-table-column label="操作" width="260" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" size="small" v-perm="'role:assign-perm'" :icon="Key" @click="openPerm(row)">
+          <el-button link type="primary" size="small" v-perm="'role:assign-perm'" :icon="Key" @click="openPerm(row as RoleVO)">
             权限分配
           </el-button>
-          <el-button link type="primary" size="small" v-perm="'role:update'" :icon="Edit" @click="openEdit(row)">
+          <el-button link type="primary" size="small" v-perm="'role:update'" :icon="Edit" @click="openEdit(row as RoleVO)">
             编辑
           </el-button>
-          <el-button link type="danger" size="small" v-perm="'role:delete'" :icon="Delete" @click="handleDelete(row)">
+          <el-button link type="danger" size="small" v-perm="'role:delete'" :icon="Delete" @click="handleDelete(row as RoleVO)">
             删除
           </el-button>
         </template>
       </el-table-column>
     </el-table>
-  </el-card>
+  </div>
 
   <el-dialog
     v-model="roleDialog"
@@ -231,12 +229,14 @@ async function handleDelete(row: RoleVO) {
             全选
           </el-checkbox>
         </header>
-        <div class="perm-checks">
-          <el-checkbox v-for="p in items" :key="p.id" v-model="checkedPermIds" :value="p.id" border class="perm-check">
-            {{ p.permName }}
-            <span class="perm-code">{{ p.permCode }}</span>
-          </el-checkbox>
-        </div>
+        <el-checkbox-group v-model="checkedPermIds">
+          <div class="perm-checks">
+            <el-checkbox v-for="p in items" :key="p.id" :value="p.id" border class="perm-check">
+              {{ p.permName }}
+              <span class="perm-code">{{ p.permCode }}</span>
+            </el-checkbox>
+          </div>
+        </el-checkbox-group>
       </section>
     </div>
     <template #footer>
@@ -258,8 +258,8 @@ async function handleDelete(row: RoleVO) {
   justify-content: space-between;
   gap: 16px;
 }
-.card-title {
-  font-size: 16px;
+.role-chip {
+  margin-left: 6px;
 }
 
 .role-cell {
@@ -269,15 +269,15 @@ async function handleDelete(row: RoleVO) {
 }
 .role-badge {
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   place-items: center;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #0ea5e9, #2563eb);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  box-shadow: 0 6px 14px rgba(14, 165, 233, 0.22);
+  border: 1px solid var(--ledger);
+  border-radius: var(--radius-sm);
+  color: var(--ledger);
+  font-size: 14px;
+  font-weight: 600;
+  transform: rotate(-4deg);
 }
 .role-meta {
   display: flex;
@@ -288,10 +288,10 @@ async function handleDelete(row: RoleVO) {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  color: var(--text-1);
+  color: var(--ink);
 }
 .role-code {
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 12px;
 }
 

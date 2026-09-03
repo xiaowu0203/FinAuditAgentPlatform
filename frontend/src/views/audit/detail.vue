@@ -15,6 +15,9 @@ import {
 import { getFileDownloadUrl } from '@/api/file'
 import { AUDIT_ACTION_MAP, AUDIT_STATUS_MAP, AUDIT_TRIGGER_MAP } from '@/utils/task'
 import { useAuthStore } from '@/stores/auth'
+import StatusStamp from '@/components/StatusStamp.vue'
+import SealStamp from '@/components/SealStamp.vue'
+import EmptyState from '@/components/EmptyState.vue'
 import type { AuditRecordVO, AuditTicketDetailVO, AuditTicketVO } from '@/types'
 
 const route = useRoute()
@@ -32,6 +35,19 @@ const ticket = computed<AuditTicketVO | null>(() => detail.value?.ticket || null
 const reimb = computed(() => detail.value?.reimbursement)
 /** 审批权限（P3.5 权限码，取代角色字符串）：审批动作按钮仅 audit:approve 可见 */
 const isFinance = computed(() => auth.hasPerm('audit:approve'))
+
+/** 终态印章：仅 APPROVED / REJECTED / TERMINATED 盖章（撤销等中间态走状态戳） */
+const seal = computed<{ text: string; tone: 'success' | 'danger' } | null>(() => {
+  if (!ticket.value) return null
+  if (ticket.value.status === 'APPROVED') return { text: '同意', tone: 'success' }
+  if (ticket.value.status === 'REJECTED') return { text: '驳回', tone: 'danger' }
+  if (ticket.value.status === 'TERMINATED') return { text: '终止', tone: 'danger' }
+  return null
+})
+
+function money(v: unknown): string {
+  return `¥${Number(v ?? 0).toFixed(2)}`
+}
 
 /** 对象 → 格式化 JSON 文本 */
 function pretty(obj: unknown): string {
@@ -155,219 +171,295 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page-shell detail">
-    <!-- 工单基础信息 -->
-    <el-card v-loading="loading" class="page-card mb">
-      <template #header>
-        <div class="detail-header">
-          <div>
-            <div class="page-title card-title">{{ ticket?.ticketNo }}</div>
-            <div class="page-subtitle">流水线命中复核自动生成，财务执行终审动作（每次动作均留痕）</div>
-          </div>
-          <div class="header-actions">
-            <template v-if="isFinance && ticket?.status === 'PENDING'">
-              <el-button type="success" @click="confirmAction('approve', '通过')">通过</el-button>
-              <el-button type="danger" @click="handleReject">驳回</el-button>
-              <el-button type="warning" @click="confirmAction('terminate', '终止')">终止</el-button>
-            </template>
-            <template v-if="isFinance && ticket?.status === 'WITHDRAW_PENDING'">
-              <el-button type="primary" @click="handleWithdraw('agree')">同意撤销</el-button>
-              <el-button @click="handleWithdraw('refuse')">拒绝撤销</el-button>
-            </template>
-            <el-button :icon="Back" @click="router.back()">返回</el-button>
-          </div>
+  <div>
+    <!-- 页头：工单号 + 审批动作 -->
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">{{ ticket?.ticketNo || `工单 #${ticketId}` }}</div>
+        <div class="page-head-sub detail-sub">
+          <span v-if="ticket">{{ ticket.title }}</span>
+          <StatusStamp
+            v-if="ticket"
+            :label="AUDIT_STATUS_MAP[ticket.status].label"
+            :tone="AUDIT_STATUS_MAP[ticket.status].tone"
+          />
+          <StatusStamp
+            v-if="ticket"
+            :label="AUDIT_TRIGGER_MAP[ticket.triggerType].label"
+            :tone="AUDIT_TRIGGER_MAP[ticket.triggerType].tone"
+          />
         </div>
-      </template>
+      </div>
+      <div class="page-head-actions">
+        <template v-if="isFinance && ticket?.status === 'PENDING'">
+          <el-button type="success" @click="confirmAction('approve', '通过')">通过</el-button>
+          <el-button type="danger" @click="handleReject">驳回</el-button>
+          <el-button type="warning" @click="confirmAction('terminate', '终止')">终止</el-button>
+        </template>
+        <template v-if="isFinance && ticket?.status === 'WITHDRAW_PENDING'">
+          <el-button type="primary" @click="handleWithdraw('agree')">同意撤销</el-button>
+          <el-button @click="handleWithdraw('refuse')">拒绝撤销</el-button>
+        </template>
+        <el-button :icon="Back" @click="router.back()">返回</el-button>
+      </div>
+    </div>
 
-      <template v-if="ticket">
-        <el-descriptions :column="3" border class="soft-descriptions">
-          <el-descriptions-item label="任务标题">{{ ticket.title }}</el-descriptions-item>
-          <el-descriptions-item label="触发类型">
-            <el-tag :type="AUDIT_TRIGGER_MAP[ticket.triggerType].tag">{{ AUDIT_TRIGGER_MAP[ticket.triggerType].label }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="工单状态">
-            <el-tag :type="AUDIT_STATUS_MAP[ticket.status].tag">{{ AUDIT_STATUS_MAP[ticket.status].label }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="关联任务">
-            <el-link type="primary" @click="router.push(`/tasks/${ticket.taskId}`)">{{ ticket.taskId }}</el-link>
-          </el-descriptions-item>
-          <el-descriptions-item label="申报总额">
-            <span class="amount">￥{{ Number(ticket.originAmount).toFixed(2) }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="修改后金额">
-            <span v-if="ticket.adjustedAmount != null" class="amount">￥{{ Number(ticket.adjustedAmount).toFixed(2) }}</span>
-            <span v-else>—</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="重跑次数">{{ ticket.rerunCount }} / 3</el-descriptions-item>
-          <el-descriptions-item label="创建时间">{{ ticket.createdAt }}</el-descriptions-item>
-          <el-descriptions-item label="最近处理人">
-            <span v-if="ticket.auditorId">{{ ticket.auditorId }}</span>
-            <span v-else>—</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="复核原因列表" :span="3">
-            <div class="reason-list">
-              <el-tag v-for="(r, i) in ticket.reviewReasons || []" :key="i" type="warning" effect="plain" class="reason-tag">
-                {{ r }}
-              </el-tag>
-              <span v-if="!ticket.reviewReasons || ticket.reviewReasons.length === 0" class="muted">—</span>
+    <!-- 工单单据：右上角盖终审印章 -->
+    <div v-loading="loading" class="panel ticket-panel">
+      <SealStamp v-if="seal" class="ticket-seal" :text="seal.text" :tone="seal.tone" />
+      <div class="panel-head">
+        <span class="panel-title">工单信息</span>
+        <span class="faint">流水线命中复核自动生成，每次动作均留痕</span>
+      </div>
+      <div class="panel-body">
+        <template v-if="ticket">
+          <!-- 金额对比条：申报 vs 修改后 -->
+          <div class="amount-strip">
+            <div class="amt">
+              <span class="amt-label">申报总额</span>
+              <strong class="amt-num">{{ money(ticket.originAmount) }}</strong>
             </div>
-          </el-descriptions-item>
-          <el-descriptions-item v-if="ticket.auditComment" label="最近处理意见" :span="3">
-            {{ ticket.auditComment }}
-          </el-descriptions-item>
-        </el-descriptions>
-      </template>
-    </el-card>
+            <template v-if="ticket.adjustedAmount != null">
+              <span class="amt-arrow">→</span>
+              <div class="amt">
+                <span class="amt-label">修改后</span>
+                <strong class="amt-num">{{ money(ticket.adjustedAmount) }}</strong>
+              </div>
+            </template>
+            <div class="amt amt--side">
+              <span class="amt-label">重跑</span>
+              <strong class="amt-num amt-num--small">{{ ticket.rerunCount }} / 3</strong>
+            </div>
+            <div class="amt amt--side">
+              <span class="amt-label">关联任务</span>
+              <el-link type="primary" :underline="false" @click="router.push(`/tasks/${ticket.taskId}`)">
+                {{ ticket.taskId }}
+              </el-link>
+            </div>
+          </div>
+
+          <el-descriptions :column="3" border class="ticket-desc">
+            <el-descriptions-item label="最近处理人">
+              <span v-if="ticket.auditorId">{{ ticket.auditorId }}</span>
+              <span v-else class="faint">—</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="创建时间">{{ ticket.createdAt }}</el-descriptions-item>
+            <el-descriptions-item label="最近处理意见">
+              <span v-if="ticket.auditComment">{{ ticket.auditComment }}</span>
+              <span v-else class="faint">—</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="复核原因" :span="3">
+              <div class="reason-list">
+                <span v-for="(r, i) in ticket.reviewReasons || []" :key="i" class="stamp stamp--pending reason-tag">
+                  {{ r }}
+                </span>
+                <span v-if="!ticket.reviewReasons || ticket.reviewReasons.length === 0" class="faint">—</span>
+              </div>
+            </el-descriptions-item>
+          </el-descriptions>
+        </template>
+      </div>
+    </div>
 
     <!-- 关联报销单（GENERIC 任务无报销单） -->
-    <el-card v-if="reimb" class="page-card mb">
-      <template #header>
-        <div class="page-header">
-          <div>
-            <div class="page-title card-title">关联报销单：{{ reimb.reimbursement.reimbNo }}</div>
-            <div class="page-subtitle">对照单据明细与票据 OCR 抽取字段执行审批</div>
-          </div>
-        </div>
-      </template>
-
-      <el-descriptions :column="3" border class="soft-descriptions mb">
-        <el-descriptions-item label="标题">{{ reimb.reimbursement.title }}</el-descriptions-item>
-        <el-descriptions-item label="费用类型">{{ reimb.reimbursement.expenseType }}</el-descriptions-item>
-        <el-descriptions-item label="申报总金额">
-          <span class="amount">￥{{ Number(reimb.reimbursement.totalAmount).toFixed(2) }}</span>
-        </el-descriptions-item>
-      </el-descriptions>
-
-      <el-table :data="reimb.items" empty-text="暂无明细">
-        <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
-        <el-table-column label="金额" width="130">
-          <template #default="{ row }">￥{{ Number(row.amount).toFixed(2) }}</template>
-        </el-table-column>
-        <el-table-column prop="amountType" label="金额类型" width="110">
-          <template #default="{ row }">{{ row.amountType || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="发生日期" width="120">
-          <template #default="{ row }">{{ row.date || '—' }}</template>
-        </el-table-column>
-        <!-- 差旅明细扩展字段（审批判断差旅标准所需；非差旅项显示 —） -->
-        <el-table-column label="城市" width="100">
-          <template #default="{ row }">{{ row.city || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="住宿天数" width="90">
-          <template #default="{ row }">{{ row.hotelDays ?? '—' }}</template>
-        </el-table-column>
-        <el-table-column label="住宿金额" width="110">
-          <template #default="{ row }">{{ row.hotelAmount != null ? `￥${Number(row.hotelAmount).toFixed(2)}` : '—' }}</template>
-        </el-table-column>
-        <el-table-column label="交通金额" width="110">
-          <template #default="{ row }">{{ row.transportAmount != null ? `￥${Number(row.transportAmount).toFixed(2)}` : '—' }}</template>
-        </el-table-column>
-        <el-table-column label="补贴金额" width="110">
-          <template #default="{ row }">{{ row.subsidyAmount != null ? `￥${Number(row.subsidyAmount).toFixed(2)}` : '—' }}</template>
-        </el-table-column>
-      </el-table>
-
-      <div v-if="reimb.attachments && reimb.attachments.length" class="attachment-grid mt">
-        <el-card v-for="att in reimb.attachments" :key="att.id" shadow="hover" class="attachment-card">
-          <div class="att-name" :title="att.fileName || '未命名文件'">
-            📎 {{ att.fileName || `file_${att.fileRecordId}` }}
-          </div>
-          <div class="att-meta">
-            <el-tag size="small" type="info">{{ att.fileType }}</el-tag>
-            <el-tag size="small" :type="att.ocrStatus === 'SUCCESS' ? 'success' : 'info'">OCR: {{ att.ocrStatus }}</el-tag>
-          </div>
-          <el-collapse v-if="att.ocrResult" class="ocr-collapse">
-            <el-collapse-item title="OCR 抽取字段" name="ocr">
-              <pre class="json-block compact">{{ pretty(att.ocrResult) }}</pre>
-            </el-collapse-item>
-          </el-collapse>
-          <div class="att-actions">
-            <el-button v-if="att.url" size="small" :icon="View" @click="preview(att)">预览</el-button>
-            <el-button size="small" :icon="Download" @click="download(att.fileRecordId)">下载</el-button>
-          </div>
-        </el-card>
+    <div v-if="reimb" class="panel ticket-panel">
+      <div class="panel-head">
+        <span class="panel-title">关联报销单 · {{ reimb.reimbursement.reimbNo }}</span>
+        <span class="faint">对照单据明细与票据 OCR 字段执行审批</span>
       </div>
-    </el-card>
+      <div class="panel-body">
+        <el-descriptions :column="3" border class="ticket-desc">
+          <el-descriptions-item label="标题">{{ reimb.reimbursement.title }}</el-descriptions-item>
+          <el-descriptions-item label="费用类型">{{ reimb.reimbursement.expenseType }}</el-descriptions-item>
+          <el-descriptions-item label="申报总金额">
+            <span class="money">{{ money(reimb.reimbursement.totalAmount) }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
 
-    <!-- 审批留痕时间线 -->
-    <el-card class="page-card">
-      <template #header>
-        <div class="page-header">
-          <div>
-            <div class="page-title card-title">审批留痕（{{ records.length }}）</div>
-            <div class="page-subtitle">append-only 审计溯源：操作人 / 变更前后金额 / 意见 / 时间</div>
-          </div>
-        </div>
-      </template>
-      <el-timeline v-if="records.length" class="timeline">
-        <el-timeline-item
-          v-for="r in records"
-          :key="r.id"
-          :timestamp="r.createdAt"
-          placement="top"
-          :type="r.action === 'REJECT' || r.action === 'TERMINATE' ? 'danger' : r.action === 'APPROVE' ? 'success' : 'primary'"
-        >
-          <div class="record-item">
-            <div class="record-head">
-              <el-tag size="small" :type="r.action === 'REJECT' || r.action === 'TERMINATE' ? 'danger' : 'info'">
-                {{ AUDIT_ACTION_MAP[r.action] ?? r.action }}
-              </el-tag>
-              <span class="operator">{{ r.operatorName || '系统' }}<template v-if="r.operatorRoles">（{{ r.operatorRoles }}）</template></span>
+        <el-table :data="reimb.items" class="ledger-table ledger-table--bare items-table" empty-text="暂无明细">
+          <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
+          <el-table-column label="金额" width="120" align="right">
+            <template #default="{ row }">
+              <span class="money">{{ money(row.amount) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="amountType" label="金额类型" width="100">
+            <template #default="{ row }">{{ row.amountType || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="发生日期" width="110">
+            <template #default="{ row }">{{ row.date || '—' }}</template>
+          </el-table-column>
+          <!-- 差旅明细扩展字段（审批判断差旅标准所需；非差旅项显示 —） -->
+          <el-table-column label="城市" width="90">
+            <template #default="{ row }">{{ row.city || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="住宿天数" width="85" align="center">
+            <template #default="{ row }">{{ row.hotelDays ?? '—' }}</template>
+          </el-table-column>
+          <el-table-column label="住宿金额" width="105" align="right">
+            <template #default="{ row }">{{ row.hotelAmount != null ? money(row.hotelAmount) : '—' }}</template>
+          </el-table-column>
+          <el-table-column label="交通金额" width="105" align="right">
+            <template #default="{ row }">{{ row.transportAmount != null ? money(row.transportAmount) : '—' }}</template>
+          </el-table-column>
+          <el-table-column label="补贴金额" width="105" align="right">
+            <template #default="{ row }">{{ row.subsidyAmount != null ? money(row.subsidyAmount) : '—' }}</template>
+          </el-table-column>
+        </el-table>
+
+        <div v-if="reimb.attachments && reimb.attachments.length" class="attachment-grid">
+          <div v-for="att in reimb.attachments" :key="att.id" class="att-card">
+            <div class="att-name" :title="att.fileName || '未命名文件'">
+              {{ att.fileName || `file_${att.fileRecordId}` }}
             </div>
-            <div v-if="r.beforeAmount != null" class="record-amount">
-              <template v-if="r.afterAmount != null && r.afterAmount !== r.beforeAmount">
-                ￥{{ Number(r.beforeAmount).toFixed(2) }} → <b>￥{{ Number(r.afterAmount).toFixed(2) }}</b>
-              </template>
-              <template v-else>￥{{ Number(r.beforeAmount).toFixed(2) }}</template>
+            <div class="att-meta">
+              <span class="stamp stamp--muted">{{ att.fileType }}</span>
+              <span class="stamp" :class="att.ocrStatus === 'SUCCESS' ? 'stamp--success' : 'stamp--muted'">
+                OCR {{ att.ocrStatus }}
+              </span>
             </div>
-            <div v-if="r.comment" class="record-comment">{{ r.comment }}</div>
-            <el-collapse v-if="hasSnapshot(r)" class="snap-collapse">
-              <el-collapse-item title="数据快照（改前 / 改后，不含预签名 URL）" name="snap">
-                <div class="snap-grid">
-                  <div v-if="r.beforeData" class="snap-box">
-                    <div class="snap-label">改前</div>
-                    <pre class="json-block compact">{{ pretty(r.beforeData) }}</pre>
-                  </div>
-                  <div v-else class="snap-box snap-empty">改前：无（首条提交）</div>
-                  <div v-if="r.afterData" class="snap-box">
-                    <div class="snap-label">改后</div>
-                    <pre class="json-block compact">{{ pretty(r.afterData) }}</pre>
-                  </div>
-                </div>
+            <el-collapse v-if="att.ocrResult" class="ocr-collapse">
+              <el-collapse-item title="OCR 抽取字段" name="ocr">
+                <pre class="output-block output-block--scroll">{{ pretty(att.ocrResult) }}</pre>
               </el-collapse-item>
             </el-collapse>
+            <div class="att-actions">
+              <el-button v-if="att.url" size="small" :icon="View" @click="preview(att)">预览</el-button>
+              <el-button size="small" :icon="Download" @click="download(att.fileRecordId)">下载</el-button>
+            </div>
           </div>
-        </el-timeline-item>
-      </el-timeline>
-      <el-empty v-else description="暂无审批留痕" />
-    </el-card>
+        </div>
+      </div>
+    </div>
+
+    <!-- 审批留痕时间线 -->
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">审批留痕（{{ records.length }}）</span>
+        <span class="faint">append-only 溯源：操作人 / 变更前后金额 / 意见 / 快照</span>
+      </div>
+      <div class="panel-body">
+        <el-timeline v-if="records.length" class="timeline">
+          <el-timeline-item
+            v-for="r in records"
+            :key="r.id"
+            :timestamp="r.createdAt"
+            placement="top"
+            :hollow="true"
+            :type="r.action === 'REJECT' || r.action === 'TERMINATE' ? 'danger' : r.action === 'APPROVE' ? 'success' : 'primary'"
+          >
+            <div class="record-item">
+              <div class="record-head">
+                <span
+                  class="stamp"
+                  :class="r.action === 'REJECT' || r.action === 'TERMINATE' ? 'stamp--danger' : r.action === 'APPROVE' ? 'stamp--success' : 'stamp--muted'"
+                >
+                  {{ AUDIT_ACTION_MAP[r.action] ?? r.action }}
+                </span>
+                <span class="operator">{{ r.operatorName || '系统' }}<template v-if="r.operatorRoles">（{{ r.operatorRoles }}）</template></span>
+              </div>
+              <div v-if="r.beforeAmount != null" class="record-amount">
+                <template v-if="r.afterAmount != null && r.afterAmount !== r.beforeAmount">
+                  <span class="money">{{ money(r.beforeAmount) }}</span>
+                  <span> → </span>
+                  <b class="money">{{ money(r.afterAmount) }}</b>
+                </template>
+                <template v-else>
+                  <span class="money">{{ money(r.beforeAmount) }}</span>
+                </template>
+              </div>
+              <div v-if="r.comment" class="record-comment">{{ r.comment }}</div>
+              <el-collapse v-if="hasSnapshot(r)" class="snap-collapse">
+                <el-collapse-item title="数据快照（改前 / 改后，不含预签名 URL）" name="snap">
+                  <div class="snap-grid">
+                    <div v-if="r.beforeData" class="snap-box">
+                      <div class="snap-label">改前</div>
+                      <pre class="output-block output-block--scroll">{{ pretty(r.beforeData) }}</pre>
+                    </div>
+                    <div v-else class="snap-box snap-empty">改前：无（首条提交）</div>
+                    <div v-if="r.afterData" class="snap-box">
+                      <div class="snap-label">改后</div>
+                      <pre class="output-block output-block--scroll">{{ pretty(r.afterData) }}</pre>
+                    </div>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
+            </div>
+          </el-timeline-item>
+        </el-timeline>
+        <EmptyState v-else title="暂无审批留痕" description="工单生成、审批、修改重跑的每一次动作都会记录在这里" />
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.detail {
-  gap: 16px;
+.detail-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
-.card-title {
-  font-size: 16px;
+/* 印章悬浮在单据卡右上角 */
+.ticket-panel {
+  position: relative;
+  margin-bottom: 18px;
 }
 
-.amount {
-  color: #f56c6c;
+.ticket-seal {
+  position: absolute;
+  top: 18px;
+  right: 26px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* 金额对比条 */
+.amount-strip {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 26px;
+  margin-bottom: 18px;
+  padding: 14px 18px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.amt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.amt--side {
+  margin-left: auto;
+}
+
+.amt-label {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.amt-num {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  font-size: 26px;
   font-weight: 600;
+  line-height: 1.1;
+  color: var(--ink);
 }
 
-.mb {
-  margin-bottom: 12px;
+.amt-num--small {
+  font-size: 18px;
 }
 
-.mt {
-  margin-top: 12px;
-}
-
-.muted {
-  color: var(--el-text-color-secondary);
+.amt-arrow {
+  color: var(--ink-3);
+  font-size: 18px;
+  padding-bottom: 4px;
 }
 
 .reason-list {
@@ -378,6 +470,10 @@ onBeforeUnmount(() => {
 
 .reason-tag {
   max-width: 100%;
+}
+
+.items-table {
+  margin-top: 16px;
 }
 
 .timeline {
@@ -397,28 +493,32 @@ onBeforeUnmount(() => {
 }
 
 .operator {
-  color: var(--el-text-color-secondary);
+  color: var(--ink-2);
   font-size: 13px;
 }
 
 .record-amount {
-  color: var(--el-text-color-regular);
+  color: var(--ink);
   font-size: 13px;
 }
 
 .record-comment {
-  color: var(--el-text-color-secondary);
+  color: var(--ink-2);
   font-size: 13px;
 }
 
 .attachment-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 12px;
+  margin-top: 16px;
 }
 
-.attachment-card {
-  text-align: center;
+.att-card {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
 }
 
 .att-name {
@@ -431,33 +531,39 @@ onBeforeUnmount(() => {
 
 .att-meta {
   display: flex;
-  justify-content: center;
   gap: 6px;
   margin-bottom: 8px;
 }
 
 .ocr-collapse {
-  text-align: left;
   margin-bottom: 8px;
+  border: none;
+}
+
+.ocr-collapse :deep(.el-collapse-item__header) {
+  height: 30px;
+  line-height: 30px;
+  font-size: 12px;
+  color: var(--ledger);
+  border-bottom: none;
 }
 
 .att-actions {
   display: flex;
-  justify-content: center;
   gap: 8px;
 }
 
 .snap-collapse {
   margin-top: 6px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
 }
 
 .snap-collapse :deep(.el-collapse-item__header) {
-  height: 34px;
-  line-height: 34px;
+  height: 32px;
+  line-height: 32px;
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: var(--ink-2);
 }
 
 .snap-grid {
@@ -468,38 +574,34 @@ onBeforeUnmount(() => {
 
 .snap-box {
   overflow: hidden;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
 }
 
 .snap-empty {
   display: grid;
   place-items: center;
-  color: var(--el-text-color-placeholder);
+  min-height: 60px;
+  color: var(--ink-3);
   font-size: 12px;
 }
 
 .snap-label {
   padding: 4px 8px;
-  background: var(--el-fill-color-light);
-  color: var(--el-text-color-secondary);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-2);
   font-size: 12px;
   font-weight: 600;
-}
-
-.snap-box .json-block {
-  max-height: 220px;
-  margin: 0;
 }
 
 @media (max-width: 768px) {
   .snap-grid {
     grid-template-columns: 1fr;
   }
-}
 
-.soft-descriptions :deep(.el-descriptions__body) {
-  border-radius: 16px;
-  overflow: hidden;
+  .amt--side {
+    margin-left: 0;
+  }
 }
 </style>

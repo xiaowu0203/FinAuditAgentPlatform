@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { UploadFile, UploadProgressEvent, UploadRequestOptions, UploadUserFile } from 'element-plus'
-import { Back, Delete, Plus } from '@element-plus/icons-vue'
+import { Back, Delete, Plus, UploadFilled } from '@element-plus/icons-vue'
 import { uploadFile } from '@/api/file'
 import { getDeptTree } from '@/api/system'
 import { submitReimbursement } from '@/api/reimbursement'
@@ -204,21 +204,24 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <el-card v-loading="submitting" class="page-card">
-    <template #header>
-      <div class="page-header">
-        <div>
-          <div class="page-title card-title">提交报销单</div>
-          <div class="page-subtitle">填写明细、上传附件后发起审核，后端接口和数据结构保持不变</div>
-        </div>
-        <div class="header-actions">
-          <el-button :icon="Back" @click="router.back()">返回</el-button>
-          <el-button type="primary" @click="fillTemplate">内置模板</el-button>
-        </div>
+  <div v-loading="submitting">
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">提交报销单</div>
+        <div class="page-head-sub">填写明细、上传票据附件后发起审核；总金额由服务端按明细求和</div>
       </div>
-    </template>
+      <div class="page-head-actions">
+        <el-button @click="fillTemplate">填充示例</el-button>
+        <el-button :icon="Back" @click="router.back()">返回</el-button>
+      </div>
+    </div>
 
-    <el-form :model="form" label-width="90px">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">基础信息</span>
+      </div>
+      <div class="panel-body">
+      <el-form :model="form" label-width="90px">
       <el-row :gutter="16">
         <el-col :xs="24" :md="12">
           <el-form-item label="报销标题" required>
@@ -264,11 +267,17 @@ async function handleSubmit() {
           </el-form-item>
         </el-col>
       </el-row>
-    </el-form>
+      </el-form>
+      </div>
+    </div>
 
-    <el-divider content-position="left">报销明细（总金额由服务端按明细求和）</el-divider>
-
-    <div v-for="(it, index) in items" :key="index" class="item-block">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">报销明细</span>
+        <span class="faint">金额一律 Decimal；差旅类型需填写城市与天数供标准核验</span>
+      </div>
+      <div class="panel-body">
+      <div v-for="(it, index) in items" :key="index" class="item-block">
       <div class="item-row">
         <el-input v-model="it.name" placeholder="名称" style="width: 160px" />
         <el-input-number v-model="it.amount" :min="0.01" :precision="2" :controls="false" placeholder="金额" style="width: 140px" />
@@ -287,11 +296,17 @@ async function handleSubmit() {
         <el-input-number v-model="it.subsidyAmount" :min="0" :precision="2" :controls="false" placeholder="补贴金额" style="width: 130px" />
       </div>
     </div>
-    <el-button class="mb" :icon="Plus" @click="addItem">添加明细</el-button>
+      <el-button class="mb" :icon="Plus" @click="addItem">添加明细</el-button>
+      </div>
+    </div>
 
-    <el-divider content-position="left">附件（≤20MB，建议上传发票/行程单）</el-divider>
-
-    <el-upload
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">票据附件</span>
+        <span class="faint">单个 ≤20MB，最多 5 个，建议上传发票/行程单</span>
+      </div>
+      <div class="panel-body">
+      <el-upload
       v-model:file-list="fileList"
       :http-request="doUpload"
       :on-remove="handleRemove"
@@ -306,17 +321,19 @@ async function handleSubmit() {
         <div class="el-upload__text">拖拽或<em>点击上传</em>（多文件）</div>
       </div>
     </el-upload>
+      </div>
+    </div>
 
     <div class="footer-actions">
       <el-button type="primary" size="large" :loading="submitting" @click="handleSubmit">提交审核</el-button>
       <el-button size="large" @click="router.back()">取消</el-button>
     </div>
-  </el-card>
+  </div>
 </template>
 
 <style scoped>
-.card-title {
-  font-size: 16px;
+.panel {
+  margin-bottom: 16px;
 }
 
 .item-block {
@@ -332,11 +349,11 @@ async function handleSubmit() {
 
 .travel-row {
   padding-left: 10px;
-  border-left: 3px solid #e4e7ed;
+  border-left: 3px solid var(--line-strong);
 }
 
 .travel-label {
-  color: #909399;
+  color: var(--ink-3);
   font-size: 12px;
   width: 30px;
 }
@@ -346,7 +363,9 @@ async function handleSubmit() {
 }
 
 .footer-actions {
-  margin-top: 20px;
-  text-align: right;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
 }
 </style>

@@ -165,31 +165,28 @@ async function handleDelete() {
 
 <template>
   <div class="page-shell">
-    <el-card class="page-card">
-      <template #header>
-        <div class="page-header">
-          <div>
-            <div class="page-title card-title">部门管理</div>
-            <div class="page-subtitle">部门树为报销单选择器与用户管理公用数据；租户内名称唯一</div>
-          </div>
-          <div class="filters">
-            <el-input v-model="keyword" class="tree-search" placeholder="搜索部门" :prefix-icon="Search" clearable />
-            <el-button type="primary" plain :icon="Plus" v-perm="'dept:create'" @click="openCreateRoot">
-              新增根部门
-            </el-button>
-            <el-button type="primary" :icon="Plus" v-perm="'dept:create'" :disabled="!selected" @click="openCreateChild">
-              新增子部门
-            </el-button>
-          </div>
-        </div>
-      </template>
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">部门管理</div>
+        <div class="page-head-sub">部门树为报销单选择器与用户管理公用数据；租户内名称唯一</div>
+      </div>
+      <div class="page-head-actions">
+        <el-input v-model="keyword" class="tree-search" placeholder="搜索部门" :prefix-icon="Search" clearable />
+        <el-button v-perm="'dept:create'" @click="openCreateRoot">新增根部门</el-button>
+        <el-button type="primary" :icon="Plus" v-perm="'dept:create'" :disabled="!selected" @click="openCreateChild">
+          新增子部门
+        </el-button>
+      </div>
+    </div>
 
+    <div class="panel dept-card">
+      <div class="panel-body">
       <div class="dept-layout">
         <!-- 左：部门树 -->
         <section class="soft-panel tree-panel">
           <header class="panel-head">
             <span class="panel-title">部门树</span>
-            <el-tag size="small" effect="plain" round>{{ total }} 个</el-tag>
+            <span class="stamp stamp--muted">{{ total }} 个</span>
           </header>
           <div v-loading="loading" class="tree-body">
             <el-tree
@@ -197,7 +194,7 @@ async function handleDelete() {
               :data="filteredTree"
               :props="{ label: 'deptName', children: 'children' }"
               node-key="id"
-              :current-node-key="currentKey"
+              :current-node-key="currentKey ?? undefined"
               highlight-current
               default-expand-all
               :expand-on-click-node="false"
@@ -208,7 +205,7 @@ async function handleDelete() {
                 <span class="tree-node">
                   <span class="tree-node-name">{{ data.deptName }}</span>
                   <span v-if="(data.children || []).length" class="child-badge">{{ data.children.length }}</span>
-                  <el-tag v-if="data.status !== 1" size="small" type="info" effect="plain" class="off-tag">停用</el-tag>
+                  <span v-if="data.status !== 1" class="stamp stamp--muted off-tag">停用</span>
                 </span>
               </template>
             </el-tree>
@@ -226,9 +223,9 @@ async function handleDelete() {
               <div class="dept-hero-info">
                 <div class="dept-hero-name">
                   {{ selected.deptName }}
-                  <el-tag :type="selected.status === 1 ? 'success' : 'info'" size="small" effect="light" round>
+                  <span class="stamp" :class="selected.status === 1 ? 'stamp--success' : 'stamp--muted'">
                     {{ selected.status === 1 ? '启用' : '停用' }}
-                  </el-tag>
+                  </span>
                 </div>
                 <div class="dept-hero-sub">ID {{ selected.id }} · {{ parentLabel }}</div>
               </div>
@@ -270,7 +267,8 @@ async function handleDelete() {
           </div>
         </section>
       </div>
-    </el-card>
+      </div>
+    </div>
   </div>
 
   <el-dialog v-model="dialog" :title="editingId == null ? `新增部门（${creatingParent ? '子部门' : '根部门'}）` : '编辑部门'" width="460px" :close-on-click-modal="false" align-center>
@@ -334,7 +332,7 @@ async function handleDelete() {
 .panel-title {
   font-size: 13px;
   font-weight: 700;
-  color: var(--text-2);
+  color: var(--ink-2);
   letter-spacing: 0.04em;
 }
 .tree-body {
@@ -356,8 +354,8 @@ async function handleDelete() {
   margin-bottom: 2px;
 }
 .dept-tree :deep(.el-tree-node.is-current > .el-tree-node__content) {
-  background: linear-gradient(90deg, rgba(37, 99, 235, 0.12), rgba(79, 70, 229, 0.1));
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.18);
+  background: var(--ledger-weak);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 .tree-node {
   display: inline-flex;
@@ -375,7 +373,7 @@ async function handleDelete() {
   padding: 0 5px;
   border-radius: 999px;
   background: rgba(100, 116, 139, 0.14);
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 11px;
   line-height: 18px;
   text-align: center;
@@ -393,7 +391,7 @@ async function handleDelete() {
   border-radius: 18px;
   background:
     radial-gradient(circle at right top, rgba(96, 165, 250, 0.1), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, #f8fbff 100%);
+    var(--surface);
   padding: 22px 24px 18px;
 }
 .dept-hero {
@@ -407,8 +405,8 @@ async function handleDelete() {
   height: 52px;
   place-items: center;
   border-radius: 16px;
-  background: linear-gradient(135deg, #eff6ff, #eef2ff);
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.14);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--line);
   font-size: 24px;
 }
 .dept-hero-name {
@@ -420,7 +418,7 @@ async function handleDelete() {
 }
 .dept-hero-sub {
   margin-top: 3px;
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 13px;
 }
 .metric-row {
@@ -438,14 +436,14 @@ async function handleDelete() {
 .metric-value {
   font-size: 18px;
   font-weight: 800;
-  color: var(--text-1);
+  color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .metric-label {
   margin-top: 3px;
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 12px;
 }
 .detail-actions {
@@ -457,7 +455,7 @@ async function handleDelete() {
 }
 .detail-tip {
   margin-top: 12px;
-  color: #94a3b8;
+  color: var(--ink-3);
   font-size: 12px;
 }
 .detail-empty {
@@ -469,7 +467,7 @@ async function handleDelete() {
 .field-tip {
   width: 100%;
   margin-top: 4px;
-  color: #94a3b8;
+  color: var(--ink-3);
   font-size: 12px;
 }
 
