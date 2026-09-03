@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · 财务费用智能审核 Agent 平台
 
-> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 安全风控 ✅** · 详细文档见 `docs/`
+> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 安全风控 ✅ ｜ 前端 UI 重构（账簿·印章·留痕）✅** · 详细文档见 `docs/`
 
 ## 项目简介
 
@@ -52,6 +52,12 @@
 - **输出脱敏 `@Mask`**：common-code Jackson 序列化切面，对外 VO 按 `MaskType`（ID_CARD/BANK_CARD/TAX_NO/PHONE）脱敏；手机号（租户用户 VO）、税号（`AttachmentVO.ocrResult` Map）、审计快照敏感键均生效，**金额永不脱敏**；内部链路明文
 - **工具防越权**：tool-service `ToolAccessGuard` 在 `execute` 统一入口校验租户一致性 + 部门校验（空白拒绝，未知部门告警不阻断）+ 单据归属（`duplicate_check`/`ocr_extract`），覆盖 HTTP 直调与 MQ
 
+### 已落地（前端 UI 重构）
+
+- **设计系统「账簿·印章·留痕」**：冷调账簿纸/墨青/账簿绿/朱砂/赭金设计令牌，**深色模式**（跟随系统 + 手动切换），移动端抽屉导航
+- **业务组件**：审批印章（终审结论盖章可视化）、任务流水线时间线（工具/推理徽标 + 输出折叠）、状态戳、行动邀请式空态；金额衬线等宽右对齐
+- **工程**：Element Plus 按需引入（主 chunk 1.2MB → 190KB）、`.env` 出网关代理配置、轮询改 5s 后台静默刷新（不闪遮罩、页面不可见暂停）
+
 ### 规划中（P4，见 `docs/planning/future-roadmap.md`）
 
 - **P4** RAG 企业知识库（Milvus）、监控大盘与量化评估
@@ -72,6 +78,7 @@ JDK 21 · Spring Boot 3.5.0 · Spring Cloud 2025.0.0 · Spring Cloud Alibaba 202
 | P3a 多 Agent 角色化 | ✅ 完成 | 五类财务角色 + `RuleBasedFlowEngine` 固定流水线 + `ReviewFlowDecider` 输出 `AUTO_PASS`/`NEED_REVIEW` |
 | P3b 审批工单闭环 | ✅ 完成 | 工单状态机 + `audit_record` 留痕 + 财务审批 + 提交人 resubmit 修改重跑 + 撤回/撤销 + 可见性统一 + 前端审批工单页 |
 | P3c 安全风控 | ✅ 完成 | Prompt 注入拦截（命中→强制人工工单） / `@Mask` 输出脱敏（税号/手机号，金额明文） / 工具 execute 统一越权校验 |
+| 前端 UI 重构 | ✅ 完成 | 账簿·印章·留痕设计系统（深色模式/移动端抽屉）+ 审批印章/流水线时间线组件 + Element Plus 按需引入（主 chunk 1.2MB→190KB）+ 轮询静默刷新 |
 
 ## 快速启动
 
