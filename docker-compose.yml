@@ -1,6 +1,8 @@
 # FinAuditAgentPlatform 中间件一键启动（开源环境复现用）
 # 注意：本地开发请复用本机已装中间件，无需启动本文件。
 # 用法：cp .env.example .env && docker compose up -d
+#   MySQL 容器首启时自动执行 docs/database/finaudit-schema.sql（建库表 + 种子数据，单文件直挂无副本）；
+#   已有数据卷（mysql-data）时 initdb 不会重复执行。
 # 本机无 Docker 时，Nacos/RabbitMQ/MySQL/Redis/MinIO 需自行安装。
 
 services:
@@ -36,7 +38,9 @@ services:
       - "3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
+      # 首启自动建表 + 种子数据：直接挂 schema 单文件，避免维护副本造成漂移
+      # （P3.5d 修复：原挂载 ./docker/mysql-init 目录在仓库中不存在，起库为空库）
+      - ./docs/database/finaudit-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci --default-time-zone=+8:00
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-root}"]
