@@ -67,7 +67,9 @@ class AuthServiceSnapshotRefreshTest {
 
     @Test
     void userAuthChanged_rebuildsSnapshotFromDb() {
-        when(userService.getById(7L)).thenReturn(user(7, 1));
+        SysUser u = user(7L, 1);
+        u.setDeptId(9L); // P3.5b：用户挂部门后快照携带 deptId，网关透传 X-Dept-Id
+        when(userService.getById(7L)).thenReturn(u);
         stubRoleResolution(List.of(1L, 2L), List.of(role(1, "admin"), role(2, "auditor")));
         when(permissionService.listPermCodesByUser(7L))
                 .thenReturn(Set.of("user:create", "audit:approve"));
@@ -77,7 +79,7 @@ class AuthServiceSnapshotRefreshTest {
         verify(authSessionService).writeSnapshot(eq(7L), argThat(snapshot ->
                 snapshot.roles().equals(List.of("admin", "auditor"))
                         && snapshot.perms().containsAll(List.of("user:create", "audit:approve"))
-                        && snapshot.deptId() == null
+                        && snapshot.deptId() == 9L
                         && snapshot.status() == 1));
     }
 

@@ -35,8 +35,22 @@
 | password | VARCHAR(128) | **BCrypt 哈希**（禁止明文） |
 | real_name | VARCHAR(64) | 真实姓名 |
 | phone | VARCHAR(20) | 手机号 |
+| dept_id | BIGINT | 部门 ID（P3.5b 员工级归属；未绑定 null，FK→sys_dept.id 语义非物理外键） |
 | status | TINYINT | 1 启用 / 0 禁用 |
 | created_at / updated_at / deleted | | |
+
+## 2.5 sys_dept 部门表（P3.5b）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | UK(tenant_id, dept_name)，租户自动隔离 |
+| parent_id | BIGINT | 父部门 ID（0=根），内存组树（MySQL 5.7 无递归 CTE） |
+| dept_name | VARCHAR(64) | 部门名称（权威主数据；业务表仅存 dept_id + 提交时快照） |
+| status | TINYINT | 1 启用 / 0 停用 |
+| created_at / updated_at / deleted | | |
+
+写约束：create 父存在性；update 防环（不能挂到自身子孙下）；delete 有子部门/用户引用拒删。
 
 ## 3. sys_role 角色表
 
@@ -134,7 +148,8 @@
 | title | VARCHAR(128) | 报销标题 |
 | expense_type | VARCHAR(32) | 费用类型：`TRAVEL` / `ENTERTAINMENT` / `OFFICE` |
 | applicant_id | BIGINT | 申请人用户 ID（来源 `X-User-Id`） |
-| dept_name | VARCHAR(64) | 部门（D6：先字符串，独立部门表后置） |
+| dept_name | VARCHAR(64) | 部门（**提交时快照**，P3.5b 起权威为 dept_id；resubmit 部门不可改） |
+| dept_id | BIGINT | 提交者部门 ID（P3.5b 权威关联键；旧单/未选部门为 null） |
 | total_amount | DECIMAL(12,2) | 申报总金额（服务端按明细求和，不信任客户端） |
 | task_id | BIGINT | 关联 `agent_task.id`（agent-core 服务内同事务创建任务并回填） |
 | status | VARCHAR(20) | 审核状态，对齐任务状态机 |
@@ -182,11 +197,12 @@
 |---|---|---|
 | id | BIGINT PK | |
 | tenant_id | BIGINT | 租户 ID |
-| dept_name | VARCHAR(64) | 部门 |
+| dept_name | VARCHAR(64) | 部门（冗余显示，P3.5b 起权威为 dept_id） |
+| dept_id | BIGINT | 部门 ID（P3.5b 权威关联键，NOT NULL，FK→sys_dept.id 语义） |
 | period | VARCHAR(7) | 预算周期 `YYYY-MM` |
 | total_budget | DECIMAL(14,2) | 预算总额 |
 | used_amount | DECIMAL(14,2) | 已用额度（审核通过后累加） |
-| created_at / updated_at / deleted | | 唯一键 `uk_dept_period(tenant_id, dept_name, period)` |
+| created_at / updated_at / deleted | | 唯一键 `uk_dept_period(tenant_id, dept_id, period)`（P3.5b 切换） |
 
 ## 13. finance_rule 财务规则表（P2b 建表 / P2c 可视化配置 + Nacos 动态刷新）
 

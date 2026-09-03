@@ -54,11 +54,13 @@ public class RuleBasedFlowEngine {
                     AgentRole.DOCUMENT_PARSER.name()));
         }
 
-        // 2. 预算核算（有部门才建）
+        // 2. 预算核算（有部门才建；P3.5b 透传 deptId/reimbId 供工具越权校验）
         Object dept = in.get("deptName");
         if (dept != null && !dept.toString().isBlank()) {
             Map<String, Object> p = new LinkedHashMap<>();
             p.put("deptName", dept.toString());
+            p.put("deptId", in.get("deptId"));
+            p.put("reimbId", asLong(in.get("reimbId")));
             p.put("claimDate", claimDateStr(in.get("claimDate")));
             p.put("amount", in.get("claimedTotal"));
             // 添加预算核算步骤（TOOL类型）

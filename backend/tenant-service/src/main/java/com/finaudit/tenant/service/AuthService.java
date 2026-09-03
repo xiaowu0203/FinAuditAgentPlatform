@@ -112,7 +112,7 @@ public class AuthService {
             String token = jwtTokenProvider.createToken(user.getId(), user.getTenantId(), user.getUsername(), roles);
             // 写 Redis 权限快照（网关权威来源）：角色/权限/部门 变更实时生效的基准
             authSessionService.writeSnapshot(user.getId(),
-                    AuthSnapshot.of(roles, List.copyOf(perms), null, user.getStatus()));
+                    AuthSnapshot.of(roles, List.copyOf(perms), user.getDeptId(), user.getStatus()));
             // token过期时间，单位秒
             long expiresIn = jwtProperties.getExpireHours() * 3600;
             return new LoginVO(token, "Bearer", expiresIn, UserInfoVO.from(user, roles, perms));
@@ -172,7 +172,7 @@ public class AuthService {
             List<String> roles = resolveRoleCodes(userId);
             Set<String> perms = permissionService.listPermCodesByUser(userId);
             authSessionService.writeSnapshot(userId,
-                    AuthSnapshot.of(roles, List.copyOf(perms), null, user.getStatus()));
+                    AuthSnapshot.of(roles, List.copyOf(perms), user.getDeptId(), user.getStatus()));
         } catch (Exception e) {
             // 快照刷新失败不影响业务事务结果，打日志即可：最坏情况降级到 JWT 角色（权限置空）
             log.warn("权限快照刷新失败，将降级: userId={}, err={}", userId, e.getMessage());

@@ -15,6 +15,7 @@ import java.util.List;
  * @param password 密码（BCrypt 落库）
  * @param realName 真实姓名
  * @param phone    手机号
+ * @param deptId   部门 ID（P3.5b，可为空）
  * @param status   状态（1启用 0禁用，为空默认 1）
  * @param roleIds  待绑定角色 ID 列表（可为空）
  */
@@ -34,6 +35,9 @@ public record UserCreateRequest(
 
         @Schema(description = "手机号")
         String phone,
+
+        @Schema(description = "部门 ID（员工级归属，P3.5b）")
+        Long deptId,
 
         @Schema(description = "状态: 1启用 0禁用（默认 1）")
         Integer status,

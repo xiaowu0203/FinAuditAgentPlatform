@@ -8,6 +8,7 @@ import jakarta.validation.constraints.Size;
  *
  * @param realName 真实姓名
  * @param phone    手机号
+ * @param deptId   部门 ID（P3.5b，null 不改；0=解绑/清空）
  * @param status   状态（1启用 0禁用）
  * @param password 新密码（非空才重置，BCrypt 落库）
  */
@@ -17,6 +18,9 @@ public record UserUpdateRequest(
 
         @Schema(description = "手机号")
         String phone,
+
+        @Schema(description = "部门 ID（null 不改；0=解绑）")
+        Long deptId,
 
         @Schema(description = "状态: 1启用 0禁用")
         Integer status,

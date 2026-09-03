@@ -38,10 +38,10 @@ public interface AgentCoreServiceFeign {
                                @RequestBody OcrResultWritebackRequest request);
 
     /**
-     * 部门预算查询（按部门+周期）。
+     * 部门预算查询（按部门+周期，旧契约——存量任务 dept_id 为空的兜底路径）。
      *
      * @param tenantId 租户ID（经 X-Tenant-Id 请求头传递）
-     * @param deptName 部门
+     * @param deptName 部门（提交时快照名）
      * @param period   预算周期 YYYY-MM
      * @return 部门预算；未配置时 data=null
      */
@@ -49,6 +49,33 @@ public interface AgentCoreServiceFeign {
     R<BudgetVO> queryBudget(@RequestHeader("X-Tenant-Id") Long tenantId,
                             @RequestParam("deptName") String deptName,
                             @RequestParam("period") String period);
+
+    /**
+     * 部门预算查询（按部门 ID + 周期，P3.5b 权威关联键）。
+     *
+     * @param tenantId 租户ID（经 X-Tenant-Id 请求头传递）
+     * @param deptId   部门 ID
+     * @param period   预算周期 YYYY-MM
+     * @return 部门预算；未配置时 data=null
+     */
+    @GetMapping("/api/v1/audit/budgets")
+    R<BudgetVO> queryBudgetByDeptId(@RequestHeader("X-Tenant-Id") Long tenantId,
+                                    @RequestParam("deptId") Long deptId,
+                                    @RequestParam("period") String period);
+
+    /**
+     * budget_query 越权校验（P3.5b 收紧，销 P3c「告警不阻断」）：有 reimbId 校验
+     * 预算行 dept_id == reimb.dept_id（提交者本人部门语义）；无 reimbId（调试直调）仅查 sys_dept 存在性。
+     *
+     * @param tenantId 租户ID（经 X-Tenant-Id 请求头传递）
+     * @param reimbId  报销单 ID（可空）
+     * @param deptId   请求的部门 ID
+     * @return true=允许；false=越权/部门不存在/跨租户
+     */
+    @GetMapping("/api/v1/audit/budgets/allowed")
+    R<Boolean> isBudgetQueryAllowed(@RequestHeader("X-Tenant-Id") Long tenantId,
+                                    @RequestParam(value = "reimbId", required = false) Long reimbId,
+                                    @RequestParam(value = "deptId", required = false) Long deptId);
 
     /**
      * 财务规则校验（agent-core 按 finance_rule 评估，返回命中规则 + 是否超标）。
@@ -71,17 +98,6 @@ public interface AgentCoreServiceFeign {
     @GetMapping("/api/v1/audit/reimbursements/duplicates")
     R<DuplicateCheckVO> queryDuplicates(@RequestHeader("X-Tenant-Id") Long tenantId,
                                         @RequestParam("reimbId") Long reimbId);
-
-    /**
-     * 校验部门是否属于当前租户（P3c 工具防越权：budget_query 限本部门）。
-     *
-     * @param tenantId 租户ID（经 X-Tenant-Id 请求头传递）
-     * @param deptName 待校验部门
-     * @return true=该部门为租户已知部门；false=非本租户部门（越权/虚构）
-     */
-    @GetMapping("/api/v1/audit/budgets/dept-exists")
-    R<Boolean> isTenantDept(@RequestHeader("X-Tenant-Id") Long tenantId,
-                            @RequestParam("deptName") String deptName);
 
     /**
      * 查询报销单归属租户（P3c 工具防越权：duplicate_check/ocr_extract 校验 reimbId 归属）。

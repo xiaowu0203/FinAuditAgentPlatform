@@ -23,6 +23,7 @@ DROP TABLE IF EXISTS agent_task_step;
 DROP TABLE IF EXISTS agent_task;
 DROP TABLE IF EXISTS sys_role_permission;
 DROP TABLE IF EXISTS sys_permission;
+DROP TABLE IF EXISTS sys_dept;
 DROP TABLE IF EXISTS sys_user_role;
 DROP TABLE IF EXISTS sys_role;
 DROP TABLE IF EXISTS sys_user;
@@ -54,6 +55,7 @@ CREATE TABLE sys_user (
     password   VARCHAR(128) NOT NULL COMMENT 'BCrypt 哈希',
     real_name  VARCHAR(64)  DEFAULT NULL COMMENT '真实姓名',
     phone      VARCHAR(20)  DEFAULT NULL COMMENT '手机号',
+    dept_id    BIGINT       DEFAULT NULL COMMENT '部门ID（P3.5b 员工级归属；未绑定 null）',
     status     TINYINT      NOT NULL DEFAULT 1 COMMENT '状态: 1启用 0禁用',
     created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -62,6 +64,24 @@ CREATE TABLE sys_user (
     UNIQUE KEY uk_username (tenant_id, username),
     KEY idx_tenant (tenant_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '用户表';
+
+-- ---------------------------------------------------------------------
+-- 2.5 部门表（P3.5b）：租户内树形（parent_id=0 根），部门名租户内唯一
+--     dept_name 为权威部门主数据；业务表（reimb/budget/user）仅存 dept_id + 提交时 dept_name 快照
+-- ---------------------------------------------------------------------
+CREATE TABLE sys_dept (
+    id         BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id  BIGINT      NOT NULL DEFAULT 1 COMMENT '租户ID',
+    parent_id  BIGINT      NOT NULL DEFAULT 0 COMMENT '父部门ID（0=根）',
+    dept_name  VARCHAR(64) NOT NULL COMMENT '部门名称',
+    status     TINYINT     NOT NULL DEFAULT 1 COMMENT '状态: 1启用 0停用',
+    created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted    TINYINT     NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_tenant_dept (tenant_id, dept_name),
+    KEY idx_parent (parent_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '部门表（租户内树形；删除受子部门/用户引用约束）';
 
 -- ---------------------------------------------------------------------
 -- 3. 角色表
@@ -201,7 +221,8 @@ CREATE TABLE expense_reimbursement (
     title        VARCHAR(128)  NOT NULL COMMENT '报销标题',
     expense_type VARCHAR(32)   NOT NULL COMMENT '费用类型: TRAVEL/ENTERTAINMENT/OFFICE',
     applicant_id BIGINT        NOT NULL COMMENT '申请人用户ID',
-    dept_name    VARCHAR(64)   NOT NULL COMMENT '部门',
+    dept_name    VARCHAR(64)   NOT NULL COMMENT '部门（提交时快照，P3.5b）',
+    dept_id      BIGINT        DEFAULT NULL COMMENT '提交者部门ID（P3.5b 权威关联键；旧单/未选部门为 null）',
     total_amount DECIMAL(12,2) NOT NULL COMMENT '申报总金额（Decimal 强制）',
     task_id      BIGINT        DEFAULT NULL COMMENT '关联 agent_task.id（提交后反写）',
     status       VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '审核状态（对齐任务状态机）',
@@ -267,7 +288,8 @@ CREATE TABLE file_record (
 CREATE TABLE budget (
     id           BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
     tenant_id    BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
-    dept_name    VARCHAR(64)   NOT NULL COMMENT '部门',
+    dept_name    VARCHAR(64)   NOT NULL COMMENT '部门（冗余显示；权威为 dept_id）',
+    dept_id      BIGINT        NOT NULL COMMENT '部门ID（P3.5b 权威关联键）',
     period       VARCHAR(7)    NOT NULL COMMENT '预算周期 YYYY-MM',
     total_budget DECIMAL(14,2) NOT NULL COMMENT '预算总额',
     used_amount  DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '已用额度（审核通过后累加）',
@@ -275,8 +297,8 @@ CREATE TABLE budget (
     updated_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted      TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_dept_period (tenant_id, dept_name, period)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '部门预算表';
+    UNIQUE KEY uk_dept_period (tenant_id, dept_id, period)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '部门预算表（P3.5b：唯一键改为 dept_id）';
 
 -- ---------------------------------------------------------------------
 -- 13. 财务规则表（P2b 规则校验工具 rule_check；CRUD/发布归 P2c）
@@ -403,9 +425,17 @@ INSERT INTO sys_role (id, tenant_id, role_code, role_name) VALUES
     (1, 1, 'admin',   '管理员'),
     (2, 1, 'auditor', '审核员');
 
+-- P3.5b 部门种子（租户内唯一；parent_id=0 根）
+INSERT INTO sys_dept (id, tenant_id, parent_id, dept_name, status) VALUES
+    (1, 1, 0, '财务部', 1),
+    (2, 1, 0, '技术部', 1),
+    (3, 1, 0, '研发部', 1),
+    (4, 1, 0, '市场部', 1),
+    (5, 1, 0, '销售部', 1);
+
 -- admin 密码: admin123（BCrypt 哈希，P1.4 起为真实哈希；明文仅存在于本注释与 .env.example 约定，生产必改）
-INSERT INTO sys_user (id, tenant_id, username, password, real_name, status) VALUES
-    (1, 1, 'admin', '$2a$10$Cl.mMuDniwH4biiUNXY1lOKre0Ucg91fbnPfGg8R8nHvKBNaUc4Lq', '系统管理员', 1);
+INSERT INTO sys_user (id, tenant_id, username, password, real_name, dept_id, status) VALUES
+    (1, 1, 'admin', '$2a$10$Cl.mMuDniwH4biiUNXY1lOKre0Ucg91fbnPfGg8R8nHvKBNaUc4Lq', '系统管理员', 1, 1);
 
 INSERT INTO sys_user_role (id, tenant_id, user_id, role_id) VALUES
     (1, 1, 1, 1);
@@ -470,12 +500,12 @@ INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, inp
      '{"type":"object","properties":{"reimbId":{"type":"integer"}},"required":["reimbId"]}',
      1, '1.0', 'FINANCE', 0);
 
--- P2b 部门预算种子（默认租户 2026-08，部分已用）
-INSERT INTO budget (id, tenant_id, dept_name, period, total_budget, used_amount) VALUES
-    (1, 1, '研发部', '2026-08', 100000.00, 32000.00),
-    (2, 1, '财务部', '2026-08', 50000.00, 8000.00),
-    (3, 1, '市场部', '2026-08', 80000.00, 45600.00),
-    (4, 1, '销售部', '2026-08', 120000.00, 102400.00);
+-- P2b 部门预算种子（默认租户 2026-08，部分已用；P3.5b dept_id 关联 sys_dept）
+INSERT INTO budget (id, tenant_id, dept_name, dept_id, period, total_budget, used_amount) VALUES
+    (1, 1, '研发部', 3, '2026-08', 100000.00, 32000.00),
+    (2, 1, '财务部', 1, '2026-08', 50000.00, 8000.00),
+    (3, 1, '市场部', 4, '2026-08', 80000.00, 45600.00),
+    (4, 1, '销售部', 5, '2026-08', 120000.00, 102400.00);
 
 -- P2c 财务规则种子（四类全结构化；published=1 即 Nacos 生效集，改后置 0 需重新发布）
 INSERT INTO finance_rule (id, tenant_id, rule_code, rule_name, rule_type, rule_config, enabled, published, version) VALUES

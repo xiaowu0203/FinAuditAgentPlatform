@@ -10,7 +10,7 @@
 |---|---|---|---|
 | D4 文件能力载体 | **已定：新增 `file-service`（9205）承载纯文件资源**（唯一持有 `common-oss-starter`；报销域迁 agent-core 服务内直调建任务，读附件走 `FileServiceFeign`；rag-service 回归 RAG 专用空骨架，P4 填 Milvus） | P2-execution-plan §3 D4 | 已定（P2a 落地） |
 | D5 OCR 厂商选型 | **已定：百度 + `common-ocr-starter`**；AK/SK 走 `FINAUDIT_OCR_BAIDU_API_KEY` / `FINAUDIT_OCR_BAIDU_SECRET_KEY` | P2-execution-plan §3 D6 | 已定（P2b） |
-| D7 部门实体表 | 先 `dept_name` 字符串，独立部门表后置 | P2-execution-plan §3 D7 / P3 §8 | 后置 P5 |
+| D7 部门实体表 | 先 `dept_name` 字符串，独立部门表**已前置到 P3.5 R2 落地**（`sys_dept` 树形 + user/reimb/budget 挂 `dept_id` + `budget_query` 收紧） | P2-execution-plan §3 D7 / P3 §8 | ✅ P3.5 R2（已实现） |
 
 ## 2. 开发 TODO（P3 代码必落注释）
 

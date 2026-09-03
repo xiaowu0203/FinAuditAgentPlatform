@@ -36,11 +36,11 @@ spring:
                 # 匹配路径：认证登录相关接口
                 - Path=/api/v1/auth/**
 
-            # tenant-service：租户、用户、角色、权限管理接口路由
+            # tenant-service：租户、用户、角色、部门、权限管理接口路由
             - id: tenant-service-mgmt
               uri: lb://tenant-service
               predicates:
-                - Path=/api/v1/users/**,/api/v1/tenants/**,/api/v1/roles/**,/api/v1/permissions/**
+                - Path=/api/v1/users/**,/api/v1/tenants/**,/api/v1/roles/**,/api/v1/permissions/**,/api/v1/depts/**
 
 
             # agent-core-service：智能体任务相关接口

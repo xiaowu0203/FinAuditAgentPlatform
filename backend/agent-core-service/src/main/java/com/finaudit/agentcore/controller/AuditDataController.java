@@ -52,13 +52,17 @@ public class AuditDataController {
         return R.success();
     }
 
-    @Operation(summary = "部门预算查询", description = "按部门 + 周期（YYYY-MM）；未配置返回 data=null")
+    @Operation(summary = "部门预算查询", description = "按部门 + 周期（YYYY-MM）；deptId 优先（P3.5b 权威键），未传回退 deptName（存量）；未配置返回 data=null")
     @GetMapping("/budgets")
-    public R<BudgetVO> queryBudget(@RequestParam("deptName") String deptName,
+    public R<BudgetVO> queryBudget(@RequestParam(value = "deptName", required = false) String deptName,
+                                   @RequestParam(value = "deptId", required = false) Long deptId,
                                    @RequestParam("period") String period,
                                    @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
         requireTenant(tenantId);
-        return R.success(budgetService.findByDeptPeriod(tenantId, deptName, period));
+        BudgetVO vo = deptId != null
+                ? budgetService.findByDeptIdPeriod(tenantId, deptId, period)
+                : budgetService.findByDeptPeriod(tenantId, deptName, period);
+        return R.success(vo);
     }
 
     @Operation(summary = "财务规则校验", description = "agent-core 按 finance_rule 评估，返回命中规则 + 是否超标")
@@ -77,12 +81,13 @@ public class AuditDataController {
         return R.success(reimbursementService.queryDuplicates(tenantId, reimbId));
     }
 
-    @Operation(summary = "部门归属校验", description = "P3c 工具防越权：校验 deptName 是否为当前租户已知部门（budget_query 限本部门）")
-    @GetMapping("/budgets/dept-exists")
-    public R<Boolean> isTenantDept(@RequestParam("deptName") String deptName,
-                                   @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+    @Operation(summary = "budget_query 越权校验", description = "P3.5b 收紧：有 reimbId 校验 预算行 dept_id==reimb.dept_id（本人部门语义）；无 reimbId 仅查 sys_dept 存在性")
+    @GetMapping("/budgets/allowed")
+    public R<Boolean> isBudgetQueryAllowed(@RequestParam(value = "reimbId", required = false) Long reimbId,
+                                           @RequestParam(value = "deptId", required = false) Long deptId,
+                                           @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
         requireTenant(tenantId);
-        return R.success(budgetService.isTenantDept(tenantId, deptName));
+        return R.success(budgetService.isBudgetQueryAllowed(tenantId, reimbId, deptId));
     }
 
     @Operation(summary = "报销单归属租户查询", description = "P3c 工具防越权：返回报销单所属租户ID（duplicate_check/ocr_extract 校验 reimbId 归属）")
