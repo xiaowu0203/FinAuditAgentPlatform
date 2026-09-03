@@ -72,7 +72,10 @@ const parentOptions = computed<{ value: number; label: string }[]>(() => {
   const selfId = editingId.value
   const collect = (nodes: DeptVO[], depth: number) => {
     for (const n of nodes) {
-      if (selfId != null && isSelfOrDescendant(n, selfId)) continue
+      // 只跳过自身：子树因不再递归自然排除；祖先部门必须保留为合法选项
+      // （原实现用 isSelfOrDescendant 会把「子树包含自身」的祖先一并跳过，
+      //  导致编辑时上级部门选项缺失、el-select 回显原始 ID）
+      if (selfId != null && n.id === selfId) continue
       options.push({ value: n.id, label: `${'　'.repeat(depth)}${n.deptName}` })
       collect(n.children || [], depth + 1)
     }
@@ -80,9 +83,6 @@ const parentOptions = computed<{ value: number; label: string }[]>(() => {
   collect(treeData.value, 1)
   return options
 })
-function isSelfOrDescendant(n: DeptVO, selfId: number): boolean {
-  return n.id === selfId || (n.children || []).some((c) => isSelfOrDescendant(c, selfId))
-}
 
 const dialog = ref(false)
 const editingId = ref<number | null>(null)
