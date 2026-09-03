@@ -193,6 +193,12 @@ a {
   color: var(--ink);
 }
 
+/* 嵌入面板的变体：去掉自带边框，由面板裁切圆角 */
+.ledger-table--bare {
+  border: none;
+  border-radius: 0;
+}
+
 /* 空表占位收敛 */
 .ledger-table .el-table__empty-block {
   padding: 40px 0;

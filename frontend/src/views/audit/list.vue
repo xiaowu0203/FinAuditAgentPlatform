@@ -3,6 +3,8 @@ import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAuditTicketPage } from '@/api/audit'
 import { AUDIT_STATUS_MAP, AUDIT_TRIGGER_MAP } from '@/utils/task'
+import StatusStamp from '@/components/StatusStamp.vue'
+import EmptyState from '@/components/EmptyState.vue'
 import type { AuditTicketStatus, AuditTicketVO, AuditTriggerType } from '@/types'
 
 const route = useRoute()
@@ -10,11 +12,16 @@ const router = useRouter()
 const loading = ref(false)
 const records = ref<AuditTicketVO[]>([])
 const total = ref(0)
-const query = reactive<{ pageNum: number; pageSize: number; status: AuditTicketStatus | ''; taskId: number | null }>({
+const query = reactive<{
+  pageNum: number
+  pageSize: number
+  status: AuditTicketStatus | ''
+  taskId: number | null
+}>({
   pageNum: 1,
   pageSize: 10,
-  status: '',
-  // 支持 /audits?taskId= 预过滤（任务/报销单详情「查看审批工单」入口）
+  // 支持 /audits?status=PENDING（工作台待办入口）与 /audits?taskId= 预过滤
+  status: (route.query.status as AuditTicketStatus) || '',
   taskId: route.query.taskId ? Number(route.query.taskId) : null,
 })
 
@@ -53,6 +60,10 @@ function syncPolling() {
   }
 }
 
+function money(v: unknown): string {
+  return `¥${Number(v ?? 0).toFixed(2)}`
+}
+
 onMounted(() => load())
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer)
@@ -60,55 +71,67 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-card class="page-card">
-    <template #header>
-      <div class="list-header">
-        <div>
-          <div class="page-title card-title">审批工单</div>
-          <div class="page-subtitle">
-            {{ query.taskId ? `按任务 ${query.taskId} 过滤 · ` : '' }}流水线命中复核后生成；申请人查看本人工单，财务执行通过/驳回/终止/撤销审批
-          </div>
-        </div>
-        <div class="filters">
-          <el-select
-            v-model="query.status"
-            placeholder="状态"
-            clearable
-            style="width: 140px"
-            @change="load(1)"
-          >
-            <el-option v-for="(v, k) in AUDIT_STATUS_MAP" :key="k" :label="v.label" :value="k" />
-          </el-select>
-          <el-button v-if="query.taskId" @click="query.taskId = null; load(1)">清除任务过滤</el-button>
+  <div>
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">审批工单</div>
+        <div class="page-head-sub">
+          流水线命中复核后生成；申请人查看本人工单，财务执行审批
+          <template v-if="query.taskId"> · 按任务 {{ query.taskId }} 过滤</template>
         </div>
       </div>
-    </template>
+      <div class="page-head-actions">
+        <el-select
+          v-model="query.status"
+          placeholder="全部状态"
+          clearable
+          style="width: 132px"
+          @change="load(1)"
+        >
+          <el-option v-for="(v, k) in AUDIT_STATUS_MAP" :key="k" :label="v.label" :value="k" />
+        </el-select>
+        <el-button v-if="query.taskId" @click="query.taskId = null; load(1)">清除任务过滤</el-button>
+      </div>
+    </div>
 
-    <el-table v-loading="loading" :data="records" empty-text="暂无审批工单">
-      <el-table-column prop="ticketNo" label="工单号" min-width="170" show-overflow-tooltip />
-      <el-table-column prop="title" label="任务标题" min-width="140" show-overflow-tooltip />
-      <el-table-column label="触发类型" width="120">
+    <el-table v-loading="loading" :data="records" class="ledger-table">
+      <template #empty>
+        <EmptyState
+          title="暂无审批工单"
+          description="工单在流水线命中大额、超标或风控存疑时自动生成，无需手工创建"
+        />
+      </template>
+      <el-table-column prop="ticketNo" label="工单号" min-width="175" show-overflow-tooltip />
+      <el-table-column prop="title" label="任务标题" min-width="150" show-overflow-tooltip />
+      <el-table-column label="触发类型" width="130">
         <template #default="{ row }">
-          <el-tag :type="AUDIT_TRIGGER_MAP[row.triggerType as AuditTriggerType].tag">{{ AUDIT_TRIGGER_MAP[row.triggerType as AuditTriggerType].label }}</el-tag>
+          <StatusStamp
+            :label="AUDIT_TRIGGER_MAP[row.triggerType as AuditTriggerType].label"
+            :tone="AUDIT_TRIGGER_MAP[row.triggerType as AuditTriggerType].tone"
+          />
         </template>
       </el-table-column>
-      <el-table-column prop="riskDesc" label="复核原因" min-width="220" show-overflow-tooltip />
-      <el-table-column label="申报总额" width="110">
-        <template #default="{ row }">￥{{ Number(row.originAmount).toFixed(2) }}</template>
-      </el-table-column>
-      <el-table-column label="修改后" width="110">
-        <template #default="{ row }">{{ row.adjustedAmount != null ? `￥${Number(row.adjustedAmount).toFixed(2)}` : '—' }}</template>
-      </el-table-column>
-      <el-table-column label="状态" width="110">
+      <el-table-column prop="riskDesc" label="复核原因" min-width="200" show-overflow-tooltip />
+      <el-table-column label="申报总额" width="115" align="right">
         <template #default="{ row }">
-          <el-tag :type="AUDIT_STATUS_MAP[row.status as AuditTicketStatus].tag">
-            {{ AUDIT_STATUS_MAP[row.status as AuditTicketStatus].label }}
-          </el-tag>
+          <span class="money">{{ money(row.originAmount) }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="rerunCount" label="重跑" width="70" />
-      <el-table-column prop="createdAt" label="创建时间" width="170" />
-      <el-table-column label="操作" width="90" fixed="right">
+      <el-table-column label="修改后" width="115" align="right">
+        <template #default="{ row }">
+          <span v-if="row.adjustedAmount != null" class="money">{{ money(row.adjustedAmount) }}</span>
+          <span v-else class="faint">—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="状态" width="120">
+        <template #default="{ row }">
+          <StatusStamp
+            :label="AUDIT_STATUS_MAP[row.status as AuditTicketStatus].label"
+            :tone="AUDIT_STATUS_MAP[row.status as AuditTicketStatus].tone"
+          />
+        </template>
+      </el-table-column>
+      <el-table-column label="" width="80" align="right" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="router.push(`/audits/${row.id}`)">详情</el-button>
         </template>
@@ -126,11 +149,5 @@ onBeforeUnmount(() => {
         @size-change="load(1)"
       />
     </div>
-  </el-card>
+  </div>
 </template>
-
-<style scoped>
-.card-title {
-  font-size: 16px;
-}
-</style>

@@ -2,16 +2,19 @@ import type { AuditAction, AuditTicketStatus, AuditTriggerType, TaskStatus } fro
 
 export type DisplayTaskStatus = TaskStatus | 'MANUAL_REVIEW'
 
-/** 任务/报销状态 → 展示文案 + el-tag 类型 */
-export const TASK_STATUS_MAP: Record<DisplayTaskStatus, { label: string; tag: 'success' | 'warning' | 'info' | 'danger' }> = {
-  PENDING: { label: '待处理', tag: 'info' },
-  RUNNING: { label: '执行中', tag: 'warning' },
-  SUCCESS: { label: '成功', tag: 'success' },
-  FAILED: { label: '失败', tag: 'danger' },
-  APPROVAL_PENDING: { label: '待审批', tag: 'warning' },
-  REJECTED: { label: '已驳回', tag: 'danger' },
-  CANCELLED: { label: '已作废', tag: 'info' },
-  MANUAL_REVIEW: { label: '人工复核', tag: 'warning' },
+/** 状态戳语义色（StatusStamp）：running 墨青蓝 / success 账簿绿 / danger 朱砂 / pending 赭金 / muted 中性 */
+export type StampTone = 'running' | 'success' | 'danger' | 'pending' | 'muted'
+
+/** 任务/报销状态 → 展示文案 + 状态戳语义色（tag 字段保留给兼容 el-tag 的场景） */
+export const TASK_STATUS_MAP: Record<DisplayTaskStatus, { label: string; tag: 'success' | 'warning' | 'info' | 'danger'; tone: StampTone }> = {
+  PENDING: { label: '待处理', tag: 'info', tone: 'muted' },
+  RUNNING: { label: '执行中', tag: 'warning', tone: 'running' },
+  SUCCESS: { label: '成功', tag: 'success', tone: 'success' },
+  FAILED: { label: '失败', tag: 'danger', tone: 'danger' },
+  APPROVAL_PENDING: { label: '待审批', tag: 'warning', tone: 'pending' },
+  REJECTED: { label: '已驳回', tag: 'danger', tone: 'danger' },
+  CANCELLED: { label: '已作废', tag: 'info', tone: 'muted' },
+  MANUAL_REVIEW: { label: '人工复核', tag: 'warning', tone: 'pending' },
 }
 
 /** 角色展示文案 */
@@ -23,22 +26,22 @@ export const AGENT_ROLE_MAP: Record<string, string> = {
   RISK_AUDITOR: '风控审计',
 }
 
-/** 审批工单状态 → 展示文案 + el-tag 类型 */
-export const AUDIT_STATUS_MAP: Record<AuditTicketStatus, { label: string; tag: 'success' | 'warning' | 'info' | 'danger' }> = {
-  PENDING: { label: '待审批', tag: 'warning' },
-  APPROVED: { label: '已通过', tag: 'success' },
-  REJECTED: { label: '已驳回', tag: 'danger' },
-  AMENDED: { label: '已修改重跑中', tag: 'info' },
-  TERMINATED: { label: '已终止', tag: 'danger' },
-  WITHDRAW_PENDING: { label: '撤销待审', tag: 'warning' },
-  WITHDRAWN: { label: '已撤回/撤销', tag: 'info' },
+/** 审批工单状态 → 展示文案 + 状态戳语义色 */
+export const AUDIT_STATUS_MAP: Record<AuditTicketStatus, { label: string; tag: 'success' | 'warning' | 'info' | 'danger'; tone: StampTone }> = {
+  PENDING: { label: '待审批', tag: 'warning', tone: 'pending' },
+  APPROVED: { label: '已通过', tag: 'success', tone: 'success' },
+  REJECTED: { label: '已驳回', tag: 'danger', tone: 'danger' },
+  AMENDED: { label: '已修改重跑中', tag: 'info', tone: 'running' },
+  TERMINATED: { label: '已终止', tag: 'danger', tone: 'danger' },
+  WITHDRAW_PENDING: { label: '撤销待审', tag: 'warning', tone: 'pending' },
+  WITHDRAWN: { label: '已撤回/撤销', tag: 'info', tone: 'muted' },
 }
 
-/** 工单触发类型 → 展示文案 + el-tag 类型 */
-export const AUDIT_TRIGGER_MAP: Record<AuditTriggerType, { label: string; tag: 'success' | 'warning' | 'info' | 'danger' }> = {
-  OVER_LIMIT: { label: '金额超限', tag: 'danger' },
-  RULE_FAIL: { label: '规则校验不通过', tag: 'warning' },
-  RISK_HIT: { label: '风控存疑', tag: 'warning' },
+/** 工单触发类型 → 展示文案 + 状态戳语义色 */
+export const AUDIT_TRIGGER_MAP: Record<AuditTriggerType, { label: string; tag: 'success' | 'warning' | 'info' | 'danger'; tone: StampTone }> = {
+  OVER_LIMIT: { label: '金额超限', tag: 'danger', tone: 'danger' },
+  RULE_FAIL: { label: '规则不通过', tag: 'warning', tone: 'pending' },
+  RISK_HIT: { label: '风控存疑', tag: 'warning', tone: 'pending' },
 }
 
 /** 审批动作 → 展示文案 */

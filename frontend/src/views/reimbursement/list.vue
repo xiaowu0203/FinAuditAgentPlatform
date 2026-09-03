@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus } from '@element-plus/icons-vue'
 import { getReimbursementPage } from '@/api/reimbursement'
 import { TASK_STATUS_MAP } from '@/utils/task'
+import StatusStamp from '@/components/StatusStamp.vue'
+import EmptyState from '@/components/EmptyState.vue'
 import type { ReimbStatus, ReimbursementVO } from '@/types'
 
 const router = useRouter()
@@ -34,59 +35,60 @@ async function load(page?: number) {
   }
 }
 
-function goDetail(id: number) {
-  router.push(`/reimbursements/${id}`)
+function money(v: unknown): string {
+  return `¥${Number(v ?? 0).toFixed(2)}`
 }
 
 onMounted(() => load())
 </script>
 
 <template>
-  <el-card class="page-card">
-    <template #header>
-      <div class="list-header">
-        <div>
-          <div class="page-title card-title">我的报销单</div>
-          <div class="page-subtitle">查看个人报销记录、审核状态及对应任务</div>
-        </div>
-        <div class="filters">
-          <el-select
-            v-model="query.status"
-            placeholder="状态"
-            clearable
-            style="width: 140px"
-            @change="load(1)"
-          >
-            <el-option v-for="(v, k) in TASK_STATUS_MAP" :key="k" :label="v.label" :value="k" />
-          </el-select>
-          <el-button type="primary" :icon="Plus" @click="router.push('/reimbursements/create')">
-            提交报销
-          </el-button>
-        </div>
+  <div>
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">报销单</div>
+        <div class="page-head-sub">每一笔申报都有对应的审核任务与留痕记录</div>
       </div>
-    </template>
+      <div class="page-head-actions">
+        <el-select
+          v-model="query.status"
+          placeholder="全部状态"
+          clearable
+          style="width: 132px"
+          @change="load(1)"
+        >
+          <el-option v-for="(v, k) in TASK_STATUS_MAP" :key="k" :label="v.label" :value="k" />
+        </el-select>
+        <el-button type="primary" @click="router.push('/reimbursements/create')">提交报销单</el-button>
+      </div>
+    </div>
 
-    <el-table v-loading="loading" :data="records" empty-text="暂无报销单">
-      <el-table-column prop="reimbNo" label="报销单号" min-width="170" show-overflow-tooltip />
-      <el-table-column prop="title" label="标题" min-width="140" show-overflow-tooltip />
-      <el-table-column label="费用类型" width="100">
-        <template #default="{ row }">{{ row.expenseType }}</template>
-      </el-table-column>
-      <el-table-column label="申报金额" width="120">
-        <template #default="{ row }">￥{{ Number(row.totalAmount).toFixed(2) }}</template>
-      </el-table-column>
-      <el-table-column label="状态" width="90">
+    <el-table v-loading="loading" :data="records" class="ledger-table">
+      <template #empty>
+        <EmptyState title="还没有报销单" description="填一张报销单，Agent 会逐项核验票据、预算与规则">
+          <el-button type="primary" @click="router.push('/reimbursements/create')">提交第一张报销单</el-button>
+        </EmptyState>
+      </template>
+      <el-table-column prop="reimbNo" label="单号" min-width="175" show-overflow-tooltip />
+      <el-table-column prop="title" label="标题" min-width="150" show-overflow-tooltip />
+      <el-table-column prop="expenseType" label="费用类型" width="100" />
+      <el-table-column label="申报金额" width="130" align="right">
         <template #default="{ row }">
-          <el-tag :type="TASK_STATUS_MAP[row.status as ReimbStatus].tag">
-            {{ TASK_STATUS_MAP[row.status as ReimbStatus].label }}
-          </el-tag>
+          <span class="money">{{ money(row.totalAmount) }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="claimDate" label="报销日期" width="120" />
-      <el-table-column prop="createdAt" label="创建时间" width="170" />
-      <el-table-column label="操作" width="150" fixed="right">
+      <el-table-column label="状态" width="100">
         <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="goDetail(row.id)">详情</el-button>
+          <StatusStamp
+            :label="TASK_STATUS_MAP[row.status as ReimbStatus].label"
+            :tone="TASK_STATUS_MAP[row.status as ReimbStatus].tone"
+          />
+        </template>
+      </el-table-column>
+      <el-table-column prop="claimDate" label="报销日期" width="115" />
+      <el-table-column label="" width="120" align="right" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" size="small" @click="router.push(`/reimbursements/${row.id}`)">详情</el-button>
           <el-button
             v-if="row.taskId"
             link
@@ -111,17 +113,5 @@ onMounted(() => load())
         @size-change="load(1)"
       />
     </div>
-  </el-card>
+  </div>
 </template>
-
-<style scoped>
-.card-title {
-  font-size: 16px;
-}
-
-.pager {
-  margin-top: 14px;
-  display: flex;
-  justify-content: flex-end;
-}
-</style>
