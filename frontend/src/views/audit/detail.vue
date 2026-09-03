@@ -407,6 +407,23 @@ onBeforeUnmount(() => {
   margin-bottom: 18px;
 }
 
+/* 盖章区预留：内容整体避开右上印章（窄屏取消，印章改为随流） */
+.ticket-panel .panel-body {
+  padding-right: 128px;
+}
+
+@media (max-width: 768px) {
+  .ticket-panel .panel-body {
+    padding-right: 20px;
+  }
+
+  .ticket-seal {
+    position: static;
+    margin: 0 20px;
+    transform: rotate(-12deg) scale(0.72);
+  }
+}
+
 .ticket-seal {
   position: absolute;
   top: 18px;

@@ -42,35 +42,45 @@
 - [x] 本文档 + 环境检查（node 24 / npm 11 可用；**后端网关 DOWN** → 验收策略见 P4）
 
 ### P1 基座
-- [ ] npm 依赖：unplugin-auto-import / unplugin-vue-components / @fontsource/noto-serif-sc
-- [ ] vite.config：ElementPlusResolver 按需引入 + proxy 走 env
-- [ ] .env.development / .env.production（VITE_GATEWAY_ORIGIN 等）
-- [ ] main.ts：去全量引入，dark css-vars，函数式组件样式补齐，图标改为各文件显式导入
-- [ ] styles/tokens.css（light+dark）+ styles/base.css（替代 style.css，账页表格基类 .ledger-table / .money 等）
-- [ ] DefaultLayout 重构（墨青窄栏 + 轻顶栏 + 面包屑 + 主题切换开关）
-- [ ] 登录页（凭证封面左栏 + 表单右栏，去玻璃拟态）
-- [ ] v-perm 指令补 updated 钩子（行为修复）
-- [ ] vue-tsc + vite build 通过
+- [x] npm 依赖：unplugin-auto-import / unplugin-vue-components / @fontsource/noto-serif-sc
+- [x] vite.config：ElementPlusResolver 按需引入 + proxy 走 env
+- [x] .env.development / .env.production（VITE_GATEWAY_ORIGIN 等）
+- [x] main.ts：去全量引入，dark css-vars，函数式组件样式补齐，图标改为各文件显式导入
+- [x] styles/tokens.css（light+dark）+ styles/base.css（替代 style.css，账页表格基类 .ledger-table / .money 等）
+- [x] DefaultLayout 重构（墨青窄栏 + 轻顶栏 + 面包屑 + 主题切换开关）
+- [x] 登录页（凭证封面左栏 + 表单右栏，去玻璃拟态）
+- [x] v-perm 指令补 updated 钩子（行为修复）
+- [x] vue-tsc + vite build 通过
 
 ### P2 账页族（列表 + 工作台）
-- [ ] 共享组件：StatusStamp.vue（状态戳）/ EmptyState.vue（空态=行动邀请）/ PageHeader.vue
-- [ ] dashboard：待办卡 + 最近流水账页 + 快捷入口（提交入口收进路由页，不再 JSON 裸文本域优先）
-- [ ] task/list、reimbursement/list、audit/list、rule/list 统一账页范式
-- [ ] 凭号列、金额右对齐、状态戳、筛选条
+- [x] 共享组件：StatusStamp.vue（状态戳）/ EmptyState.vue（空态=行动邀请）/ PageHeader.vue
+- [x] dashboard：待办卡 + 最近流水账页 + 快捷入口（提交入口收进路由页，不再 JSON 裸文本域优先）
+- [x] task/list、reimbursement/list、audit/list、rule/list 统一账页范式
+- [x] 凭号列、金额右对齐、状态戳、筛选条
 
 ### P3 详情与表单
-- [ ] PipelineTimeline.vue：任务详情流水线时间线（TOOL/LLM 徽标、耗时、重试、输出折叠）
-- [ ] SealStamp.vue：审批详情印章 + 留痕时间线 + 金额对比
-- [ ] reimbursement/create、edit：分组表单 + 明细子表 + 金额汇总条
-- [ ] system/user、role、dept：账页范式 + 树选择器
-- [ ] reimbursement/detail、audit/detail、task/detail、rule/list 逐页收口
+- [x] PipelineTimeline.vue：任务详情流水线时间线（TOOL/LLM 徽标、耗时、重试、输出折叠）
+- [x] SealStamp.vue：审批详情印章 + 留痕时间线 + 金额对比
+- [x] reimbursement/create、edit：分组表单 + 明细子表 + 金额汇总条
+- [x] system/user、role、dept：账页范式 + 树选择器
+- [x] reimbursement/detail、audit/detail、task/detail、rule/list 逐页收口
 
 ### P4 打磨与验收
-- [ ] vue-tsc + vite build 零错误；对比构建产物体积（目标：主 chunk 显著小于 1.2MB）
-- [ ] 空态/错误态文案（行动邀请式）、响应式 768/992、对比度抽查、reduced-motion
-- [ ] 视觉验收：起 dev server + browser-use 截图；若后端可用则以 admin 实登录走查，否则
+- [x] vue-tsc + vite build 零错误；对比构建产物体积（目标：主 chunk 显著小于 1.2MB）
+- [x] 空态/错误态文案（行动邀请式）、响应式 768/992、对比度抽查、reduced-motion
+- [x] 视觉验收：起 dev server + browser-use 截图；若后端可用则以 admin 实登录走查，否则
       localStorage 预置假登录态看布局（API 报错属预期，仅验视觉）；截图交 judge 评审并修复
-- [ ] 分阶段提交（不推送），最终汇报含对比截图说明
+- [x] 分阶段提交（不推送），最终汇报含对比截图说明
+
+## 执行结果（P4 验收记录 2026-09-04）
+
+- 构建：vue-tsc + vite build 零错误；主 chunk 190KB（gzip 73KB），重构前全量引入为 1.2MB 级
+- 真实链路走查（dev server + admin 实登录 + 后端五服务在线）：
+  - 登录页/工作台/任务列表/审批工单列表/审批详情（含「同意」印章）/任务详情（流水线时间线）/提交报销单
+  - 深色模式跟随系统 + 手动切换正常；发现并修复深色主按钮对比度（实底主按钮文字换深墨 #10231a）
+  - 发现并修复印章遮挡内容：ticket-panel 预留 128px 盖章区（窄屏印章随流缩小）
+  - 发现并修复移动端断点：≤768px 侧栏改 off-canvas 抽屉（汉堡入口 + 遮罩 + 路由跳转自动收起）
+- 全站截图走查通过；动效仅印章落章/时间线，尊重 prefers-reduced-motion
 
 ## 回归清单（每阶段后手动核对）
 

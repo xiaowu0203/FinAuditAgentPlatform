@@ -328,6 +328,16 @@ a {
 
 /* ---- Element Plus 微调 ---- */
 
+/* 深色下主色提亮为浅账簿绿，实底主按钮文字换深墨（白字对比度不达标） */
+html.dark .el-button--primary {
+  color: #10231a;
+}
+
+html.dark .el-button--primary:hover,
+html.dark .el-button--primary:focus {
+  color: #10231a;
+}
+
 .el-button {
   font-weight: 500;
 }

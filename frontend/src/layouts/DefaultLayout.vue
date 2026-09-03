@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Moon, Sunny } from '@element-plus/icons-vue'
+import { Menu, Moon, Sunny } from '@element-plus/icons-vue'
 import { logout as apiLogout } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 
@@ -64,11 +64,23 @@ async function handleCommand(command: string) {
   ElMessage.success('已退出登录')
   router.push('/login')
 }
+
+/** 窄屏抽屉导航：路由跳转后自动收起 */
+const mobileOpen = ref(false)
+watch(
+  () => route.path,
+  () => {
+    mobileOpen.value = false
+  },
+)
 </script>
 
 <template>
   <div class="shell">
-    <aside class="aside">
+    <!-- 窄屏抽屉遮罩 -->
+    <div v-if="mobileOpen" class="drawer-mask" @click="mobileOpen = false" />
+
+    <aside class="aside" :class="{ 'aside--open': mobileOpen }">
       <div class="brand">
         <span class="brand-seal display">审</span>
         <span class="brand-name">
@@ -112,7 +124,16 @@ async function handleCommand(command: string) {
 
     <div class="frame">
       <header class="topbar">
-        <el-breadcrumb separator="/">
+        <div class="topbar-left">
+          <button
+            class="nav-toggle"
+            type="button"
+            title="打开导航"
+            @click="mobileOpen = true"
+          >
+            <el-icon><Menu /></el-icon>
+          </button>
+          <el-breadcrumb separator="/">
           <el-breadcrumb-item
             v-for="(c, i) in crumbs"
             :key="i"
@@ -120,7 +141,8 @@ async function handleCommand(command: string) {
           >
             {{ c.title }}
           </el-breadcrumb-item>
-        </el-breadcrumb>
+          </el-breadcrumb>
+        </div>
 
         <div class="topbar-right">
           <button
@@ -292,6 +314,56 @@ async function handleCommand(command: string) {
   border-bottom: 1px solid var(--line);
 }
 
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 窄屏汉堡入口：宽屏隐藏 */
+.nav-toggle {
+  display: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+/* 窄屏抽屉遮罩 */
+.drawer-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(15, 21, 18, 0.45);
+}
+
+@media (max-width: 768px) {
+  .nav-toggle {
+    display: grid;
+  }
+
+  .aside {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 30;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+
+  .aside--open {
+    transform: none;
+    box-shadow: var(--shadow-2);
+  }
+}
+
 .topbar-right {
   display: flex;
   align-items: center;
@@ -365,10 +437,6 @@ async function handleCommand(command: string) {
 }
 
 @media (max-width: 992px) {
-  .aside {
-    width: 190px;
-  }
-
   .content {
     padding: 16px 14px 32px;
   }
