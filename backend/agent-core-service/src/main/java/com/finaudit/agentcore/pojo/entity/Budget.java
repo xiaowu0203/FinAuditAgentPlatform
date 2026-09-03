@@ -13,8 +13,8 @@ import java.time.LocalDateTime;
 
 /**
  * 部门预算（budget，P2b budget_query 工具数据源，归属 agent-core）。
- * <p>按 部门 + 周期（YYYY-MM）唯一；total/used 金额一律 Decimal（CLAUDE.md §5.3）；
- * used_amount 审核通过后累加（P3 审批流），本阶段只读。</p>
+ * <p>按 部门(dept_id) + 周期（YYYY-MM）唯一（P3.5b uk 切换）；total/used 金额一律 Decimal；
+ * dept_name 为冗余显示列（权威为 dept_id）；used_amount 审核通过后累加（P3 审批流），本阶段只读。</p>
  */
 @Getter
 @Setter
@@ -28,8 +28,11 @@ public class Budget {
     @Schema(description = "租户ID")
     private Long tenantId;
 
-    @Schema(description = "部门")
+    @Schema(description = "部门（冗余显示；权威为 dept_id）")
     private String deptName;
+
+    @Schema(description = "部门ID")
+    private Long deptId;
 
     @Schema(description = "预算周期 YYYY-MM")
     private String period;

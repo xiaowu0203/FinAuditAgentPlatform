@@ -21,7 +21,8 @@
 ```
 
 - **认证**：网关统一校验 JWT（`AuthGlobalFilter`），下游服务不再各自鉴权。
-- **授权**（按角色 admin-only 等）：本期只做「必须登录」，JWT 已携带 roles 并转发 `X-User-Roles`，P2/P3 在此上加按角色授权。
+- **授权**（P3.5 资源级 RBAC）：角色/权限/部门以 Redis **快照**（`finaudit:auth:snapshot:{userId}`）为权威，网关每请求一次 `MGET` 读 3 key 并按快照注入 `X-User-Roles`/`X-User-Perms`/`X-Dept-Id`；快照缺失（Redis 异常/冷启动）降级 JWT roles、权限置空（`@RequirePerm` 端点 **fail-closed 403**，业务端点不受影响）。下游 common-code `PermissionInterceptor` 执行 `@RequirePerm` 声明式校验（opt-in，未标注端点放行）。
+- **部门（P3.5b）**：`sys_dept` 为权威部门主数据；用户挂 `dept_id`，报销单/预算存 `dept_id` + 提交时 `dept_name` 快照；`budget_query` 工具校验「预算行 dept_id == 报销单 dept_id」（本人部门语义），提交时校验「本部门或 `budget:viewAll`」。
 - **数据隔离**：`TenantLineInnerInterceptor`（MyBatis-Plus）对 SQL 自动追加 `tenant_id = ?`，INSERT 自动补 `tenant_id`。
 
 ## 2. JWT（common-jwt-starter）
@@ -88,8 +89,9 @@ JWT 无状态，签发的 token 在到期前无法自行失效；方案 B 用 Re
 |---|---|---|---|
 | `finaudit:auth:blacklist:{jti}` | tenant-service `AuthService.logout` | 单个 token 登出作废 | `expireHours*3600`（安全上界，覆盖剩余有效期） |
 | `finaudit:auth:blackver:{userId}` | tenant-service 用户禁用/删除 | 用户级作废版本（时间戳），历史 token 全部失效 | 不设 TTL（每用户一条，极轻） |
+| `finaudit:auth:snapshot:{userId}`（P3.5） | tenant-service 登录 / 用户·角色·权限变更（事件刷新） | 用户权限快照 `{roles, perms, deptId, status}`，网关以快照为**权威**注入身份头（角色/权限变更**无需重新登录**，下一请求即生效） | 登录有效期上界 |
 
-**网关校验（`AuthGlobalFilter.isRevoked`）**：一次 `MGET` 读两个 key——
+**网关校验（`AuthGlobalFilter.resolveSession`）**：一次 `MGET` 读**三个** key——
 
 - `blacklist:{jti}` 有值 → 该 token 已登出 → 401「登录已失效，请重新登录」
 - `blackver:{userId}` 有值且 `iat ≤ 版本号` → 用户被踢下线 → 401
@@ -108,7 +110,8 @@ JWT 无状态，签发的 token 在到期前无法自行失效；方案 B 用 Re
 
 ## 7. 安全要点
 
-- 网关注入身份头前**先剥除客户端伪造的同名头**（`X-Tenant-Id`/`X-User-Id`/`X-Username`/`X-User-Roles`/`X-Jwt-Jti`）。
+- 网关注入身份头前**先剥除客户端伪造的同名头**（`X-Tenant-Id`/`X-User-Id`/`X-Username`/`X-User-Roles`/`X-User-Perms`/`X-Dept-Id`/`X-Jwt-Jti`）。
+- 快照为角色/权限/部门的权威来源；`X-User-Perms`/`X-Dept-Id` 仅在快照命中时注入，缺失时下游 `@RequirePerm` 端点 fail-closed。
 - 用户/角色 CRUD 的租户归属取上下文，**不信任请求体**中的租户字段。
 - 密码 BCrypt（`spring-security-crypto`），永不存明文；JWT 密钥走环境变量，不入库。
 - `/auth/me`、`/auth/logout` 依赖网关注入的 `X-User-Id`/`X-Jwt-Jti`，直连服务返回 400（防止绕过网关伪造身份）。

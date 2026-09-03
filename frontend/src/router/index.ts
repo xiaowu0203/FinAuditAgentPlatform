@@ -62,7 +62,25 @@ const router = createRouter({
           path: 'rules',
           name: 'RuleConfig',
           component: () => import('@/views/rule/list.vue'),
-          meta: { title: '规则配置', roles: ['admin', 'auditor'] },
+          meta: { title: '规则配置', perm: 'rule:manage' },
+        },
+        {
+          path: 'system/users',
+          name: 'UserManage',
+          component: () => import('@/views/system/user.vue'),
+          meta: { title: '用户管理', perm: 'user:list' },
+        },
+        {
+          path: 'system/roles',
+          name: 'RoleManage',
+          component: () => import('@/views/system/role.vue'),
+          meta: { title: '角色管理', perm: 'role:list' },
+        },
+        {
+          path: 'system/depts',
+          name: 'DeptManage',
+          component: () => import('@/views/system/dept.vue'),
+          meta: { title: '部门管理', perm: 'dept:manage' },
         },
         {
           path: 'audits',
@@ -93,12 +111,15 @@ router.beforeEach((to) => {
     return { path: '/dashboard' }
   }
   // 数据可见性由后端承担：审批工单按 createdBy 过滤本人、财务可见全部；
-  // 审批动作按钮在详情页按财务角色（admin/auditor）控制展示
-  // 角色受限路由（meta.roles）：规则配置仅财务角色（admin/auditor）可访问，普通用户直达时拦回工作台
-  const roles = to.meta.roles as string[] | undefined
-  if (roles?.length && !(auth.user?.roles || []).some((r) => roles.includes(r))) {
-    ElMessage?.warning?.('无权限访问该页面')
-    return { path: '/dashboard' }
+  // 审批动作按钮在详情页按 audit:approve（v-perm）控制展示
+  // 权限受限路由（meta.perm）：无权限直达时拦回工作台（后端 @RequirePerm 403 fail-closed 兜底）
+  const requiredPerm = to.meta.perm as string | string[] | undefined
+  if (requiredPerm) {
+    const codes = Array.isArray(requiredPerm) ? requiredPerm : [requiredPerm]
+    if (!auth.hasAnyPerm(codes)) {
+      ElMessage?.warning?.('无权限访问该页面')
+      return { path: '/dashboard' }
+    }
   }
   const title = to.meta.title
   document.title = title ? `${title} · FinAudit 财务智能审核` : 'FinAudit 财务智能审核'

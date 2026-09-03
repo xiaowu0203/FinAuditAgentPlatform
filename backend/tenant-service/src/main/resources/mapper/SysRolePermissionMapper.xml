@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.finaudit.tenant.mapper.SysRolePermissionMapper">
+
+    <insert id="insertBatch">
+        INSERT INTO sys_role_permission
+        (tenant_id, role_id, perm_id, deleted)
+        VALUES
+        <foreach collection='list' item='r' separator=','>
+            (#{r.tenantId}, #{r.roleId}, #{r.permId}, 0)
+        </foreach>
+    </insert>
+
+</mapper>

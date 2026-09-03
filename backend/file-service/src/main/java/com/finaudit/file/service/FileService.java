@@ -5,6 +5,8 @@ import com.finaudit.file.mapper.FileRecordMapper;
 import com.finaudit.file.pojo.entity.FileRecord;
 import com.finaudit.file.pojo.vo.FileVO;
 import com.finaudit.starter.oss.ObjectStorageService;
+import com.finaudit.starter.web.auth.UserContext;
+import com.finaudit.starter.web.auth.UserContextHolder;
 import com.finaudit.starter.web.exception.BizException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,6 +19,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -63,7 +66,7 @@ public class FileService {
      * @throws BizException 文件为空/读取流异常抛出业务异常
      */
     @Transactional
-    public FileVO upload(MultipartFile file, Long tenantId) {
+    public FileVO upload(MultipartFile file, Long tenantId, Long createdBy) {
         if (file == null || file.isEmpty()) {
             throw new BizException("上传文件为空");
         }
@@ -80,8 +83,8 @@ public class FileService {
             throw new BizException("读取上传文件失败");
         }
 
-        // 组装元数据入库
-        FileRecord record = FileRecord.from(originalFilename, objectKey, contentType, file.getSize(), tenantId);
+        // 组装元数据入库（记录上传人，供直接预览/下载归属校验）
+        FileRecord record = FileRecord.from(originalFilename, objectKey, contentType, file.getSize(), tenantId, createdBy);
         fileRecordMapper.insert(record);
         return toVO(record);
     }
@@ -97,6 +100,7 @@ public class FileService {
         if (record == null) {
             throw new BizException("文件不存在: " + id);
         }
+        requireReadable(record);
         return record;
     }
 
@@ -110,8 +114,30 @@ public class FileService {
         if (ids == null || ids.isEmpty()) {
             return List.of();
         }
-        return fileRecordMapper.selectList(new LambdaQueryWrapper<FileRecord>()
+        List<FileRecord> records = fileRecordMapper.selectList(new LambdaQueryWrapper<FileRecord>()
                 .in(FileRecord::getId, ids));
+        for (FileRecord record : records) {
+            requireReadable(record);
+        }
+        return records;
+    }
+
+    /**
+     * 文件归属校验（P3.5c）：内部链路（Feign/MQ，无用户上下文）放行——供 agent-core 组附件快照/预签名；
+     * 网关登录用户须为上传人本人，或持有 reimb/audit:viewAll（财务全量）；否则 403，防租户内按 id 枚举他人附件。
+     */
+    private void requireReadable(FileRecord record) {
+        UserContext user = UserContextHolder.get();
+        if (user == null) {
+            return;
+        }
+        if (Objects.equals(record.getCreatedBy(), user.getUserId())) {
+            return;
+        }
+        if (user.hasAnyPerm("reimb:viewAll", "audit:viewAll")) {
+            return;
+        }
+        throw new BizException("无权访问该文件: " + record.getId());
     }
 
     /**

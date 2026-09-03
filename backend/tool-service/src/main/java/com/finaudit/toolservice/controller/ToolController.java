@@ -1,6 +1,7 @@
 package com.finaudit.toolservice.controller;
 
 import com.finaudit.starter.web.result.R;
+import com.finaudit.starter.web.auth.RequirePerm;
 import com.finaudit.toolservice.pojo.dto.ToolExecuteRequest;
 import com.finaudit.toolservice.pojo.dto.ToolRegistryRegisterRequest;
 import com.finaudit.toolservice.pojo.entity.ToolRegistry;
@@ -44,7 +45,8 @@ public class ToolController {
     }
 
     @PostMapping
-    @Operation(summary = "工具注册", description = "注册工具，返回工具详情")
+    @RequirePerm("tool:manage")
+    @Operation(summary = "工具注册", description = "注册工具，返回工具详情（操作级权限 tool:manage）")
     @ApiResponse(responseCode = "200", description = "操作成功，body 为 R 包装的 ToolRegistry")
     public R<ToolRegistry> register(@Valid @RequestBody ToolRegistryRegisterRequest request,
                                     @RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId) {
@@ -52,7 +54,8 @@ public class ToolController {
     }
 
     @PostMapping("/{code}/execute")
-    @Operation(summary = "工具调试直调", description = "调试工具，返回工具执行结果")
+    @RequirePerm("tool:execute")
+    @Operation(summary = "工具调试直调", description = "调试工具，返回工具执行结果（操作级权限 tool:execute；MQ 主链路直连 service 不受此限）")
     @ApiResponse(responseCode = "200", description = "操作成功，body 为 R 包装的 Map<String, Object>")
     public R<Map<String, Object>> debugExecute(@PathVariable String code,
                                                @RequestHeader(name = "X-Tenant-Id", defaultValue = "1") Long tenantId,

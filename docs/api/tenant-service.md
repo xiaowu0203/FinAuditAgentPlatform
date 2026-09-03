@@ -104,6 +104,20 @@ POST 请求体：
 
 `RoleVO`：`id, tenantId, roleCode, roleName, createdAt`。
 
+## 部门管理 /api/v1/depts（P3.5b）
+
+> 部门树为公用数据（报销单创建页选择器、用户管理页）：**GET 登录即可、不挂权限码**；写操作挂操作级码。所属租户取上下文。
+
+| 方法 | 路径 | 权限码 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/depts` | 登录即可 | 部门树（全部含停用；报销选择器公用） |
+| GET | `/api/v1/depts/exists?deptId=` | 登录即可 | 部门是否存在且启用（内部读，agent-core 校验用） |
+| POST | `/api/v1/depts` | dept:create | 新增部门（parent 非根须存在；租户内部门名唯一） |
+| PUT | `/api/v1/depts/{id}` | dept:update | 编辑（改名/换父/停用；parent 变更防环） |
+| DELETE | `/api/v1/depts/{id}` | dept:delete | 删除（有子部门/用户引用拒删） |
+
+`DeptVO`：`id, parentId, deptName, status, children[]`（树递归）。
+
 ## 分页响应结构
 
 `data` 为 MyBatis-Plus `Page`：

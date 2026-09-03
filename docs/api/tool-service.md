@@ -49,7 +49,7 @@
 | 校验 | 工具 | 行为 |
 |---|---|---|
 | 租户一致性 | 全部 | 请求上下文租户（`TenantContextHolder`）与声明租户不一致 → 拒绝 |
-| 部门校验 | `budget_query` | 空白部门 → 拒绝；非租户已知部门 → 告警留痕不阻断（跨租户已由 agent-core 按 `tenant_id` 数据层隔离，完整员工级部门绑定待 P5 部门实体表） |
+| 部门校验 | `budget_query` | 空白部门 → 拒绝；**有凭证（deptId/reimbId，新流水线）** → 经 agent-core `GET /audit/budgets/allowed` 校验「预算行 dept_id == 报销单 dept_id」（本人部门语义）且部门为真实 sys_dept，不通过即**拒绝**；**无凭证（存量任务/直调）** → 仅空名校验 + 告警降级不阻断 |
 | 单据归属 | `duplicate_check` / `ocr_extract` | 入参 `reimbId` 不存在或非本租户 → 拒绝（经 agent-core `GET /audit/reimbursements/{reimbId}/tenant` 校验） |
 
 ## 内置工具
@@ -58,6 +58,6 @@
 |---|---|---|---|
 | `amount_verify` | 金额核验（全程 BigDecimal） | `{items:[{name,amount}], claimedTotal}` | `{total, claimedTotal, match, diff, message}` |
 | `ocr_extract` | 票据 OCR 识别（P2b；失败自动重试 ≤3 后转人工录入 `ocr_status=FAILED`） | `{reimbId, attachmentIds:[fileRecordId]}` | `{ocrStatus, amount, date, merchant, taxNo, ...}` |
-| `budget_query` | 预算核算（P2b，查部门当月剩余预算） | `{deptName}` | `{deptName, period, totalBudget, usedAmount, remaining}` |
+| `budget_query` | 预算核算（P2b，查部门当月剩余预算；P3.5b 起 deptId 优先） | `{deptId, deptName, reimbId, claimDate, amount}`（deptId 可空，存量按 deptName） | `{deptName, period, totalBudget, usedAmount, remaining}` |
 | `rule_check` | 财务规则校验（P2b 注册；P2c 起规则源为 Nacos 动态刷新快照，无配置降级 DB） | `{expenseType, claimDate, totalAmount, items:[{name,amount,date,city,hotelDays,hotelAmount,transportAmount,subsidyAmount}]}`（差旅/补贴评估字段，缺失自动跳过） | `{hits:[{ruleCode,ruleName,ruleType,message,overLimit}], overLimit, message}` |
 | `duplicate_check` | 重复报销检测（P2b，按申请人+商户+金额+日期区间） | `{reimbId}` | `{suspected:[{...重复明细}]}` |

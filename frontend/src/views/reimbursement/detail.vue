@@ -6,7 +6,7 @@ import { Back, Download, View } from '@element-plus/icons-vue'
 import { getAuditTicketPage } from '@/api/audit'
 import { getFileDownloadUrl } from '@/api/file'
 import { getReimbursementDetail, withdrawReimbursement, withdrawRequestReimbursement } from '@/api/reimbursement'
-import { isFinanceRole, TASK_STATUS_MAP } from '@/utils/task'
+import { TASK_STATUS_MAP } from '@/utils/task'
 import { useAuthStore } from '@/stores/auth'
 import type { AuditTicketStatus, AuditTicketVO, ReimbursementDetailVO } from '@/types'
 
@@ -24,7 +24,8 @@ const ticketStatus = computed<AuditTicketStatus | null>(() => (ticket.value?.sta
 let timer: number | undefined
 
 const reimb = computed(() => detail.value?.reimbursement)
-const isFinance = computed(() => isFinanceRole(auth.user?.roles))
+/** 是否提交人本人（P3.5b 取代「非财务角色」判定）：修改重跑/撤回仅对单据归属人可见，后端按 ownership 兜底 */
+const isOwner = computed(() => !!auth.user?.id && auth.user.id === reimb.value?.applicantId)
 const totalAmount = computed(() =>
   (detail.value?.items || []).reduce((sum, it) => sum + (Number(it.amount) || 0), 0),
 )
@@ -137,7 +138,7 @@ onBeforeUnmount(() => {
             <div class="page-subtitle">集中查看报销基础信息、明细汇总和附件资料</div>
           </div>
           <div class="header-actions">
-            <template v-if="!isFinance && reimb">
+            <template v-if="isOwner && reimb">
               <!-- 待审批 / 已驳回：提交人可修改明细重跑（标题/部门不可改） -->
               <el-button
                 v-if="(reimb.status === 'MANUAL_REVIEW' || reimb.status === 'FAILED') && ticketStatus !== 'WITHDRAW_PENDING'"
@@ -163,12 +164,12 @@ onBeforeUnmount(() => {
             <el-button v-if="reimb?.taskId" type="primary" @click="router.push(`/tasks/${reimb!.taskId}`)">
               查看审核任务
             </el-button>
-            <!-- 任意用户可见：财务在人工复核时跳转执行审批（danger）；申请人在工单解析成功后只读查看本人工单 -->
+            <!-- 任意用户可见：audit:viewAll 持有者（财务）在人工复核时跳转执行审批（danger）；申请人（归属人）在工单解析成功后只读查看本人工单 -->
             <el-button
-              v-if="isFinance
+              v-if="auth.hasPerm('audit:viewAll')
                 ? (reimb?.status === 'MANUAL_REVIEW' && reimb?.taskId)
                 : !!ticket"
-              :type="isFinance ? 'danger' : 'primary'"
+              :type="auth.hasPerm('audit:viewAll') ? 'danger' : 'primary'"
               @click="router.push(`/audits?taskId=${reimb!.taskId}`)"
             >
               查看审批工单
@@ -211,7 +212,7 @@ onBeforeUnmount(() => {
 
     <!-- 提交人可见：待审批 / 已驳回时的复核原因与处理意见（审批工单页是财务工具面，普通用户经此了解驳回点） -->
     <el-card
-      v-if="!isFinance && ticket && (ticket.status === 'PENDING' || ticket.status === 'REJECTED')"
+      v-if="isOwner && ticket && (ticket.status === 'PENDING' || ticket.status === 'REJECTED')"
       class="page-card mb"
     >
       <template #header>

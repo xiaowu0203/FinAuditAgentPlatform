@@ -21,7 +21,7 @@ public class FeignHeaderPropagator implements RequestInterceptor {
     /** 需要跨服务透传的请求头 */
     private static final String[] PROPAGATE_HEADERS = {
             "Authorization",
-            "X-Tenant-Id", "X-User-Id", "X-Username", "X-User-Roles",
+            "X-Tenant-Id", "X-User-Id", "X-Username", "X-User-Roles", "X-User-Perms", "X-Dept-Id",
             "X-Trace-Id",
     };
 

@@ -35,8 +35,22 @@
 | password | VARCHAR(128) | **BCrypt 哈希**（禁止明文） |
 | real_name | VARCHAR(64) | 真实姓名 |
 | phone | VARCHAR(20) | 手机号 |
+| dept_id | BIGINT | 部门 ID（P3.5b 员工级归属；未绑定 null，FK→sys_dept.id 语义非物理外键） |
 | status | TINYINT | 1 启用 / 0 禁用 |
 | created_at / updated_at / deleted | | |
+
+## 2.5 sys_dept 部门表（P3.5b）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | UK(tenant_id, dept_name)，租户自动隔离 |
+| parent_id | BIGINT | 父部门 ID（0=根），内存组树（MySQL 5.7 无递归 CTE） |
+| dept_name | VARCHAR(64) | 部门名称（权威主数据；业务表仅存 dept_id + 提交时快照） |
+| status | TINYINT | 1 启用 / 0 停用 |
+| created_at / updated_at / deleted | | |
+
+写约束：create 父存在性；update 防环（不能挂到自身子孙下）；delete 有子部门/用户引用拒删。
 
 ## 3. sys_role 角色表
 
@@ -134,7 +148,8 @@
 | title | VARCHAR(128) | 报销标题 |
 | expense_type | VARCHAR(32) | 费用类型：`TRAVEL` / `ENTERTAINMENT` / `OFFICE` |
 | applicant_id | BIGINT | 申请人用户 ID（来源 `X-User-Id`） |
-| dept_name | VARCHAR(64) | 部门（D6：先字符串，独立部门表后置） |
+| dept_name | VARCHAR(64) | 部门（**提交时快照**，P3.5b 起权威为 dept_id；resubmit 部门不可改） |
+| dept_id | BIGINT | 提交者部门 ID（P3.5b 权威关联键；旧单/未选部门为 null） |
 | total_amount | DECIMAL(12,2) | 申报总金额（服务端按明细求和，不信任客户端） |
 | task_id | BIGINT | 关联 `agent_task.id`（agent-core 服务内同事务创建任务并回填） |
 | status | VARCHAR(20) | 审核状态，对齐任务状态机 |
@@ -168,6 +183,7 @@
 |---|---|---|
 | id | BIGINT PK | |
 | tenant_id | BIGINT | 租户 ID |
+| created_by | BIGINT | 上传人 ID（P3.5c 直接预览/下载归属校验：本人或 reimb/audit:viewAll） |
 | file_name | VARCHAR(255) | 原始文件名 |
 | object_name | VARCHAR(255) | **对象存储 key（含租户前缀 `{tenantId}/{yyyyMM}/{uuid}{ext}`，防跨租户碰撞）** |
 | content_type | VARCHAR(128) | MIME 类型，默认 `application/octet-stream` |
@@ -182,11 +198,12 @@
 |---|---|---|
 | id | BIGINT PK | |
 | tenant_id | BIGINT | 租户 ID |
-| dept_name | VARCHAR(64) | 部门 |
+| dept_name | VARCHAR(64) | 部门（冗余显示，P3.5b 起权威为 dept_id） |
+| dept_id | BIGINT | 部门 ID（P3.5b 权威关联键，NOT NULL，FK→sys_dept.id 语义） |
 | period | VARCHAR(7) | 预算周期 `YYYY-MM` |
 | total_budget | DECIMAL(14,2) | 预算总额 |
 | used_amount | DECIMAL(14,2) | 已用额度（审核通过后累加） |
-| created_at / updated_at / deleted | | 唯一键 `uk_dept_period(tenant_id, dept_name, period)` |
+| created_at / updated_at / deleted | | 唯一键 `uk_dept_period(tenant_id, dept_id, period)`（P3.5b 切换） |
 
 ## 13. finance_rule 财务规则表（P2b 建表 / P2c 可视化配置 + Nacos 动态刷新）
 
@@ -265,6 +282,35 @@ PENDING → WITHDRAWN（提交人撤回，直接生效）
 | created_at | DATETIME | 操作时间 |
 | deleted | TINYINT | 逻辑删除 |
 
+## 16. sys_permission 权限目录表（P3.5a 轻量资源级 RBAC）
+
+> 归属 tenant-service。**平台级全局表，无 tenant_id**（所有租户共用同一套权限标识符）；权限码由迁移脚本种子定义（代码即目录），运行期不增删。⚠️ 查询必须走多租户拦截器 ignore 名单（common-mybatisplus-starter 已注册 `sys_permission`）。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | 种子固定主键 |
+| perm_code | VARCHAR(64) UK | 权限标识符：系统管理操作级（`资源:操作`，如 user:create） / 业务资源级（如 reimb:viewAll） |
+| perm_name | VARCHAR(64) | 权限名称（分配界面展示） |
+| perm_type | VARCHAR(8) | MENU 菜单+接口 / API 仅接口 |
+| group_name | VARCHAR(32) | 分组（系统管理/财务业务/预留，分配界面分区） |
+| status | TINYINT | 1 启用 0 禁用 |
+| created_at / updated_at | DATETIME | |
+
+> 目录 v1（+P3.5c 工具码）：系统管理操作级 17 码（user:list/create/update/delete/assign-role、role:list/create/update/delete/assign-perm、dept:manage/create/update/delete、tenant:manage、tool:manage、tool:execute）+ 业务资源级 7 码（rule:manage、reimb/task/audit:viewAll、audit:approve、budget:viewAll）+ P4 预留 dashboard:admin。**`GET /api/v1/depts` 树查询不挂码**（报销选择器公用，读开写收）。
+
+## 17. sys_role_permission 角色权限映射表（P3.5a）
+
+> 归属 tenant-service。角色是权限的分配单位，分配为替换式（PUT 全量覆盖）。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| role_id | BIGINT | 角色 ID，索引 `idx_role` |
+| perm_id | BIGINT | 权限 ID（sys_permission.id），`uk_role_perm(tenant_id, role_id, perm_id)` |
+| created_at | DATETIME | |
+| deleted | TINYINT | 逻辑删除 |
+
 ## Seed 数据（脚本内置）
 
 | 表 | 数据 |
@@ -273,6 +319,8 @@ PENDING → WITHDRAWN（提交人撤回，直接生效）
 | sys_role | `admin`（管理员）、`auditor`（审核员） |
 | sys_user | `admin` / 密码 `admin123`（BCrypt） |
 | sys_user_role | admin 绑定 admin 角色 |
+| sys_permission | 权限目录 23 码种子（系统管理操作级 15 + 业务资源级 7 + 预留 1，P3.5a） |
+| sys_role_permission | admin 全量 22 码；auditor 财务业务 5 码（rule:manage + 三个 viewAll + audit:approve）；普通用户不授码 |
 | tool_registry | 预置 `amount_verify`（金额核验工具，含 JSON Schema）+ P2b 四个审核工具（ocr_extract/budget_query/rule_check/duplicate_check，scenario=FINANCE） |
 | budget | 默认租户 2026-08 四个部门预算种子 |
 | finance_rule | 四类规则种子（amount_limit/reimburse_expire/travel_standard/subsidy_limit，P2c 起 `published=1` 生效集） |
