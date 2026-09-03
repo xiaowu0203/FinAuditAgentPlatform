@@ -32,6 +32,17 @@ public class CommonMybatisPlusAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(CommonMybatisPlusAutoConfiguration.class);
 
     /**
+     * 多租户拦截器忽略表名单（小写）：无 tenant_id 列的平台级全局表。
+     * <ul>
+     *   <li>sys_tenant —— 租户主表，本身不存在 tenant_id 字段</li>
+     *   <li>sys_permission —— P3.5a 权限目录（平台级，所有租户共用同一套权限标识符）</li>
+     * </ul>
+     * 新增全局表必须登记于此，否则拦截器会向 SQL 拼 tenant_id 导致报错/查空。
+     */
+    private static final java.util.Set<String> IGNORE_TENANT_TABLES =
+            java.util.Set.of("sys_tenant", "sys_permission");
+
+    /**
      * 注册 jsr310 时间序列化到 MyBatis-Plus JSON 类型处理器。
      * <p>默认 {@link JacksonTypeHandler} 内部 ObjectMapper 未注册 JavaTimeModule，
      * JSON 列携带 {@link java.time.LocalDate}（如 agent_task.input_params 报销单快照）
@@ -98,8 +109,7 @@ public class CommonMybatisPlusAutoConfiguration {
              */
             @Override
             public boolean ignoreTable(String tableName) {
-                // sys_tenant 租户主表，存储租户元数据，本身不存在tenant_id字段，直接跳过租户处理
-                return "sys_tenant".equalsIgnoreCase(tableName);
+                return IGNORE_TENANT_TABLES.contains(tableName.toLowerCase());
             }
         }));
 

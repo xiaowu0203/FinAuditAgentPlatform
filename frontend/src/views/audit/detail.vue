@@ -13,7 +13,7 @@ import {
   withdrawRefuseAuditTicket,
 } from '@/api/audit'
 import { getFileDownloadUrl } from '@/api/file'
-import { AUDIT_ACTION_MAP, AUDIT_STATUS_MAP, AUDIT_TRIGGER_MAP, isFinanceRole } from '@/utils/task'
+import { AUDIT_ACTION_MAP, AUDIT_STATUS_MAP, AUDIT_TRIGGER_MAP } from '@/utils/task'
 import { useAuthStore } from '@/stores/auth'
 import type { AuditRecordVO, AuditTicketDetailVO, AuditTicketVO } from '@/types'
 
@@ -30,8 +30,8 @@ let timer: number | undefined
 
 const ticket = computed<AuditTicketVO | null>(() => detail.value?.ticket || null)
 const reimb = computed(() => detail.value?.reimbursement)
-/** 财务角色（admin/auditor）：审批动作按钮仅财务可见；申请人只读查看本人工单 */
-const isFinance = computed(() => isFinanceRole(auth.user?.roles))
+/** 审批权限（P3.5 权限码，取代角色字符串）：审批动作按钮仅 audit:approve 可见 */
+const isFinance = computed(() => auth.hasPerm('audit:approve'))
 
 /** 对象 → 格式化 JSON 文本 */
 function pretty(obj: unknown): string {

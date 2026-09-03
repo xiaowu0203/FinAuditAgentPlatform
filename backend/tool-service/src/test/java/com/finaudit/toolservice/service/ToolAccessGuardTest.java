@@ -53,9 +53,8 @@ class ToolAccessGuardTest {
     }
 
     @Test
-    void budgetQueryUnknownDeptWarnsButNotBlocked() {
-        // 无部门实体表（P5）：非租户已知部门仅告警不阻断，避免误伤未配预算的合法新部门
-        when(agentCoreServiceFeign.isTenantDept(1L, "市场部")).thenReturn(R.success(false));
+    void budgetQueryNoCredentialDegradesWarnNotBlocked() {
+        // 无 deptId 且无 reimbId（存量任务/调试直调）：降级为仅空名校验 + 告警，不触发 Feign、不阻断
         TenantContextHolder.setTenantId(1L);
         try {
             assertDoesNotThrow(() -> guard.check(1L, ToolCode.BUDGET_QUERY,
@@ -66,12 +65,41 @@ class ToolAccessGuardTest {
     }
 
     @Test
-    void budgetQueryAllowsTenantDept() {
-        when(agentCoreServiceFeign.isTenantDept(1L, "财务部")).thenReturn(R.success(true));
+    void budgetQueryWithCredentialDeniesMismatch() {
+        // P3.5b 收紧：有凭证时 agent-core 判定越权（预算行 dept_id 与 reimb.dept_id 不一致/部门不存在）→ 阻断
+        when(agentCoreServiceFeign.isBudgetQueryAllowed(1L, 100L, 9L)).thenReturn(R.success(false));
+        TenantContextHolder.setTenantId(1L);
+        try {
+            assertThrows(BizException.class, () -> guard.check(1L, ToolCode.BUDGET_QUERY,
+                    Map.of("deptName", "研发部", "deptId", 9L, "reimbId", 100L,
+                            "claimDate", "2026-08-01", "amount", 100)));
+        } finally {
+            TenantContextHolder.clear();
+        }
+    }
+
+    @Test
+    void budgetQueryWithCredentialAllowsMatch() {
+        // 有凭证且 agent-core 判定本人部门一致 → 放行
+        when(agentCoreServiceFeign.isBudgetQueryAllowed(1L, 100L, 9L)).thenReturn(R.success(true));
         TenantContextHolder.setTenantId(1L);
         try {
             assertDoesNotThrow(() -> guard.check(1L, ToolCode.BUDGET_QUERY,
-                    Map.of("deptName", "财务部", "claimDate", "2026-08-01", "amount", 100)));
+                    Map.of("deptName", "研发部", "deptId", 9L, "reimbId", 100L,
+                            "claimDate", "2026-08-01", "amount", 100)));
+        } finally {
+            TenantContextHolder.clear();
+        }
+    }
+
+    @Test
+    void budgetQueryDeptIdOnlyChecksExistence() {
+        // 无 reimbId（HTTP 调试直调带 deptId）：agent-core 仅校验 sys_dept 存在性
+        when(agentCoreServiceFeign.isBudgetQueryAllowed(1L, null, 1L)).thenReturn(R.success(true));
+        TenantContextHolder.setTenantId(1L);
+        try {
+            assertDoesNotThrow(() -> guard.check(1L, ToolCode.BUDGET_QUERY,
+                    Map.of("deptName", "财务部", "deptId", 1L, "claimDate", "2026-08-01", "amount", 100)));
         } finally {
             TenantContextHolder.clear();
         }

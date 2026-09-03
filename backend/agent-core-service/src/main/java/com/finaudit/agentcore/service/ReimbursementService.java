@@ -19,7 +19,10 @@ import com.finaudit.agentcore.pojo.vo.ReimbursementItemVO;
 import com.finaudit.agentcore.pojo.vo.ReimbursementVO;
 import com.finaudit.agentcore.pojo.vo.TaskVO;
 import com.finaudit.starter.web.exception.BizException;
+import com.finaudit.starter.web.auth.UserContext;
+import com.finaudit.starter.web.auth.UserContextHolder;
 import com.finaudit.starter.web.feign.FileServiceFeign;
+import com.finaudit.starter.web.feign.TenantServiceFeign;
 import com.finaudit.starter.web.feign.dto.DuplicateCheckVO;
 import com.finaudit.starter.web.feign.dto.DuplicateItemVO;
 import com.finaudit.starter.web.feign.dto.FileRecordVO;
@@ -36,6 +39,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 报销单业务服务
@@ -55,15 +59,19 @@ public class ReimbursementService {
     private final FileServiceFeign fileServiceFeign;
     /** Agent审核任务服务，负责创建单据自动审核流水线任务 */
     private final AgentTaskService taskService;
+    /** tenant-service 部门契约（P3.5b 提交时部门存在性校验） */
+    private final TenantServiceFeign tenantServiceFeign;
 
     public ReimbursementService(ExpenseReimbursementMapper reimbursementMapper,
                                 AttachmentService attachmentService,
                                 FileServiceFeign fileServiceFeign,
-                                AgentTaskService taskService) {
+                                AgentTaskService taskService,
+                                TenantServiceFeign tenantServiceFeign) {
         this.reimbursementMapper = reimbursementMapper;
         this.attachmentService = attachmentService;
         this.fileServiceFeign = fileServiceFeign;
         this.taskService = taskService;
+        this.tenantServiceFeign = tenantServiceFeign;
     }
 
     /**
@@ -85,6 +93,9 @@ public class ReimbursementService {
         // 2. 远程调用文件服务，校验附件存在且归属当前租户
         List<Long> fileRecordIds = request.fileRecordIds();
         List<FileRecordVO> files = fetchFiles(tenantId, fileRecordIds);
+
+        // 2.5 P3.5b 部门校验：传了 deptId 则必须为租户内真实部门，且须等于本人部门或持有 budget:viewAll
+        validateDept(request, tenantId);
 
         // 3. 服务端重新计算报销总金额，不信任前端传入total，防止前端篡改金额
         BigDecimal total = computeTotal(request.items());
@@ -170,6 +181,7 @@ public class ReimbursementService {
         params.put("title", reimb.getTitle());
         params.put("expenseType", reimb.getExpenseType());
         params.put("deptName", reimb.getDeptName());
+        params.put("deptId", reimb.getDeptId());
         params.put("claimDate", reimb.getClaimDate());
         params.put("applicantId", reimb.getApplicantId());
         params.put("items", ExpenseReimbursement.itemsToMaps(request.items()));
@@ -259,6 +271,40 @@ public class ReimbursementService {
         return reimb == null ? null : reimb.getTaskId();
     }
 
+    /** 按 ID 查报销单（可空；跨域越权校验用——budget_query 归属判定、工单等）。 */
+    public ExpenseReimbursement getByReimbId(Long reimbId) {
+        return reimbursementMapper.selectById(reimbId);
+    }
+
+    /**
+     * P3.5b 提交部门校验（仅请求带 deptId 时生效，旧前端不传则沿用 dept_id null + 快照名）：
+     * ① sys_dept 存在且属于租户（防虚构部门）；② 提交者须为本部门，或有 budget:viewAll 豁免任意部门。
+     */
+    private void validateDept(ReimbursementSubmitRequest request, Long tenantId) {
+        Long deptId = request.deptId();
+        if (deptId == null) {
+            return;
+        }
+        // 判断租户ID+部门ID是否存在
+        R<Boolean> exists = tenantServiceFeign.deptExists(tenantId, deptId);
+        if (exists.getCode() != 0) {
+            throw new BizException("部门校验失败: " + exists.getMessage());
+        }
+        if (!Boolean.TRUE.equals(exists.getData())) {
+            throw new BizException("部门不存在或不属于当前租户");
+        }
+        // 获取上下文
+        UserContext user = UserContextHolder.get();
+        // 判断是否为本人部门或是否有 budget:viewAll 权限
+        boolean viewAll = user != null && user.hasPerm("budget:viewAll");
+        if (!viewAll) {
+            Long ownDept = user == null ? null : user.getDeptId();
+            if (!Objects.equals(ownDept, deptId)) {
+                throw new BizException("只能为本部门提交报销（当前用户未绑定该部门），或需 budget:viewAll 权限");
+            }
+        }
+    }
+
     /**
      * amend 重跑覆盖报销单明细与总额（P3b）：明细转 JSON Map + total_amount 重算覆盖 + 状态回 RUNNING。
      * <p>由 {@code AuditTicketService.amend} 在工单动作事务内调用；报销单不存在仅告警（GENERIC 任务无单据）。</p>
@@ -324,6 +370,7 @@ public class ReimbursementService {
         inputParams.put("title", reimb.getTitle());
         inputParams.put("expenseType", reimb.getExpenseType());
         inputParams.put("deptName", reimb.getDeptName());
+        inputParams.put("deptId", reimb.getDeptId());
         inputParams.put("claimDate", reimb.getClaimDate());
         inputParams.put("applicantId", reimb.getApplicantId());
         inputParams.put("items", ExpenseReimbursement.itemsToMaps(request.items()));

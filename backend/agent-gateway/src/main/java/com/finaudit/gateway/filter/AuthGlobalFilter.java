@@ -2,6 +2,7 @@ package com.finaudit.gateway.filter;
 
 import com.finaudit.starter.jwt.AuthClaims;
 import com.finaudit.starter.jwt.AuthSessionConstants;
+import com.finaudit.starter.jwt.AuthSnapshot;
 import com.finaudit.starter.jwt.JwtTokenProvider;
 import io.jsonwebtoken.JwtException;
 import org.slf4j.Logger;
@@ -32,10 +33,13 @@ import java.util.List;
  * 职责：
  * 1. 对白名单接口直接放行，剥离客户端伪造的身份请求头
  * 2. 解析请求头 Bearer JWT token，校验token合法性
- * 3. 校验通过后以 JWT 载荷注入 {@code X-Tenant-Id / X-User-Id / X-Username / X-User-Roles}，向下游微服务透传
+ * 3. 校验通过后以 JWT 载荷 + Redis 用户快照注入
+ *    {@code X-Tenant-Id / X-User-Id / X-Username / X-User-Roles / X-User-Perms / X-Dept-Id}，向下游微服务透传
  * 4. token校验失败返回401 JSON响应
  * ⚠️安全关键点：客户端传入的 X‑Tenant‑Id / X‑User‑Id 等身份头全部删除，
  * 下游服务只信任网关解析JWT之后重新写入的请求头，防止前端直接伪造身份越权。
+ * P3.5：角色/权限以 Redis 快照（finaudit:auth:snapshot:{userId}）为权威——角色/权限变更
+ * 无需重新登录即生效；快照缺失时降级：角色用 JWT claims，权限置空（@RequirePerm 端点 fail-closed）。
  */
 @Component
 public class AuthGlobalFilter implements GlobalFilter, Ordered {
@@ -51,15 +55,20 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
     public static final String HEADER_USERNAME = "X-Username";
     // 用户角色
     public static final String HEADER_USER_ROLES = "X-User-Roles";
+    // 用户权限标识符（P3.5，快照权威）
+    public static final String HEADER_USER_PERMS = "X-User-Perms";
+    // 用户部门ID（P3.5b 部门实体，快照权威）
+    public static final String HEADER_DEPT_ID = "X-Dept-Id";
     // JWT 唯一标识（登出/作废时下游据此写黑名单）
     public static final String HEADER_JWT_ID = "X-Jwt-Jti";
 
     /**
      * 可被客户端伪造的身份头数组
-     * 无论白名单还是鉴权接口，网关处理前一律移除，身份只能来源于JWT解析结果
+     * 无论白名单还是鉴权接口，网关处理前一律移除，身份只能来源于JWT解析/快照读取结果
      */
     private static final String[] SPOOFABLE_HEADERS = {
-            HEADER_TENANT_ID, HEADER_USER_ID, HEADER_USERNAME, HEADER_USER_ROLES, HEADER_JWT_ID
+            HEADER_TENANT_ID, HEADER_USER_ID, HEADER_USERNAME, HEADER_USER_ROLES,
+            HEADER_USER_PERMS, HEADER_DEPT_ID, HEADER_JWT_ID
     };
 
     /** Redis 会话 key 前缀（与 tenant-service 写黑名单的 key 保持一致） */
@@ -118,13 +127,14 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             return unauthorized(exchange, "token 载荷缺少用户或租户信息");
         }
 
-        // 5. 会话有效性校验：查 Redis 黑名单（作废 jti / 用户级作废版本），命中即拒绝
-        return isRevoked(claims)
-                .flatMap(revoked -> {
-                    if (Boolean.TRUE.equals(revoked)) {
+        // 5. 会话有效性校验 + 权限快照读取：一次 multiGet 查 3 key
+        //    （作废 jti / 用户级作废版本 / 用户权限快照），快照为角色/权限的权威来源
+        return resolveSession(claims)
+                .flatMap(session -> {
+                    if (session.revoked()) {
                         return unauthorized(exchange, "登录已失效，请重新登录");
                     }
-                    // 6. 构建新请求：先删除客户端伪造的身份头，再把JWT解析出来的身份信息写入请求头透传到下游微服务
+                    // 6. 构建新请求：先删除客户端伪造的身份头，再把 JWT + 快照解析出的身份信息写入请求头透传到下游微服务
                     ServerHttpRequest mutated = request.mutate()
                             .headers(headers -> {
                                 // 清除客户端带来的身份头，杜绝伪造
@@ -138,10 +148,19 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
                                 if (StringUtils.hasText(claims.username())) {
                                     headers.set(HEADER_USERNAME, claims.username());
                                 }
-                                // 用户角色列表，逗号拼接向下游传递
-                                List<String> roles = claims.roles();
+                                // 角色列表：快照命中以快照为权威（变更实时生效）；未命中降级 JWT claims
+                                List<String> roles = session.snapshot() != null
+                                        ? session.snapshot().roles() : claims.roles();
                                 if (roles != null && !roles.isEmpty()) {
                                     headers.set(HEADER_USER_ROLES, String.join(",", roles));
+                                }
+                                // 权限标识符：仅快照有（降级时不注入，下游 @RequirePerm 端点 fail-closed）
+                                if (session.snapshot() != null && !session.snapshot().perms().isEmpty()) {
+                                    headers.set(HEADER_USER_PERMS, String.join(",", session.snapshot().perms()));
+                                }
+                                // 部门ID：仅快照有（P3.5b 部门实体）
+                                if (session.snapshot() != null && session.snapshot().deptId() != null) {
+                                    headers.set(HEADER_DEPT_ID, String.valueOf(session.snapshot().deptId()));
                                 }
                                 // 转发 jti，供登出接口写黑名单
                                 if (StringUtils.hasText(claims.jti())) {
@@ -155,48 +174,62 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
     }
 
     /**
-     * 校验当前JWT是否已经被吊销（两种吊销机制：单token黑名单 + 用户全局会话版本号）
-     * <p>
-     * 双机制说明：
-     * 1. jtiKey：单token黑名单，针对某一个具体token登出，只作废当前这一个设备的token
-     * 2. verKey：用户会话版本号，针对用户全局踢下线；用户修改密码/强制全部设备下线时更新版本号。
-     *    规则：JWT签发时间(iat) <= redis中存储的版本时间戳 → token判定为已吊销。
-     * 容错策略：Redis访问异常（超时、断连）直接放行请求，不阻断业务，打印警告日志。
-     * @param claims JWT解析后的载荷，需要携带jti、userId、iatSeconds(JWT签发时间戳，秒)
-     * @return Mono<Boolean> true=已吊销(拒绝访问)；false=有效(允许继续访问)
+     * 会话解析结果：是否已吊销 + 用户权限快照（null 代表降级，用 JWT claims 角色）。
      */
-    private Mono<Boolean> isRevoked(AuthClaims claims) {
-        // 单token黑名单key：black:jti:{jti}，登出时写入，TTL等于token剩余有效期
-        String jtiKey = AuthSessionConstants.BLACKLIST_PREFIX + claims.jti();
-        // 用户全局会话版本key：black:ver:{userId}，修改密码/全部设备下线时写入时间戳
-        String verKey = AuthSessionConstants.BLACKVER_PREFIX + claims.userId();
+    private record SessionState(boolean revoked, AuthSnapshot snapshot) {
+    }
 
-        // multiGet 一次redis批量查询两个key，减少网络RT，避免两次独立Redis请求
-        return redisTemplate.opsForValue().multiGet(Arrays.asList(jtiKey, verKey))
+    /**
+     * 一次 Redis 往返完成三件事（P3.5 起 2 key 扩为 3 key）：
+     * <ol>
+     * <li>jti 黑名单：单 token 登出作废</li>
+     * <li>用户会话版本号：修改密码/强制下线全局作废
+     *     （规则：JWT 签发时间 iat ≤ Redis 版本时间戳 → 已吊销）</li>
+     * <li>用户权限快照（P3.5）：角色/权限/部门的权威来源，实时生效依据</li>
+     * </ol>
+     * 容错策略：Redis 访问异常不阻断业务请求（吊销判定放行 + 快照为 null 降级 JWT 角色、
+     * 权限置空 → 管理端 @RequirePerm 端点 403 fail-closed，业务端点不受影响），打印警告日志。
+     * @param claims JWT解析后的载荷，需要携带jti、userId、iatSeconds(JWT签发时间戳，秒)
+     * @return SessionState；revoked=true 时拒绝访问
+     */
+    private Mono<SessionState> resolveSession(AuthClaims claims) {
+        // 单token黑名单key：登出时写入，TTL等于token剩余有效期
+        String jtiKey = AuthSessionConstants.BLACKLIST_PREFIX + claims.jti();
+        // 用户全局会话版本key：修改密码/全部设备下线时写入时间戳
+        String verKey = AuthSessionConstants.BLACKVER_PREFIX + claims.userId();
+        // 用户权限快照key（P3.5）：登录/权限变更时 tenant-service 写入
+        String snapKey = AuthSessionConstants.SNAPSHOT_PREFIX + claims.userId();
+
+        // multiGet 一次redis批量查询三个key，减少网络RT，避免多次独立Redis请求
+        return redisTemplate.opsForValue().multiGet(Arrays.asList(jtiKey, verKey, snapKey))
                 .map(values -> {
                     String jtiVal = values == null ? null : values.get(0);
                     String verVal = values == null ? null : values.get(1);
+                    String snapVal = values == null ? null : values.get(2);
 
                     // 条件1：该jti存在黑名单 → 当前这个token已经登出，直接吊销
                     if (StringUtils.hasText(jtiVal)) {
-                        return true;
+                        return new SessionState(true, null);
                     }
 
                     // 条件2：用户存在全局会话版本号
                     if (StringUtils.hasText(verVal)) {
                         try {
                             // JWT签发时间(iat) <= 版本时间戳：代表本token是版本更新之前签发的，全部作废
-                            return claims.iatSeconds() <= Long.parseLong(verVal);
+                            if (claims.iatSeconds() <= Long.parseLong(verVal)) {
+                                return new SessionState(true, null);
+                            }
                         } catch (NumberFormatException e) {
                             log.warn("会话版本号非法，忽略: key={}, value={}", verKey, verVal);
                         }
                     }
-                    return false;
+                    // 未吊销：解析权限快照（缺失/损坏返回 null，走降级）
+                    return new SessionState(false, AuthSnapshot.parse(snapVal));
                 })
                 .onErrorResume(e -> {
-                    // redis存的值格式异常，不阻断请求，仅打warn日志
-                    log.warn("Redis 会话校验失败，放行请求: {}", e.getMessage());
-                    return Mono.just(false);
+                    // redis访问异常，不阻断请求：吊销判定放行 + 快照降级，仅打warn日志
+                    log.warn("Redis 会话校验失败，放行请求并降级快照: {}", e.getMessage());
+                    return Mono.just(new SessionState(false, null));
                 });
     }
 

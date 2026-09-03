@@ -58,6 +58,9 @@ public class ExpenseReimbursement {
     @Schema(description = "部门")
     private String deptName;
 
+    @Schema(description = "部门ID（P3.5b 权威关联键；deptName 为提交时快照）")
+    private Long deptId;
+
     @Schema(description = "申报总金额")
     private BigDecimal totalAmount;
 
@@ -99,6 +102,7 @@ public class ExpenseReimbursement {
         reimb.setExpenseType(request.expenseType());
         reimb.setApplicantId(applicantId);
         reimb.setDeptName(request.deptName());
+        reimb.setDeptId(request.deptId());
         reimb.setTotalAmount(totalAmount);
         reimb.setStatus(ReimbursementStatus.PENDING.name());
         reimb.setClaimDate(request.claimDate());

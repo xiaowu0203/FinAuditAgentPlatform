@@ -27,6 +27,8 @@ export interface UserVO {
   realName: string | null
   phone: string | null
   roles: string[]
+  /** 权限标识符列表（P3.5：前端菜单/路由/按钮动态渲染依据） */
+  perms: string[]
 }
 
 /** 登录结果 */
@@ -150,7 +152,10 @@ export interface ReimbursementDetailVO {
 export interface ReimbursementSubmitRequest {
   title: string
   expenseType: ExpenseType
+  /** 部门（提交时快照；P3.5b 部门树选择器取权威名） */
   deptName: string
+  /** 部门 ID（P3.5b，树选择器提交；为空则后端不落 dept_id） */
+  deptId?: number | null
   claimDate: string
   remark?: string
   items: {
@@ -271,4 +276,105 @@ export interface ReimbursementResubmitRequest {
   remark?: string
   items: ReimbursementItemVO[]
   fileRecordIds: number[]
+}
+
+// ===================== P3.5 系统管理 =====================
+
+/** 部门树节点（sys_dept；报销单创建页选择器 / 用户管理） */
+export interface DeptVO {
+  id: number
+  parentId: number
+  deptName: string
+  status: number
+  children: DeptVO[]
+}
+
+/** 权限目录项（sys_permission；角色分配界面勾选，按 groupName 分区） */
+export interface PermissionVO {
+  id: number
+  permCode: string
+  permName: string
+  permType: 'MENU' | 'API'
+  groupName: string
+}
+
+/** 角色（管理页列表） */
+export interface RoleVO {
+  id: number
+  tenantId: number
+  roleCode: string
+  roleName: string
+  createdAt: string | null
+}
+
+/** 系统管理·用户（后端 /api/v1/users 列表项；区别于登录 UserVO） */
+export interface SystemUserVO {
+  id: number
+  tenantId: number
+  username: string
+  realName: string | null
+  phone: string | null
+  deptId: number | null
+  deptName: string | null
+  status: number
+  createdAt: string | null
+}
+
+/** 系统管理·用户详情（含角色） */
+export interface SystemUserDetailVO extends SystemUserVO {
+  roles: RoleVO[]
+}
+
+/** 新增用户请求（dept_id 可空） */
+export interface UserCreateRequest {
+  username: string
+  password: string
+  realName?: string
+  phone?: string
+  deptId?: number | null
+  status?: number
+  roleIds?: number[]
+}
+
+/** 更新用户请求（字段空则不修改；deptId=0 解绑部门） */
+export interface UserUpdateRequest {
+  realName?: string
+  phone?: string
+  deptId?: number | null
+  status?: number
+  password?: string
+}
+
+/** 用户角色分配（替换式） */
+export interface UserRoleAssignRequest {
+  roleIds: number[]
+}
+
+/** 角色新增 */
+export interface RoleCreateRequest {
+  roleCode: string
+  roleName: string
+}
+
+/** 角色编辑 */
+export interface RoleUpdateRequest {
+  roleName?: string
+}
+
+/** 角色权限分配（替换式，permIds=[] 清空） */
+export interface RolePermAssignRequest {
+  permIds: number[]
+}
+
+/** 部门新增 */
+export interface DeptCreateRequest {
+  deptName: string
+  parentId?: number
+}
+
+/** 部门编辑（字段空则不修改；parentId=0 移到根） */
+export interface DeptUpdateRequest {
+  deptName?: string
+  parentId?: number
+  status?: number
 }

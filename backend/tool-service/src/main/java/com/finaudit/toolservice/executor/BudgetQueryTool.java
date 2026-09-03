@@ -45,19 +45,22 @@ public class BudgetQueryTool implements ToolExecutor {
     public Map<String, Object> execute(Long tenantId, Map<String, Object> inputParams) {
         // 提取入参并做类型兼容转换
         String deptName = str(inputParams == null ? null : inputParams.get("deptName"));
+        Long deptId = longValue(inputParams == null ? null : inputParams.get("deptId"));
         String claimDate = str(inputParams == null ? null : inputParams.get("claimDate"));
         BigDecimal amount = decimal(inputParams == null ? null : inputParams.get("amount"));
 
         // 校验必填入参：部门、报销日期、申报金额不能为空
-        if (deptName == null || claimDate == null || amount == null) {
-            throw new BizException("budget_query 入参缺少 deptName / claimDate / amount");
+        if ((deptName == null && deptId == null) || claimDate == null || amount == null) {
+            throw new BizException("budget_query 入参缺少 deptName/deptId / claimDate / amount");
         }
 
         // 将报销日期 yyyy‑MM‑dd 截取为预算周期 yyyy‑MM（月度预算）
         String period = claimDate.length() >= 7 ? claimDate.substring(0, 7) : claimDate;
 
-        // feign远程调用核心服务，查询该租户下部门对应月度预算
-        R<BudgetVO> resp = agentCoreServiceFeign.queryBudget(tenantId, deptName, period);
+        // feign远程调用核心服务查询部门月度预算：P3.5b 起 deptId 为权威关联键，优先按 ID 查；存量按快照名查
+        R<BudgetVO> resp = deptId != null
+                ? agentCoreServiceFeign.queryBudgetByDeptId(tenantId, deptId, period)
+                : agentCoreServiceFeign.queryBudget(tenantId, deptName, period);
         // 远程调用业务码非0，抛出业务异常
         if (resp.getCode() != 0) {
             throw new BizException("预算查询失败: " + resp.getMessage());
@@ -101,6 +104,23 @@ public class BudgetQueryTool implements ToolExecutor {
      */
     private static String str(Object v) {
         return v == null ? null : v.toString();
+    }
+
+    /**
+     * 通用对象转 Long（SQLE deptId 入参兼容 Number/String），null/非法返回 null。
+     */
+    private static Long longValue(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof Number n) {
+            return n.longValue();
+        }
+        try {
+            return Long.parseLong(v.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /**

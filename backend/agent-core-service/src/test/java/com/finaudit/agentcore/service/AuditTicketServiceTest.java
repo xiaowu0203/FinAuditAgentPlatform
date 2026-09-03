@@ -15,7 +15,10 @@ import com.finaudit.agentcore.pojo.entity.AuditRecord;
 import com.finaudit.agentcore.pojo.entity.AuditTicket;
 import com.finaudit.agentcore.pojo.vo.AuditTicketVO;
 import com.finaudit.starter.redis.lock.DistributedLockTemplate;
+import com.finaudit.starter.web.auth.UserContext;
+import com.finaudit.starter.web.auth.UserContextHolder;
 import com.finaudit.starter.web.exception.BizException;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -27,8 +30,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -78,6 +83,21 @@ class AuditTicketServiceTest {
             Supplier<Object> action = (Supplier<Object>) inv.getArgument(1);
             return action.get();
         });
+        // 默认审批人上下文（P3.5 起 action 权限判定走 UserContext 的 audit:approve，替换角色字符串）
+        UserContextHolder.set(approverContext());
+    }
+
+    @AfterEach
+    void clearUserContext() {
+        UserContextHolder.clear();
+    }
+
+    /** 审批人上下文：audit:approve 权限命中，action 内权限兜底放行。 */
+    private UserContext approverContext() {
+        UserContext context = new UserContext();
+        context.setUserId(20L);
+        context.setPerms(new LinkedHashSet<>(Set.of("audit:approve", "audit:viewAll")));
+        return context;
     }
 
     // ---------- enterApproval ----------
@@ -150,8 +170,10 @@ class AuditTicketServiceTest {
     // ---------- action：权限 / 动作状态机 + 留痕 ----------
 
     @Test
-    void actionWithoutAuditorRoleThrows() {
+    void actionWithoutApprovePermThrows() {
         when(ticketMapper.selectById(1L)).thenReturn(ticket(1L, AuditTicketStatus.PENDING, "553.00", 0));
+        // 无 UserContext（未登录/直连）或无 audit:approve → fail-closed 拒绝
+        UserContextHolder.clear();
 
         BizException ex = assertThrows(BizException.class,
                 () -> service.action(1L, AuditAction.APPROVE, 20L, "张三", "user", null));

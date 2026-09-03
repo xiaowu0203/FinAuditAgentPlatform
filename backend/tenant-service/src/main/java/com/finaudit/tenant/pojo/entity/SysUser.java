@@ -40,6 +40,9 @@ public class SysUser {
     @Schema(description = "手机号")
     private String phone;
 
+    @Schema(description = "部门ID（P3.5b 员工级归属；未绑定为 null）")
+    private Long deptId;
+
     @Schema(description = "状态: 1启用 0禁用")
     private Integer status;
 
@@ -67,6 +70,7 @@ public class SysUser {
         user.setPassword(encodedPassword);
         user.setRealName(request.realName());
         user.setPhone(request.phone());
+        user.setDeptId(request.deptId());
         user.setStatus(request.status() == null ? 1 : request.status());
         return user;
     }
@@ -86,6 +90,10 @@ public class SysUser {
         }
         if (request.phone() != null) {
             this.setPhone(request.phone());
+        }
+        if (request.deptId() != null) {
+            // 0=解绑（清空员工级部门归属）；否则直接绑定
+            this.setDeptId(request.deptId() == 0L ? null : request.deptId());
         }
         if (request.status() != null) {
             this.setStatus(request.status());
