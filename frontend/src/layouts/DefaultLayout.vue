@@ -14,12 +14,13 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/reimbursements')) return '/reimbursements'
   if (route.path.startsWith('/rules')) return '/rules'
   if (route.path.startsWith('/audits')) return '/audits'
+  if (route.path.startsWith('/system')) return '/system'
   return '/dashboard'
 })
 const pageTitle = computed(() => (route.meta.title as string | undefined) || '')
 const displayName = computed(() => auth.user?.realName || auth.user?.username || '未登录')
-/** 财务角色（admin/auditor）：仅此类用户可见「审批工单」菜单（路由守卫同规则） */
-const isFinance = computed(() => (auth.user?.roles || []).some((r) => r === 'admin' || r === 'auditor'))
+/** 系统管理菜单组可见性：任一管理页权限即可（权限码 P3.5 取代角色字符串） */
+const canManageSystem = computed(() => auth.hasAnyPerm(['user:list', 'role:list', 'dept:manage']))
 
 async function handleCommand(command: string) {
   if (command !== 'logout') return
@@ -58,7 +59,7 @@ async function handleCommand(command: string) {
           <el-icon><Tickets /></el-icon>
           <span>报销单</span>
         </el-menu-item>
-        <el-menu-item v-if="isFinance" index="/rules">
+        <el-menu-item v-if="auth.hasPerm('rule:manage')" index="/rules">
           <el-icon><Setting /></el-icon>
           <span>规则配置</span>
         </el-menu-item>
@@ -67,6 +68,16 @@ async function handleCommand(command: string) {
           <el-icon><Checked /></el-icon>
           <span>审批工单</span>
         </el-menu-item>
+        <!-- 系统管理（P3.5）：按管理页权限码显隐，子项按各自权限 -->
+        <el-sub-menu v-if="canManageSystem" index="/system">
+          <template #title>
+            <el-icon><Menu /></el-icon>
+            <span>系统管理</span>
+          </template>
+          <el-menu-item v-if="auth.hasPerm('user:list')" index="/system/users">用户管理</el-menu-item>
+          <el-menu-item v-if="auth.hasPerm('role:list')" index="/system/roles">角色管理</el-menu-item>
+          <el-menu-item v-if="auth.hasPerm('dept:manage')" index="/system/depts">部门管理</el-menu-item>
+        </el-sub-menu>
       </el-menu>
       <div class="aside-footer">
         <div class="aside-tip">更清晰的任务、报销与规则视图</div>
@@ -153,20 +164,42 @@ async function handleCommand(command: string) {
   flex: 1;
   border-right: none;
   background: transparent;
+  /* 深色侧边栏统一菜单配色（el-sub-menu 标题/展开内联子列表同样吃到） */
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: rgba(255, 255, 255, 0.72);
+  --el-menu-active-color: #fff;
+  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.08);
 }
 
-.menu :deep(.el-menu-item) {
+.menu :deep(.el-menu-item),
+.menu :deep(.el-sub-menu__title) {
   height: 48px;
   margin-bottom: 8px;
   border-radius: 14px;
-  color: rgba(255, 255, 255, 0.72);
   transition: all 0.22s ease;
 }
 
-.menu :deep(.el-menu-item:hover) {
+.menu :deep(.el-menu-item:hover),
+.menu :deep(.el-sub-menu__title:hover) {
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
   transform: translateX(2px);
+}
+
+.menu :deep(.el-sub-menu .el-menu) {
+  background: transparent;
+}
+
+.menu :deep(.el-sub-menu .el-menu-item) {
+  min-width: 0;
+  border-radius: 12px;
+  padding-left: 48px !important;
+}
+
+.menu :deep(.el-sub-menu .el-menu-item.is-active) {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.9), rgba(79, 70, 229, 0.92));
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.22);
 }
 
 .menu :deep(.el-menu-item.is-active) {

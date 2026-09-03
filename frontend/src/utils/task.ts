@@ -56,11 +56,6 @@ export const AUDIT_ACTION_MAP: Record<AuditAction, string> = {
   WITHDRAW_REFUSE: '拒绝撤销',
 }
 
-/** 是否财务角色（admin/auditor，与后端 X-User-Roles 判定规则一致，控制菜单/路由/操作按钮） */
-export function isFinanceRole(roles: string[] | undefined | null): boolean {
-  return (roles || []).some((r) => r === 'admin' || r === 'auditor')
-}
-
 /** 任务是否处于进行中（需要轮询刷新） */
 export function isActive(status: TaskStatus): boolean {
   return status === 'PENDING' || status === 'RUNNING'

@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { UploadFile, UploadProgressEvent, UploadRequestOptions, UploadUserFile } from 'element-plus'
 import { Back, Delete, Plus } from '@element-plus/icons-vue'
 import { uploadFile } from '@/api/file'
+import { getDeptTree } from '@/api/system'
 import { submitReimbursement } from '@/api/reimbursement'
-import type { ExpenseType, ReimbursementSubmitRequest } from '@/types'
+import type { DeptVO, ExpenseType, ReimbursementSubmitRequest } from '@/types'
 
 const router = useRouter()
 
@@ -47,6 +48,7 @@ const form = reactive({
   title: '',
   expenseType: 'TRAVEL' as ExpenseType,
   deptName: '',
+  deptId: null as number | null,
   claimDate: new Date().toISOString().slice(0, 10),
   remark: '',
 })
@@ -55,13 +57,55 @@ const fileList = ref<UploadUserFile[]>([])
 const uploading = ref(false)
 const submitting = ref(false)
 
+// P3.5b 部门选择：扁平缩进下拉（el-select 标量 id→label 回显可靠），快照名随选中自动带出
+const deptTree = ref<DeptVO[]>([])
+const deptOptions = computed<{ value: number; label: string }[]>(() => {
+  const options: { value: number; label: string }[] = []
+  const walk = (nodes: DeptVO[], depth: number) => {
+    for (const n of nodes) {
+      options.push({ value: n.id, label: `${'　'.repeat(depth)}${n.deptName}` })
+      walk(n.children || [], depth + 1)
+    }
+  }
+  walk(deptTree.value, 0)
+  return options
+})
+function lookupDeptByName(nodes: DeptVO[], name: string): DeptVO | null {
+  for (const n of nodes) {
+    if (n.deptName === name) return n
+    const hit = lookupDeptByName(n.children || [], name)
+    if (hit) return hit
+  }
+  return null
+}
+onMounted(async () => {
+  deptTree.value = await getDeptTree()
+})
+function handleDeptChange(id: number | null) {
+  const node = id == null ? null : findDeptById(deptTree.value, id)
+  form.deptName = node?.deptName ?? ''
+}
+function findDeptById(nodes: DeptVO[], id: number): DeptVO | null {
+  for (const n of nodes) {
+    if (n.id === id) return n
+    const hit = findDeptById(n.children || [], id)
+    if (hit) return hit
+  }
+  return null
+}
+
 // 上传：el-upload 管理文件列表与进度，uploadFile 走 axios（带 token + 网关注入租户头）
 const uploadedIds = ref<number[]>([])
 const uidToRecordId = new Map<number, number>()
 
 function fillTemplate() {
   if (!form.title) form.title = '差旅费报销审核'
-  if (!form.deptName) form.deptName = '技术部'
+  // 模板默认部门：优先从部门树按名解析「技术部」，树中不存在则不预填（需手动选择）
+  const dept = lookupDeptByName(deptTree.value, '技术部')
+  if (dept) {
+    form.deptId = dept.id
+    form.deptName = dept.deptName
+  }
   items.value = TEMPLATE_ITEMS.map((i) => ({ ...i, date: '' }))
   ElMessage.success('已填充内置模板，可继续编辑')
 }
@@ -107,7 +151,7 @@ function handleRemove(file: UploadFile) {
 function validate(): string | null {
   if (!form.title.trim()) return '请输入报销标题'
   if (!form.expenseType) return '请选择费用类型'
-  if (!form.deptName.trim()) return '请输入部门'
+  if (!form.deptId) return '请选择部门（部门树）'
   if (!form.claimDate) return '请选择报销日期'
   if (items.value.length === 0) return '请至少添加一条报销明细（可用内置模板填充）'
   for (const [i, it] of items.value.entries()) {
@@ -128,6 +172,7 @@ async function handleSubmit() {
     title: form.title.trim(),
     expenseType: form.expenseType,
     deptName: form.deptName.trim(),
+    deptId: form.deptId,
     claimDate: form.claimDate,
     remark: form.remark.trim() || undefined,
     items: items.value.map((it) => ({
@@ -182,7 +227,15 @@ async function handleSubmit() {
         </el-col>
         <el-col :xs="24" :md="12">
           <el-form-item label="部门" required>
-            <el-input v-model="form.deptName" placeholder="如：技术部" maxlength="64" clearable />
+            <el-select
+              v-model="form.deptId"
+              filterable
+              style="width: 100%"
+              placeholder="选择部门（非本人部门提交会被拒绝，或需预算全部门权限）"
+              @change="handleDeptChange"
+            >
+              <el-option v-for="o in deptOptions" :key="o.value" :value="o.value" :label="o.label" />
+            </el-select>
           </el-form-item>
         </el-col>
         <el-col :xs="24" :md="12">

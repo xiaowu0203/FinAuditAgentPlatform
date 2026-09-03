@@ -3,7 +3,7 @@ import { ElMessage } from 'element-plus'
 import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import type { AxiosResponse } from 'axios'
-import type { R } from '@/types'
+import type { R, UserVO } from '@/types'
 
 /**
  * axios 实例：
@@ -42,6 +42,20 @@ instance.interceptors.response.use(
       auth.clear()
       ElMessage.error('登录已失效，请重新登录')
       router.push({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } })
+    } else if (status === 403) {
+      // P3.5：权限被回收实时生效——拉取 /auth/me 刷新前端 perms，菜单/按钮即时收敛
+      const auth = useAuthStore()
+      instance
+        .get('/auth/me')
+        .then((resp) => {
+          const body = (resp as AxiosResponse<R<UserVO>>).data
+          if (body && body.code === 0 && body.data) auth.refreshPerms(body.data)
+        })
+        .catch(() => {
+          /* 刷新失败不影响本次错误提示 */
+        })
+      const msg = error.response?.data?.message || '无权限访问'
+      ElMessage.error(msg)
     } else {
       const msg = error.response?.data?.message || error.message || '网络异常，请稍后再试'
       ElMessage.error(msg)
