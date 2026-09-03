@@ -63,9 +63,18 @@ public class AuthService {
     }
 
     /**
+     * 固定 bcrypt 哈希（任意合法哈希均可，不对应任何真实账号）：
+     * 未知用户也执行同价 BCrypt 比对，抹平「用户不存在」与「密码错误」的响应时序差，防用户名枚举。
+     */
+    private static final String DUMMY_BCRYPT_HASH =
+            "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
+
+    /**
      * 用户登录接口
-     * 流程：解析租户编码 → 校验租户状态 → 在指定租户上下文内校验用户密码 → 查询用户角色/权限
-     * → 签发JWT + 写权限快照 → 返回登录VO（含角色与权限标识符）
+     * 流程：解析租户编码 → 校验租户状态 → 在指定租户上下文内：防爆破锁定检查 → 密码校验（先于
+     * 禁用判断，防账号存在性泄露）→ 查询用户角色/权限 → 签发JWT + 写权限快照 → 返回登录VO
+     * <p>P3.5d：①登录失败按 租户+用户名 计数锁定（连续 5 次失败锁 15 分钟）；
+     * ②未知用户与密码错误统一文案 + 固定哈希同价比对；③仅在密码验证通过后才提示"账号已被禁用"。</p>
      * @param request 登录请求：tenantCode租户编码、username用户名、password密码
      * @return LoginVO 返回accessToken、token类型、过期秒数、用户信息
      */
@@ -92,19 +101,28 @@ public class AuthService {
          * 上下文生效后，MyBatis‑Plus多租户插件会自动过滤sys_user、sys_user_role、sys_role等租户表数据
          */
         return TenantContextHolder.runWithResult(tenant.getId(), () -> {
+            // 防爆破：锁定中的账号直接拒绝，不做密码校验
+            authSessionService.assertLoginAllowed(tenant.getId(), request.username());
             // 在当前租户下查询用户
             SysUser user = userService.getByTenantAndUsername(tenant.getId(), request.username());
+            // 密码比对先行（P3.5d 修账号存在性泄露）：此前先判禁用再比密码，
+            // 攻击者凭"用户已被禁用"文案即可无密码探测账号存在性
             if (user == null) {
+                // 未知用户：对固定哈希做同价比对抹平时序差；失败计数按用户名维度照常累计
+                passwordEncoder.matches(request.password(), DUMMY_BCRYPT_HASH);
+                authSessionService.recordLoginFailure(tenant.getId(), request.username());
                 throw new BizException("用户名或密码错误");
             }
-            // 校验用户状态，状态1代表启用
-            if (user.getStatus() == null || user.getStatus() != 1) {
-                throw new BizException("用户已被禁用");
-            }
-            // 密码比对，不匹配抛业务异常
             if (!passwordEncoder.matches(request.password(), user.getPassword())) {
+                authSessionService.recordLoginFailure(tenant.getId(), request.username());
                 throw new BizException("用户名或密码错误");
             }
+            // 密码已验证通过后才判断禁用：此时提示"已被禁用"仅面向证明过身份的账号本人，不泄露存在性
+            if (user.getStatus() == null || user.getStatus() != 1) {
+                throw new BizException("账号已被禁用，请联系管理员");
+            }
+            // 登录成功，清空失败计数
+            authSessionService.clearLoginFailures(tenant.getId(), request.username());
             // 获取用户角色编码集合与权限标识符集合
             List<String> roles = resolveRoleCodes(user.getId());
             Set<String> perms = permissionService.listPermCodesByUser(user.getId());
