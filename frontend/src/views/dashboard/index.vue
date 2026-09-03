@@ -57,17 +57,19 @@ function refreshAll() {
   return Promise.all([loadStats(), loadRecent()])
 }
 
-/** 存在进行中任务则启动轮询，全部终态后停止 */
+/** 存在进行中任务则启动轮询，全部终态后停止（后台静默刷新：不触发遮罩） */
 function ensurePolling() {
   if (timer) return
   if (recentTasks.value.some((t) => isActive(t.status))) {
     timer = window.setInterval(async () => {
+      // 页面不可见时跳过本轮，回前台后下一轮自然恢复
+      if (document.hidden) return
       await refreshAll()
       if (!recentTasks.value.some((t) => isActive(t.status))) {
         window.clearInterval(timer)
         timer = undefined
       }
-    }, 2500)
+    }, 5000)
   }
 }
 

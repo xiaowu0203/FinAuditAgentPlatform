@@ -31,11 +31,12 @@ function pretty(obj: unknown): string {
   }
 }
 
-async function load() {
-  loading.value = true
+async function load(opts?: { silent?: boolean }) {
+  // 轮询为后台静默刷新：不触发 loading 遮罩，避免详情页周期性闪动
+  if (!opts?.silent) loading.value = true
   try {
     task.value = await getTaskDetail(taskId)
-    stepsLoading.value = true
+    if (!opts?.silent) stepsLoading.value = true
     try {
       steps.value = (await getTaskSteps(taskId)) || []
     } finally {
@@ -53,7 +54,11 @@ async function load() {
 function syncPolling() {
   const active = task.value ? isActive(task.value.status) : false
   if (active && !timer) {
-    timer = window.setInterval(() => load(), 2500)
+    timer = window.setInterval(() => {
+      // 页面不可见时跳过本轮，回前台后下一轮自然恢复
+      if (document.hidden) return
+      load({ silent: true })
+    }, 5000)
   } else if (!active && timer) {
     window.clearInterval(timer)
     timer = undefined

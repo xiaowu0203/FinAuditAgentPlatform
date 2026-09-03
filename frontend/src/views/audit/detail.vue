@@ -59,8 +59,9 @@ function pretty(obj: unknown): string {
 }
 
 // ---------- 加载 ----------
-async function load() {
-  loading.value = true
+async function load(opts?: { silent?: boolean }) {
+  // 轮询为后台静默刷新：不触发 loading 遮罩，避免详情面板周期性闪动
+  if (!opts?.silent) loading.value = true
   try {
     detail.value = await getAuditTicketDetail(ticketId)
     records.value = (await getAuditRecords(ticketId)) || []
@@ -77,7 +78,11 @@ function syncPolling() {
   const s = ticket.value?.status
   const active = s === 'PENDING' || s === 'AMENDED' || s === 'WITHDRAW_PENDING'
   if (active && !timer) {
-    timer = window.setInterval(() => load(), 2500)
+    timer = window.setInterval(() => {
+      // 页面不可见时跳过本轮，回前台后下一轮自然恢复
+      if (document.hidden) return
+      load({ silent: true })
+    }, 5000)
   } else if (!active && timer) {
     window.clearInterval(timer)
     timer = undefined

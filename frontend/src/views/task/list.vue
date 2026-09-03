@@ -20,9 +20,10 @@ const query = reactive<{ pageNum: number; pageSize: number; status: TaskStatus |
 
 let timer: number | undefined
 
-async function load(page?: number) {
+async function load(page?: number, opts?: { silent?: boolean }) {
   if (page) query.pageNum = page
-  loading.value = true
+  // 轮询为后台静默刷新：不触发 loading 遮罩，避免列表周期性闪动
+  if (!opts?.silent) loading.value = true
   try {
     const result = await getTaskPage({
       pageNum: query.pageNum,
@@ -43,7 +44,11 @@ async function load(page?: number) {
 function syncPolling() {
   const active = records.value.some((r) => isActive(r.status))
   if (active && !timer) {
-    timer = window.setInterval(() => load(), 2500)
+    timer = window.setInterval(() => {
+      // 页面不可见时跳过本轮，回前台后下一轮自然恢复
+      if (document.hidden) return
+      load(undefined, { silent: true })
+    }, 5000)
   } else if (!active && timer) {
     window.clearInterval(timer)
     timer = undefined
