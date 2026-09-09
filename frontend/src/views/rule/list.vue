@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
 import { createRule, getRules, publishRule, toggleRule, updateRule } from '@/api/rule'
 import type { RuleType, RuleVO } from '@/types'
 
@@ -183,23 +182,18 @@ onMounted(() => load())
 </script>
 
 <template>
-  <el-card class="page-card">
-    <template #header>
-      <div class="list-header">
-        <div>
-          <div class="page-title card-title">财务规则配置</div>
-          <div class="page-subtitle">结构化维护审核规则，草稿保存后可按需发布生效</div>
-        </div>
-        <div class="filters">
-          <el-tooltip content="发布后立即生效，无需重启服务" placement="top">
-            <span class="tip">⚡ 改规则不重启</span>
-          </el-tooltip>
-          <el-button type="primary" :icon="Plus" @click="openCreate">新增规则</el-button>
-        </div>
+  <div>
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">规则配置</div>
+        <div class="page-head-sub">结构化维护审核规则，草稿保存后按需发布，发布即时生效、无需重启</div>
       </div>
-    </template>
+      <div class="page-head-actions">
+        <el-button type="primary" @click="openCreate">新增规则</el-button>
+      </div>
+    </div>
 
-    <el-table v-loading="loading" :data="records" empty-text="暂无规则">
+    <el-table v-loading="loading" :data="records" class="ledger-table">
       <el-table-column prop="ruleCode" label="规则编码" min-width="140" show-overflow-tooltip />
       <el-table-column prop="ruleName" label="规则名称" min-width="120" show-overflow-tooltip />
       <el-table-column label="类型" width="110">
@@ -211,45 +205,45 @@ onMounted(() => load())
       </el-table-column>
       <el-table-column label="生效状态" width="120">
         <template #default="{ row }">
-          <el-tag :type="row.published === 1 ? 'success' : 'info'" effect="plain">
+          <span class="stamp" :class="row.published === 1 ? 'stamp--success' : 'stamp--muted'">
             {{ row.published === 1 ? '已发布生效' : '草稿待发布' }}
-          </el-tag>
+          </span>
         </template>
       </el-table-column>
       <el-table-column label="启停" width="90">
         <template #default="{ row }">
-          <el-tag :type="row.enabled === 1 ? 'success' : 'danger'">
+          <span class="stamp" :class="row.enabled === 1 ? 'stamp--success' : 'stamp--danger'">
             {{ row.enabled === 1 ? '启用' : '停用' }}
-          </el-tag>
+          </span>
         </template>
       </el-table-column>
       <el-table-column prop="version" label="版本" width="80" />
       <el-table-column prop="updatedAt" label="更新时间" width="170" />
       <el-table-column label="操作" width="210" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="primary" size="small" @click="openEdit(row as RuleVO)">编辑</el-button>
           <el-button
             v-if="row.published !== 1"
             link
             type="warning"
             size="small"
-            @click="onPublish(row)"
+            @click="onPublish(row as RuleVO)"
           >
             发布
           </el-button>
-          <el-button v-else link type="success" size="small" @click="onPublish(row)">重新发布</el-button>
+          <el-button v-else link type="success" size="small" @click="onPublish(row as RuleVO)">重新发布</el-button>
           <el-button
             link
             :type="row.enabled === 1 ? 'danger' : 'success'"
             size="small"
-            @click="onToggle(row)"
+            @click="onToggle(row as RuleVO)"
           >
             {{ row.enabled === 1 ? '停用' : '启用' }}
           </el-button>
         </template>
       </el-table-column>
     </el-table>
-  </el-card>
+  </div>
 
   <el-dialog
     v-model="dialogVisible"
@@ -319,18 +313,9 @@ onMounted(() => load())
 </template>
 
 <style scoped>
-.card-title {
-  font-size: 16px;
-}
-
-.tip {
-  color: #67c23a;
-  font-size: 13px;
-}
-
 .field-tip {
   width: 100%;
-  color: #909399;
+  color: var(--ink-3);
   font-size: 12px;
   line-height: 1.6;
 }

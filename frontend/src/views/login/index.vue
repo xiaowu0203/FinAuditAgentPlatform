@@ -37,36 +37,41 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="login-page">
-    <div class="login-glow glow-left" />
-    <div class="login-glow glow-right" />
-    <el-card class="login-card" shadow="never">
-      <div class="login-side hero-side">
-        <div class="hero-badge">FinAudit</div>
-        <h1 class="title">财务费用智能审核平台</h1>
-        <p class="subtitle">统一处理任务审核、报销提交流程和规则配置，界面更轻、更清晰。</p>
-        <div class="hero-points">
-          <div class="hero-point">
-            <strong>任务驱动</strong>
-            <span>提交审核任务后自动跟踪执行状态和步骤结果</span>
-          </div>
-          <div class="hero-point">
-            <strong>报销联动</strong>
-            <span>报销单、附件、审核任务三者在同一界面联动查看</span>
-          </div>
-          <div class="hero-point">
-            <strong>规则可视化</strong>
-            <span>配置规则后可直接发布生效，不改变既有接口契约</span>
-          </div>
-        </div>
+  <div class="cover">
+    <!-- 凭证封面：墨青左栏，账线与印章元素，无渐变无玻璃 -->
+    <section class="cover-left">
+      <div class="cover-brand">
+        <span class="brand-seal display">审</span>
+        <span class="brand-word display">FinAudit</span>
       </div>
 
-      <div class="login-side form-side">
-        <div class="form-head">
-          <div class="form-kicker">欢迎回来</div>
-          <h2>登录到 FinAudit</h2>
-          <p>使用你的账号进入工作台</p>
+      <div class="cover-title">
+        <h1 class="display">财务费用<br />智能审核平台</h1>
+        <p>提交报销单据，Agent 逐级核验，高风险单据转人工审批。</p>
+      </div>
+
+      <dl class="cover-points">
+        <div class="point">
+          <dt>自主核验</dt>
+          <dd>OCR 票据识别、预算与规则校验、重复检测依次执行</dd>
         </div>
+        <div class="point">
+          <dt>终审在人</dt>
+          <dd>大额、超标或存疑的单据自动生成审批工单，留痕全程可查</dd>
+        </div>
+        <div class="point">
+          <dt>笔笔有痕</dt>
+          <dd>每一步结论都可回溯到工具输出与操作记录</dd>
+        </div>
+      </dl>
+    </section>
+
+    <!-- 表单栏：纸面右栏 -->
+    <section class="cover-right">
+      <div class="form-wrap">
+        <h2 class="display">登 录</h2>
+        <p class="form-sub">使用你的账号进入工作台</p>
+
         <el-form ref="formRef" :model="form" :rules="rules" size="large" @keyup.enter="handleLogin">
           <el-form-item prop="username">
             <el-input v-model="form.username" placeholder="用户名" :prefix-icon="User" clearable />
@@ -75,239 +80,188 @@ async function handleLogin() {
             <el-input v-model="form.password" type="password" placeholder="密码" :prefix-icon="Lock" show-password />
           </el-form-item>
           <el-form-item>
-            <el-button type="primary" class="login-btn" :loading="loading" @click="handleLogin">登 录</el-button>
+            <el-button type="primary" class="submit" :loading="loading" @click="handleLogin">
+              进入工作台
+            </el-button>
           </el-form-item>
         </el-form>
 
-        <div class="account-tip">
+        <div class="demo">
           <span>体验账号</span>
-          <strong>admin / admin123</strong>
+          <code>admin / admin123</code>
         </div>
       </div>
-    </el-card>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.login-page {
-  position: relative;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at top left, rgba(96, 165, 250, 0.3), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(79, 70, 229, 0.32), transparent 30%),
-    linear-gradient(135deg, #0f172a 0%, #111827 46%, #172554 100%);
-}
-
-.login-glow {
-  position: absolute;
-  width: 420px;
-  height: 420px;
-  border-radius: 50%;
-  filter: blur(60px);
-  opacity: 0.35;
-}
-
-.glow-left {
-  top: -120px;
-  left: -80px;
-  background: #3b82f6;
-}
-
-.glow-right {
-  right: -120px;
-  bottom: -120px;
-  background: #6366f1;
-}
-
-.login-card {
-  position: relative;
-  z-index: 1;
-  width: min(980px, 100%);
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.12);
-  box-shadow: 0 30px 80px rgba(15, 23, 42, 0.34);
-  backdrop-filter: blur(20px);
-}
-
-.login-card :deep(.el-card__body) {
+.cover {
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
-  padding: 0;
+  grid-template-columns: minmax(380px, 46%) 1fr;
+  height: 100%;
 }
 
-.login-side {
-  padding: 42px;
-}
+/* ---- 左：凭证封面 ---- */
 
-.hero-side {
-  position: relative;
-  color: #fff;
-  background:
-    linear-gradient(160deg, rgba(59, 130, 246, 0.25), rgba(79, 70, 229, 0.08)),
-    linear-gradient(180deg, rgba(15, 23, 42, 0.12), rgba(15, 23, 42, 0.04));
-}
-
-.hero-side::after {
-  content: '';
-  position: absolute;
-  inset: 22px 22px auto auto;
-  width: 180px;
-  height: 180px;
-  border-radius: 28px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.14), transparent);
-  transform: rotate(18deg);
-}
-
-.form-side {
+.cover-left {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.94);
+  padding: 48px 56px;
+  background: var(--aside-bg);
+  border-right: 1px solid var(--aside-line);
 }
 
-.hero-badge {
-  display: inline-flex;
+/* 账页横线纹理：极淡，替代渐变光斑 */
+.cover-left::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 35px,
+    rgba(244, 246, 243, 0.045) 35px,
+    rgba(244, 246, 243, 0.045) 36px
+  );
+}
+
+.cover-left {
+  position: relative;
+}
+
+.cover-brand {
+  position: relative;
+  display: flex;
   align-items: center;
-  padding: 8px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  gap: 12px;
 }
 
-.title {
-  position: relative;
-  z-index: 1;
-  max-width: 420px;
-  margin: 22px 0 12px;
-  font-size: 36px;
-  line-height: 1.2;
-  font-weight: 800;
-}
-
-.subtitle {
-  position: relative;
-  z-index: 1;
-  max-width: 460px;
-  color: rgba(255, 255, 255, 0.74);
-  font-size: 15px;
-  line-height: 1.8;
-}
-
-.hero-points {
-  position: relative;
-  z-index: 1;
+.brand-seal {
   display: grid;
-  gap: 14px;
-  margin-top: 30px;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1.5px solid var(--ledger);
+  border-radius: 6px;
+  color: var(--ledger);
+  font-size: 20px;
+  transform: rotate(-4deg);
 }
 
-.hero-point {
-  padding: 16px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.06);
+.brand-word {
+  color: var(--aside-text-strong);
+  font-size: 19px;
 }
 
-.hero-point strong {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 15px;
+.cover-title {
+  position: relative;
+  margin-top: 12vh;
 }
 
-.hero-point span {
-  color: rgba(255, 255, 255, 0.72);
+.cover-title h1 {
+  color: var(--aside-text-strong);
+  font-size: clamp(30px, 3.4vw, 42px);
+  line-height: 1.35;
+  letter-spacing: 0.04em;
+}
+
+.cover-title p {
+  max-width: 380px;
+  margin-top: 18px;
+  color: var(--aside-text);
+  font-size: 14.5px;
+  line-height: 1.9;
+}
+
+.cover-points {
+  position: relative;
+  margin-top: auto;
+  display: grid;
+  gap: 0;
+}
+
+/* 分录式条目：上账线分隔 */
+.point {
+  padding: 14px 0;
+  border-top: 1px solid var(--aside-line);
+}
+
+.point dt {
+  margin-bottom: 4px;
+  color: var(--aside-text-strong);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.point dd {
+  color: var(--aside-text);
   font-size: 13px;
   line-height: 1.7;
 }
 
-.form-head {
-  margin-bottom: 26px;
+/* ---- 右：表单 ---- */
+
+.cover-right {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
 }
 
-.form-kicker {
-  margin-bottom: 8px;
-  color: #2563eb;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.form-wrap {
+  width: min(360px, 100%);
 }
 
-.form-head h2 {
-  margin-bottom: 10px;
-  color: #0f172a;
-  font-size: 30px;
-  line-height: 1.15;
+.form-wrap h2 {
+  font-size: 26px;
+  letter-spacing: 0.3em;
+  color: var(--ink);
 }
 
-.form-head p {
-  color: #64748b;
-  font-size: 14px;
+.form-sub {
+  margin: 10px 0 28px;
+  color: var(--ink-2);
+  font-size: 13.5px;
 }
 
-.login-btn {
+.submit {
   width: 100%;
-  height: 46px;
-  border: none;
-  background: linear-gradient(135deg, #2563eb, #4f46e5);
-  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.24);
+  height: 44px;
 }
 
-.account-tip {
+.demo {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 10px;
-  padding: 14px 16px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 16px;
-  background: #f8fbff;
-  color: #475569;
-  font-size: 13px;
+  margin-top: 18px;
+  padding: 10px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  font-size: 12.5px;
 }
 
-.account-tip strong {
-  color: #0f172a;
-  font-size: 14px;
+.demo code {
+  color: var(--ink);
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
 }
+
+/* ---- 响应式 ---- */
 
 @media (max-width: 920px) {
-  .login-card :deep(.el-card__body) {
+  .cover {
     grid-template-columns: 1fr;
   }
 
-  .hero-side,
-  .form-side {
-    padding: 30px 24px;
+  .cover-left {
+    display: none;
   }
 
-  .title {
-    font-size: 28px;
-  }
-}
-
-@media (max-width: 520px) {
-  .login-page {
-    padding: 14px;
-  }
-
-  .account-tip {
+  .cover-right {
     align-items: flex-start;
-    flex-direction: column;
-    gap: 6px;
+    padding-top: 12vh;
   }
 }
 </style>

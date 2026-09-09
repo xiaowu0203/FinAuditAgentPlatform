@@ -41,5 +41,10 @@ docker/minio-data/
 .DS_Store
 Thumbs.db
 
+# ===== 本地工具与 AI 助手文件（不纳入仓库）=====
+.zcode/
+AGENTS.md
+CLAUDE.md
+
 # ===== Maven Wrapper jar =====
 .mvn/wrapper/maven-wrapper.jar

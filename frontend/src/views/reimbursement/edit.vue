@@ -3,7 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { UploadFile, UploadProgressEvent, UploadRequestOptions, UploadUserFile } from 'element-plus'
-import { Back, Delete, Plus } from '@element-plus/icons-vue'
+import { Back, Delete, Plus, UploadFilled } from '@element-plus/icons-vue'
 import { uploadFile } from '@/api/file'
 import { getReimbursementDetail, resubmitReimbursement } from '@/api/reimbursement'
 import type { ExpenseType, ReimbursementDetailVO, ReimbursementResubmitRequest } from '@/types'
@@ -172,26 +172,29 @@ onMounted(load)
 </script>
 
 <template>
-  <el-card v-loading="loading || submitting" class="page-card">
-    <template #header>
-      <div class="page-header">
-        <div>
-          <div class="page-title card-title">修改明细并重跑</div>
-          <div class="page-subtitle">
-            待审批 / 已驳回状态下提交人可修改；标题与部门沿用原值不可改，保存后服务端按明细重算总额并回退流水线
-          </div>
-        </div>
-        <div class="header-actions">
-          <el-button :icon="Back" @click="router.back()">返回</el-button>
+  <div v-loading="loading || submitting">
+    <div class="page-head">
+      <div>
+        <div class="page-head-title">修改明细并重跑</div>
+        <div class="page-head-sub">
+          待审批 / 已驳回状态下提交人可修改；标题与部门沿用原值不可改，保存后服务端按明细重算总额并回退流水线
         </div>
       </div>
-    </template>
+      <div class="page-head-actions">
+        <el-button :icon="Back" @click="router.back()">返回</el-button>
+      </div>
+    </div>
 
     <el-alert type="warning" :closable="false" class="mb">
       重跑上限 3 次；重跑后再次命中复核将重新进入审批，自动通过则直接闭合工单。
     </el-alert>
 
-    <el-form :model="form" label-width="90px">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">基础信息</span>
+      </div>
+      <div class="panel-body">
+      <el-form :model="form" label-width="90px">
       <el-row :gutter="16">
         <el-col :xs="24" :md="12">
           <el-form-item label="报销标题">
@@ -229,11 +232,17 @@ onMounted(load)
           </el-form-item>
         </el-col>
       </el-row>
-    </el-form>
+      </el-form>
+      </div>
+    </div>
 
-    <el-divider content-position="left">报销明细（总金额由服务端按明细求和）</el-divider>
-
-    <div v-for="(it, index) in items" :key="index" class="item-block">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">报销明细</span>
+        <span class="faint">总金额由服务端按明细求和</span>
+      </div>
+      <div class="panel-body">
+      <div v-for="(it, index) in items" :key="index" class="item-block">
       <div class="item-row">
         <el-input v-model="it.name" placeholder="名称" style="width: 160px" />
         <el-input-number v-model="it.amount" :min="0.01" :precision="2" :controls="false" placeholder="金额" style="width: 140px" />
@@ -252,11 +261,17 @@ onMounted(load)
         <el-input-number v-model="it.subsidyAmount" :min="0" :precision="2" :controls="false" placeholder="补贴金额" style="width: 130px" />
       </div>
     </div>
-    <el-button class="mb" :icon="Plus" @click="addItem">添加明细</el-button>
+      <el-button class="mb" :icon="Plus" @click="addItem">添加明细</el-button>
+      </div>
+    </div>
 
-    <el-divider content-position="left">附件（移除的附件将解绑可复用，新增附件需上传）</el-divider>
-
-    <el-upload
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">票据附件</span>
+        <span class="faint">移除的附件将解绑可复用，新增附件需上传</span>
+      </div>
+      <div class="panel-body">
+      <el-upload
       v-model:file-list="fileList"
       :http-request="doUpload"
       :on-remove="handleRemove"
@@ -271,17 +286,19 @@ onMounted(load)
         <div class="el-upload__text">拖拽或<em>点击上传</em>（多文件）</div>
       </div>
     </el-upload>
+      </div>
+    </div>
 
     <div class="footer-actions">
       <el-button type="primary" size="large" :loading="submitting" @click="handleSubmit">保存并重跑</el-button>
       <el-button size="large" @click="router.back()">取消</el-button>
     </div>
-  </el-card>
+  </div>
 </template>
 
 <style scoped>
-.card-title {
-  font-size: 16px;
+.panel {
+  margin-bottom: 16px;
 }
 
 .mb {
@@ -301,17 +318,19 @@ onMounted(load)
 
 .travel-row {
   padding-left: 10px;
-  border-left: 3px solid #e4e7ed;
+  border-left: 3px solid var(--line-strong);
 }
 
 .travel-label {
-  color: #909399;
+  color: var(--ink-3);
   font-size: 12px;
   width: 30px;
 }
 
 .footer-actions {
-  margin-top: 20px;
-  text-align: right;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
 }
 </style>

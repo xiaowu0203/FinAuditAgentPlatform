@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · 财务费用智能审核 Agent 平台
 
-> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 安全风控 ✅ ｜ P3.5 RBAC 权限体系与部门实体 ✅** · 详细文档见 `docs/`
+> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 安全风控 ✅ ｜ P3.5 RBAC 权限体系与部门实体 ✅ ｜ 前端 UI 重构（账簿·印章·留痕）✅** · 详细文档见 `docs/`
 
 ## 项目简介
 
@@ -59,6 +59,28 @@
 - **管理前端**：权限码驱动渲染三层封装（路由守卫 → 菜单 → `v-perm` 指令），系统管理三页（用户/角色/部门），报销部门选择器；403 自动刷新权限，前后端实时收敛
 - **安全加固（P3.5c/d）**：工具注册/调试挂权限码、文件归属校验（堵 IDOR）、网关 actuator 收口（移除 gateway 端点暴露 + 白名单收窄至 health）、模型/OCR HTTP 超时接线、任务级超时预算（`started_at`）、状态迁移 CAS 化（多实例防线）、登录失败锁定（5 次锁 15 分钟）+ 账号存在性泄露修复
 
+### 已落地（前端 UI 重构）
+
+- **设计系统「账簿·印章·留痕」**：冷调账簿纸/墨青/账簿绿/朱砂/赭金设计令牌，**深色模式**（跟随系统 + 手动切换），移动端抽屉导航
+- **业务组件**：审批印章（终审结论盖章可视化）、任务流水线时间线（工具/推理徽标 + 输出折叠）、状态戳、行动邀请式空态；金额衬线等宽右对齐
+- **工程**：Element Plus 按需引入（主 chunk 1.2MB → 190KB）、`.env` 出网关代理配置、轮询改 5s 后台静默刷新（不闪遮罩、页面不可见暂停）
+
+### 界面预览（前端 UI 截图）
+
+![登录页](frontend-screenshots/01-login.png)
+
+![工作台](frontend-screenshots/02-workbench.png)
+
+![任务详情 · 流水线时间线](frontend-screenshots/04-task-detail.png)
+
+![审批工单列表](frontend-screenshots/07-audit-ticket.png)
+
+![审批工单详情 · 审批印章](frontend-screenshots/08-audit-ticket-detail.png)
+
+![系统管理 · 用户](frontend-screenshots/10-system-user.png)
+
+> 完整 12 张截图与说明见 [`frontend-screenshots/`](frontend-screenshots/README.md)。
+
 ### 规划中（P4，见 `docs/planning/future-roadmap.md`）
 
 - **P4** RAG 企业知识库（Milvus）、定时任务（task-job-service）、监控大盘与量化评估
@@ -80,6 +102,7 @@ JDK 21 · Spring Boot 3.5.0 · Spring Cloud 2025.0.0 · Spring Cloud Alibaba 202
 | P3b 审批工单闭环 | ✅ 完成 | 工单状态机 + `audit_record` 留痕 + 财务审批 + 提交人 resubmit 修改重跑 + 撤回/撤销 + 可见性统一 + 前端审批工单页 |
 | P3c 安全风控 | ✅ 完成 | Prompt 注入拦截（命中→强制人工工单） / `@Mask` 输出脱敏（税号/手机号，金额明文） / 工具 execute 统一越权校验 |
 | P3.5 RBAC 与部门 | ✅ 完成 | 资源级权限码 + `@RequirePerm` 统一鉴权 + 权限快照实时生效 + `sys_dept` 部门实体贯穿用户/报销/预算 + 管理前端三页（权限码驱动渲染）+ P3.5c/d 安全加固（工具/文件权限码、actuator 收口、模型超时、任务 CAS 与超时、登录防爆破） |
+| 前端 UI 重构 | ✅ 完成 | 账簿·印章·留痕设计系统（深色模式/移动端抽屉）+ 审批印章/流水线时间线组件 + Element Plus 按需引入（主 chunk 1.2MB→190KB）+ 轮询静默刷新 |
 
 ## 快速启动
 

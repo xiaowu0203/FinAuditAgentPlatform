@@ -1,0 +1,138 @@
+/* =====================================================================
+   账簿 · 印章 · 留痕 —— 设计令牌
+   light 为默认（:root），深色经 html.dark 覆盖（main.ts 先引入 EP dark/css-vars
+   再引入本文件，保证同特异性下我们的映射生效）。
+   语义纪律：--seal（朱砂）只用于审批否定语义（驳回/终止/冲销），禁止作装饰。
+   ===================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* 纸面与墨 */
+  --paper: #f4f6f3; /* 页面底：冷调账簿纸（区别于 AI 默认暖米黄） */
+  --surface: #ffffff; /* 卡片/面板 */
+  --surface-2: #fafbf9; /* 次级面（表头/代码块/斑马） */
+  --ink: #1f2d2a; /* 主文字：墨青 */
+  --ink-2: #5f6d67; /* 次级文字 */
+  --ink-3: #8b968f; /* 占位/弱文字 */
+  --line: #dce2d9; /* 账线（边框/分隔，横线为主） */
+  --line-strong: #c2ccc1;
+
+  /* 领域色 */
+  --ledger: #2f6b4f; /* 账簿绿：主操作/链接/通过 */
+  --ledger-weak: #e4efe8; /* 通过态衬底 */
+  --seal: #b5432e; /* 朱砂：驳回/终止 */
+  --seal-weak: #f7e9e4;
+  --ochre: #96690f; /* 赭金：待审/暂挂 */
+  --ochre-weak: #f4edda;
+  --flow: #2d5a7e; /* 墨青蓝：进行中/信息 */
+  --flow-weak: #e5eef4;
+
+  /* 侧栏（墨青深栏） */
+  --aside-bg: #22332f;
+  --aside-bg-deep: #1b2a26;
+  --aside-text: rgba(244, 246, 243, 0.78);
+  --aside-text-strong: #f4f6f3;
+  --aside-line: rgba(244, 246, 243, 0.12);
+  --aside-active-bg: rgba(125, 183, 154, 0.16);
+
+  /* 字体 */
+  --font-ui: 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    Arial, sans-serif;
+  --font-display: 'Noto Serif SC', 'Source Han Serif SC', 'STSong', 'SimSun', serif;
+
+  /* 形状与阴影：直角克制，账线优先于投影 */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --shadow-1: 0 1px 2px rgba(31, 45, 42, 0.05);
+  --shadow-2: 0 2px 10px rgba(31, 45, 42, 0.08);
+
+  /* 布局 */
+  --shell-max: 1440px;
+  --aside-width: 216px;
+
+  /* ---- Element Plus 映射 ---- */
+  --el-color-primary: var(--ledger);
+  --el-color-success: var(--ledger);
+  --el-color-warning: var(--ochre);
+  --el-color-danger: var(--seal);
+  --el-color-error: var(--seal);
+  --el-color-info: var(--ink-2);
+  --el-text-color-primary: var(--ink);
+  --el-text-color-regular: var(--ink);
+  --el-text-color-secondary: var(--ink-2);
+  --el-text-color-placeholder: var(--ink-3);
+  --el-text-color-disabled: var(--ink-3);
+  --el-border-color: var(--line-strong);
+  --el-border-color-light: var(--line);
+  --el-border-color-lighter: var(--line);
+  --el-border-color-extra-light: var(--line);
+  --el-bg-color: var(--surface);
+  --el-bg-color-page: var(--paper);
+  --el-bg-color-overlay: var(--surface);
+  --el-fill-color: var(--surface-2);
+  --el-fill-color-light: var(--surface-2);
+  --el-fill-color-lighter: var(--surface-2);
+  --el-fill-color-blank: var(--surface);
+  --el-border-radius-base: 4px;
+  --el-border-radius-small: 3px;
+  --el-border-radius-round: 999px;
+  --el-font-family: var(--font-ui);
+  --el-box-shadow-light: var(--shadow-1);
+  --el-box-shadow: var(--shadow-2);
+}
+
+html.dark {
+  color-scheme: dark;
+
+  --paper: #131815;
+  --surface: #1b231f;
+  --surface-2: #212b26;
+  --ink: #e6ebe6;
+  --ink-2: #97a69d;
+  --ink-3: #6c7a72;
+  --line: #2c3731;
+  --line-strong: #3b4941;
+
+  --ledger: #7db79a;
+  --ledger-weak: #24352c;
+  --seal: #d4694f;
+  --seal-weak: #3a2521;
+  --ochre: #cba24e;
+  --ochre-weak: #332b19;
+  --flow: #7fa8c5;
+  --flow-weak: #1e2b34;
+
+  --aside-bg: #0f1512;
+  --aside-bg-deep: #0a0f0c;
+  --aside-text: rgba(230, 235, 230, 0.72);
+  --aside-text-strong: #f4f6f3;
+  --aside-line: rgba(230, 235, 230, 0.1);
+  --aside-active-bg: rgba(125, 183, 154, 0.14);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 2px 10px rgba(0, 0, 0, 0.4);
+
+  /* EP dark/css-vars.css 自带的暗色基底在 html.dark 上与我们同特异性，
+     本文件在 main.ts 中后加载，这里显式覆写关键映射 */
+  --el-color-primary: var(--ledger);
+  --el-color-success: var(--ledger);
+  --el-color-warning: var(--ochre);
+  --el-color-danger: var(--seal);
+  --el-color-error: var(--seal);
+  --el-text-color-primary: var(--ink);
+  --el-text-color-regular: var(--ink);
+  --el-text-color-secondary: var(--ink-2);
+  --el-text-color-placeholder: var(--ink-3);
+  --el-border-color: var(--line-strong);
+  --el-border-color-light: var(--line);
+  --el-border-color-lighter: var(--line);
+  --el-border-color-extra-light: var(--line);
+  --el-bg-color: var(--surface);
+  --el-bg-color-page: var(--paper);
+  --el-bg-color-overlay: var(--surface);
+  --el-fill-color: var(--surface-2);
+  --el-fill-color-light: var(--surface-2);
+  --el-fill-color-lighter: var(--surface-2);
+  --el-fill-color-blank: var(--surface);
+}
