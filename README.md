@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · 财务费用智能审核 Agent 平台
 
-> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 安全风控 ✅** · 详细文档见 `docs/`
+> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 安全风控 ✅ ｜ P3.5 RBAC 权限体系与部门实体 ✅** · 详细文档见 `docs/`
 
 ## 项目简介
 
@@ -52,9 +52,16 @@
 - **输出脱敏 `@Mask`**：common-code Jackson 序列化切面，对外 VO 按 `MaskType`（ID_CARD/BANK_CARD/TAX_NO/PHONE）脱敏；手机号（租户用户 VO）、税号（`AttachmentVO.ocrResult` Map）、审计快照敏感键均生效，**金额永不脱敏**；内部链路明文
 - **工具防越权**：tool-service `ToolAccessGuard` 在 `execute` 统一入口校验租户一致性 + 部门校验（空白拒绝，未知部门告警不阻断）+ 单据归属（`duplicate_check`/`ocr_extract`），覆盖 HTTP 直调与 MQ
 
+### 已落地（P3.5 RBAC 权限体系与部门实体）
+
+- **资源级权限码（RBAC）**：`sys_permission`/`sys_role_permission` 权限码体系，接口统一 `@RequirePerm` 收口（403 fail-closed）；网关改读 Redis 权限快照（角色/权限/部门权威来源），变更经事件在事务提交后刷新，**改权限无需重新登录**
+- **部门实体**：`sys_dept` 树形部门（防环 + 删除引用守卫），用户/报销单/预算挂 `dept_id`；`budget_query` 工具按部门归属收紧
+- **管理前端**：权限码驱动渲染三层封装（路由守卫 → 菜单 → `v-perm` 指令），系统管理三页（用户/角色/部门），报销部门选择器；403 自动刷新权限，前后端实时收敛
+- **安全加固（P3.5c/d）**：工具注册/调试挂权限码、文件归属校验（堵 IDOR）、网关 actuator 收口（移除 gateway 端点暴露 + 白名单收窄至 health）、模型/OCR HTTP 超时接线、任务级超时预算（`started_at`）、状态迁移 CAS 化（多实例防线）、登录失败锁定（5 次锁 15 分钟）+ 账号存在性泄露修复
+
 ### 规划中（P4，见 `docs/planning/future-roadmap.md`）
 
-- **P4** RAG 企业知识库（Milvus）、监控大盘与量化评估
+- **P4** RAG 企业知识库（Milvus）、定时任务（task-job-service）、监控大盘与量化评估
 
 ## 技术栈
 
@@ -72,6 +79,7 @@ JDK 21 · Spring Boot 3.5.0 · Spring Cloud 2025.0.0 · Spring Cloud Alibaba 202
 | P3a 多 Agent 角色化 | ✅ 完成 | 五类财务角色 + `RuleBasedFlowEngine` 固定流水线 + `ReviewFlowDecider` 输出 `AUTO_PASS`/`NEED_REVIEW` |
 | P3b 审批工单闭环 | ✅ 完成 | 工单状态机 + `audit_record` 留痕 + 财务审批 + 提交人 resubmit 修改重跑 + 撤回/撤销 + 可见性统一 + 前端审批工单页 |
 | P3c 安全风控 | ✅ 完成 | Prompt 注入拦截（命中→强制人工工单） / `@Mask` 输出脱敏（税号/手机号，金额明文） / 工具 execute 统一越权校验 |
+| P3.5 RBAC 与部门 | ✅ 完成 | 资源级权限码 + `@RequirePerm` 统一鉴权 + 权限快照实时生效 + `sys_dept` 部门实体贯穿用户/报销/预算 + 管理前端三页（权限码驱动渲染）+ P3.5c/d 安全加固（工具/文件权限码、actuator 收口、模型超时、任务 CAS 与超时、登录防爆破） |
 
 ## 快速启动
 

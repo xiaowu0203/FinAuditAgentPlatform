@@ -14,6 +14,7 @@ import com.finaudit.toolservice.enums.ToolCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -61,8 +62,20 @@ public class OcrExtractTool implements ToolExecutor {
     private final OcrService ocrService;
     private final FileServiceFeign fileServiceFeign;
     private final AgentCoreServiceFeign agentCoreServiceFeign;
-    /** HTTP客户端，下载附件图片二进制字节流 */
-    private final RestClient httpClient = RestClient.builder().build();
+    /** HTTP客户端，下载附件图片二进制字节流（P3.5d 接线连接/读取超时，防慢附件占死 TOOL 消费线程） */
+    private final RestClient httpClient = RestClient.builder()
+            .requestFactory(httpRequestFactory())
+            .build();
+
+    /**
+     * 附件下载 HTTP 工厂：连接 10s / 读取 60s。此前无超时，一次网络挂起即无限期占住消费者。
+     */
+    private static SimpleClientHttpRequestFactory httpRequestFactory() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);
+        factory.setReadTimeout(60_000);
+        return factory;
+    }
 
     /**
      * 构造器注入各类依赖服务

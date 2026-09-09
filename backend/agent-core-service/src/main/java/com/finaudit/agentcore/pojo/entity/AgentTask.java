@@ -50,6 +50,9 @@ public class AgentTask {
     @Schema(description = "任务状态（PENDING / RUNNING / SUCCESS / FAILED）")
     private String status;
 
+    @Schema(description = "本次执行开始时间（启动/修改重跑时刷新；任务级超时预算的计时起点）")
+    private LocalDateTime startedAt;
+
     @Schema(description = "总步骤数")
     private Integer totalSteps;
 

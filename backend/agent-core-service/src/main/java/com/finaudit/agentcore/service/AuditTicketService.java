@@ -96,8 +96,11 @@ public class AuditTicketService {
      */
     @Transactional
     public void enterApproval(AgentTask task, Map<String, Object> result, int finishedSteps, List<String> reasons) {
-        // 1. 任务置为待审批
-        taskService.markApprovalPending(task, result, finishedSteps);
+        // 1. CAS 任务置为待审批：竞争失败说明任务已被并发迁移（如已作废），放弃进入审批态
+        if (!taskService.markApprovalPending(task, result, finishedSteps)) {
+            log.warn("任务 {} 进入审批态竞争失败（状态已被并发迁移），跳过建单", task.getId());
+            return;
+        }
         // 若为【报销单】，则将状态置为【人工复核】
         if (TaskType.REIMBURSEMENT.name().equals(task.getTaskType())) {
             reimbursementService.updateStatusByTaskId(task.getId(), ReimbursementStatus.MANUAL_REVIEW);
@@ -317,18 +320,17 @@ public class AuditTicketService {
 
             // 获取任务信息
             AgentTask task = taskService.getRequired(taskId);
-            // 若任务状态为【执行中】，禁止重跑
-            if (TaskStatus.RUNNING.name().equals(task.getStatus())) {
-                throw new BizException("任务执行中，请等待本次重跑结束后再修改");
-            }
             // 获取当前金额
             BigDecimal before = currentAmount(ticket);
             // 构建报销单数据快照
             Map<String, Object> beforeData = reimbursementService.buildSnapshot(reimbId);
             // 更新报销业务数据，保留原有title/dept等基础信息不变
             ReimbursementResubmitResult ctx = reimbursementService.resubmit(reimbId, request, tenantId);
-            // 更新任务入参，重置任务状态为RUNNING
-            taskService.prepareRerun(task, ctx.inputParams());
+            // CAS 更新任务入参并重置为RUNNING（附超时计时起点刷新）：竞争失败说明任务
+            // 已被并发迁移，拒绝重跑——原「任务RUNNING即拒绝」的读后判断由 CAS 取代
+            if (!taskService.prepareRerun(task, ctx.inputParams())) {
+                throw new BizException("任务状态已变更，请刷新后重试");
+            }
             // 根据新入参重新生成任务步骤plan，修复旧逻辑inputParams陈旧问题（重新生成步骤）
             List<TaskPlanStep> plan = flowEngine.plan(task);
             // 各个步骤进行重规划
@@ -385,8 +387,10 @@ public class AuditTicketService {
             AgentTask task = taskService.getRequired(ticket.getTaskId());
             // 构建报销单数据快照
             Map<String, Object> beforeData = snapshotOf(task);
-            // 将任务更新为【已作废】状态，并添加相关备注
-            taskService.markCancelled(task, "提交人撤回");
+            // CAS 将任务更新为【已作废】状态并记录原因；竞争失败则整个动作回滚
+            if (!taskService.markCancelled(task, "提交人撤回")) {
+                throw new BizException("任务状态已变更，请刷新后重试");
+            }
             // 将报销单更新【已作废】状态，并解绑相关的附件
             reimbursementService.markCancelledByTaskId(ticket.getTaskId());
             // 将工单状态设置为【已撤回】
@@ -532,8 +536,12 @@ public class AuditTicketService {
                                   AuditActionRequest request) {
         // 获取任务信息
         AgentTask task = taskService.getRequired(ticket.getTaskId());
-        // 更新任务为成功状态，写入相应结果（markApprovalPending阶段已经落库result与finishedSteps，直接复用）
-        taskService.markSuccess(task, task.getResult(), task.getFinishedSteps() == null ? 0 : task.getFinishedSteps());
+        // CAS 更新任务为成功状态（期望态含 APPROVAL_PENDING），写入相应结果
+        // （markApprovalPending阶段已经落库result与finishedSteps，直接复用）；竞争失败则整个动作回滚
+        if (!taskService.markSuccess(task, task.getResult(),
+                task.getFinishedSteps() == null ? 0 : task.getFinishedSteps())) {
+            throw new BizException("任务状态已变更，请刷新后重试");
+        }
         // 更新报销单为成功状态
         reimbursementService.updateStatusByTaskId(ticket.getTaskId(), ReimbursementStatus.SUCCESS);
         // 填充ticket信息，工单置为【APPROVED（已通过）】
@@ -557,8 +565,10 @@ public class AuditTicketService {
                                  AuditActionRequest request) {
         // 根据任务ID查询任务信息
         AgentTask task = taskService.getRequired(ticket.getTaskId());
-        // 更新任务为【人工驳回】状态
-        taskService.markRejected(task);
+        // CAS 更新任务为【人工驳回】状态；竞争失败则整个动作回滚
+        if (!taskService.markRejected(task)) {
+            throw new BizException("任务状态已变更，请刷新后重试");
+        }
         // 将报销单设置为【审核失败】状态
         reimbursementService.updateStatusByTaskId(ticket.getTaskId(), ReimbursementStatus.FAILED);
         // 工单状态填充为【已驳回】
@@ -582,8 +592,10 @@ public class AuditTicketService {
                                     AuditActionRequest request) {
         // 获取任务信息
         AgentTask task = taskService.getRequired(ticket.getTaskId());
-        // 任务置为【人工终止】状态
-        taskService.markTerminated(task);
+        // CAS 任务置为【人工终止】状态；竞争失败则整个动作回滚
+        if (!taskService.markTerminated(task)) {
+            throw new BizException("任务状态已变更，请刷新后重试");
+        }
         // 将报销单设置为【审核失败】状态
         reimbursementService.updateStatusByTaskId(ticket.getTaskId(), ReimbursementStatus.FAILED);
         // 工单状态填充为【已终止】
@@ -609,8 +621,10 @@ public class AuditTicketService {
         AgentTask task = taskService.getRequired(ticket.getTaskId());
         // 构建报销单数据快照
         Map<String, Object> beforeData = snapshotOf(task);
-        // 将任务更新为【已作废】状态，并添加相关备注
-        taskService.markCancelled(task, "财务同意撤销");
+        // CAS 将任务更新为【已作废】状态；竞争失败则整个动作回滚
+        if (!taskService.markCancelled(task, "财务同意撤销")) {
+            throw new BizException("任务状态已变更，请刷新后重试");
+        }
         // 将报销单设置为【已作废】状态
         reimbursementService.markCancelledByTaskId(ticket.getTaskId());
         // 工单状态填充为【已撤销】

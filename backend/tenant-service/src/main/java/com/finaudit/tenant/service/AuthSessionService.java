@@ -3,6 +3,7 @@ package com.finaudit.tenant.service;
 import com.finaudit.starter.jwt.AuthSessionConstants;
 import com.finaudit.starter.jwt.AuthSnapshot;
 import com.finaudit.starter.jwt.JwtProperties;
+import com.finaudit.starter.web.exception.BizException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -10,7 +11,8 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * 会话服务：token 作废（登出 / 用户级踢下线）与用户权限快照的 Redis 写入侧。
+ * 会话服务：token 作废（登出 / 用户级踢下线）、用户权限快照的 Redis 写入侧、
+ * 登录失败锁定（P3.5d 防爆破）。
  * <p>key/value 一律走 {@link StringRedisTemplate}（纯字符串），与网关校验侧
  * {@code ReactiveStringRedisTemplate} 序列化一致。切勿改用 common-redis-starter 的
  * JSON 序列化 RedisTemplate——它会把 "1"/时间戳写成带引号的 JSON 字符串，网关
@@ -19,6 +21,13 @@ import java.time.Instant;
  */
 @Service
 public class AuthSessionService {
+
+    /** 登录锁定阈值：窗口期内连续失败达到该次数则临时锁定 */
+    private static final int LOGIN_LOCK_MAX_FAILURES = 5;
+    /** 登录失败计数窗口（同时也是锁定时长） */
+    private static final Duration LOGIN_FAILURE_WINDOW = Duration.ofMinutes(15);
+    /** 登录失败计数 key 前缀：{prefix}login:fail:{tenantId}:{username}，按租户+用户名维度隔离 */
+    private static final String LOGIN_FAIL_PREFIX = AuthSessionConstants.AUTH_PREFIX + "login:fail:";
 
     private final StringRedisTemplate stringRedisTemplate;
     private final JwtProperties jwtProperties;
@@ -66,5 +75,53 @@ public class AuthSessionService {
      */
     public void deleteSnapshot(Long userId) {
         stringRedisTemplate.delete(AuthSessionConstants.SNAPSHOT_PREFIX + userId);
+    }
+
+    // ---------- 登录防爆破（P3.5d） ----------
+
+    /**
+     * 登录前锁定检查：窗口期内连续失败达 {@link #LOGIN_LOCK_MAX_FAILURES} 次则拒绝登录。
+     * <p>已知取舍：按 租户+用户名 计数，攻击者可恶意锁死他人账号（登录侧 DoS）——
+     * 内部财务平台可接受，彻底方案是网关按 IP 限流（P4+）。</p>
+     *
+     * @throws BizException 账号锁定中
+     */
+    public void assertLoginAllowed(Long tenantId, String username) {
+        String failures = stringRedisTemplate.opsForValue().get(loginFailKey(tenantId, username));
+        if (failures != null && parseIntSafe(failures) >= LOGIN_LOCK_MAX_FAILURES) {
+            throw new BizException("登录失败次数过多，账号已临时锁定，请约 "
+                    + LOGIN_FAILURE_WINDOW.toMinutes() + " 分钟后重试");
+        }
+    }
+
+    /**
+     * 记录一次登录失败：计数自增并刷新窗口。
+     * <p>每次失败都续期 TTL（滑动窗口语义）而非仅首次设置——自愈：即便 increment 与
+     * expire 之间进程中断遗留无 TTL key，下一次失败也会补上，避免永久锁死。</p>
+     */
+    public void recordLoginFailure(Long tenantId, String username) {
+        String key = loginFailKey(tenantId, username);
+        stringRedisTemplate.opsForValue().increment(key);
+        stringRedisTemplate.expire(key, LOGIN_FAILURE_WINDOW);
+    }
+
+    /**
+     * 登录成功：清空失败计数。
+     */
+    public void clearLoginFailures(Long tenantId, String username) {
+        stringRedisTemplate.delete(loginFailKey(tenantId, username));
+    }
+
+    private static String loginFailKey(Long tenantId, String username) {
+        return LOGIN_FAIL_PREFIX + tenantId + ":" + username;
+    }
+
+    private static int parseIntSafe(String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            // value 只由本服务 increment 写入，非数字仅可能是脏数据：按已锁定处理（fail-closed）
+            return LOGIN_LOCK_MAX_FAILURES;
+        }
     }
 }
