@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · Financial Expense Audit Agent Platform
 
-> **Progress: P0 Foundation ✅ ｜ P1 Core Loop ✅ (5-service integration acceptance passed) ｜ P2 Reimbursement and audit tools ✅ ｜ P3a Multi-agent roles and rule pipeline ✅ ｜ P3b Approval ticket workflow ✅ ｜ P3c Security controls ✅ ｜ P3.5 RBAC permission system and department entity ✅** · Details in `docs/`
+> **Progress: P0 Foundation ✅ ｜ P1 Core Loop ✅ (5-service integration acceptance passed) ｜ P2 Reimbursement and audit tools ✅ ｜ P3a Multi-agent roles and rule pipeline ✅ ｜ P3b Approval ticket workflow ✅ ｜ P3c Security controls ✅ ｜ P3.5 RBAC permission system and department entity ✅ ｜ Frontend UI redesign (ledger · seal · trail) ✅** · Details in `docs/`
 
 ## Overview
 
@@ -61,6 +61,28 @@ async multi-agent collaboration, layered context governance, approval gateway an
 - **Department entity**: `sys_dept` tree (cycle prevention + delete reference guards); users / reimbursements / budgets carry `dept_id`; `budget_query` scoped by department
 - **Management frontend**: permission-driven rendering in three layers (route guard → menu → `v-perm` directive), system pages (user / role / department), reimbursement department selector; 403 auto-refreshes permissions end to end
 - **Hardening (P3.5c/d)**: tool register/debug behind permission codes, file ownership checks (IDOR fix), gateway actuator lockdown (gateway endpoint removed from exposure, whitelist narrowed to health), model/OCR HTTP timeouts wired, task-level timeout budget (`started_at`) + CAS status transitions (multi-instance ready), login failure lockout (5 fails → 15 min) + account-existence leak fix
+
+### Delivered (frontend UI redesign)
+
+- **Design system "ledger · seal · trail"**: cool-tone design tokens (ledger paper / ink cyan / ledger green / vermilion / ochre gold), **dark mode** (follows system + manual toggle), mobile drawer navigation
+- **Business components**: approval seal (visual stamp of the final decision), task pipeline timeline (tool / reasoning badges + collapsible output), status stamp, call-to-action empty states; serif monospace right-aligned amounts
+- **Engineering**: Element Plus on-demand imports (main chunk 1.2MB → 190KB), `.env` gateway proxy config, polling switched to 5s silent background refresh (no mask flicker, pauses when the page is hidden)
+
+### UI Screenshots (frontend preview)
+
+![Login page](frontend-screenshots/01-login.png)
+
+![Dashboard](frontend-screenshots/02-workbench.png)
+
+![Task detail · pipeline timeline](frontend-screenshots/04-task-detail.png)
+
+![Approval ticket list](frontend-screenshots/07-audit-ticket.png)
+
+![Approval ticket detail · approval seal](frontend-screenshots/08-audit-ticket-detail.png)
+
+![System management · users](frontend-screenshots/10-system-user.png)
+
+> All 12 screenshots with descriptions live in [`frontend-screenshots/`](frontend-screenshots/README.md).
 
 ### Roadmap (P4, see `docs/planning/future-roadmap.md`)
 

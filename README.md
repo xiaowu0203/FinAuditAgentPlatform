@@ -65,6 +65,22 @@
 - **业务组件**：审批印章（终审结论盖章可视化）、任务流水线时间线（工具/推理徽标 + 输出折叠）、状态戳、行动邀请式空态；金额衬线等宽右对齐
 - **工程**：Element Plus 按需引入（主 chunk 1.2MB → 190KB）、`.env` 出网关代理配置、轮询改 5s 后台静默刷新（不闪遮罩、页面不可见暂停）
 
+### 界面预览（前端 UI 截图）
+
+![登录页](frontend-screenshots/01-login.png)
+
+![工作台](frontend-screenshots/02-workbench.png)
+
+![任务详情 · 流水线时间线](frontend-screenshots/04-task-detail.png)
+
+![审批工单列表](frontend-screenshots/07-audit-ticket.png)
+
+![审批工单详情 · 审批印章](frontend-screenshots/08-audit-ticket-detail.png)
+
+![系统管理 · 用户](frontend-screenshots/10-system-user.png)
+
+> 完整 12 张截图与说明见 [`frontend-screenshots/`](frontend-screenshots/README.md)。
+
 ### 规划中（P4，见 `docs/planning/future-roadmap.md`）
 
 - **P4** RAG 企业知识库（Milvus）、定时任务（task-job-service）、监控大盘与量化评估
