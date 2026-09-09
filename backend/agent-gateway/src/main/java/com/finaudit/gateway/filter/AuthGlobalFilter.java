@@ -235,7 +235,10 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
 
     /**
      * 判断接口是否属于鉴权白名单
-     * 白名单接口：登录接口、actuator监控端点、swagger文档接口，不需要携带token
+     * 白名单接口：登录接口、健康检查、swagger文档接口，不需要携带token
+     * ⚠️安全收口（P3.5d）：actuator 仅放行 /actuator/health（存活探测必需），
+     * 其余端点（env/beans/gateway 等）一律要求鉴权——此前 /actuator/** 全放行叠加
+     * gateway 端点暴露，未认证调用方可运行期改写网关路由，形成鉴权绕过面。
      * @param request 请求对象
      * @param path 请求路径
      * @return true=白名单放行；false=需要校验JWT
@@ -245,8 +248,8 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         if ("/api/v1/auth/login".equals(path) && HttpMethod.POST == request.getMethod()) {
             return true;
         }
-        // 监控端点、swagger相关文档接口
-        return pathMatcher.match("/actuator/**", path)
+        // 健康检查（仅 health 单端点）、swagger相关文档接口
+        return pathMatcher.match("/actuator/health", path)
                 || pathMatcher.match("/swagger-ui/**", path)
                 || pathMatcher.match("/swagger-ui.html", path)
                 || pathMatcher.match("/v3/api-docs/**", path)
