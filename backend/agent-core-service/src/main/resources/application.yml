@@ -67,8 +67,13 @@ finaudit:
     namespace: dev
     rule-data-id: finaudit-rules-{tenantId}
     cache-ttl-seconds: 60
+  agent:
+    # 任务级执行预算（分钟，P3.5d）：单次执行（含修改重跑，started_at 刷新计时）超过即强制失败终止，
+    # 防重试风暴/极端慢步骤长期占用任务与 MQ 消费线程；<=0 关闭检查
+    task-timeout-minutes: 30
   admin:
-    # 规则配置管理管理员用户 ID 白名单（P2 无 RBAC，P5 换角色校验）
+    # 规则配置管理兜底白名单（主防线为类级 @RequirePerm("rule:manage") 权限码，P3.5 起；
+    # 此处保留作内部直连场景的第二道防线）
     user-ids: [1]
 
 # 日志级别配置
