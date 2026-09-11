@@ -359,14 +359,14 @@
 
 > 未配置预算的部门：**不阻断**（保持现状语义，仅告警）——存量种子只覆盖 4 部门 1 周期。
 
-### R2 · 发票标识符入链（B-3，查重与交叉核验的前置）
+### R2 · 发票标识符入链（B-3，查重与交叉核验的前置）—— ✅ 后端完成，见 [§11 R2](#r2--发票标识符入链--后端完成待用户执行迁移--联调)
 
 | 序 | 动作 | 涉及文件 | 验收断言 |
 |---|---|---|---|
-| R2-1 | `OcrExtractTool.normalize` 补 `invoiceCode`/`invoiceNum`（数据已有，只是被丢弃） | `OcrExtractTool.java` | 单测：VAT 样例输出含发票号 |
-| R2-2 | 新增 `invoice_record` 投影表（绕开 MySQL 5.7 JSON 检索限制）+ 迁移 | `migration-P3.8.sql`、`tables.md` | `uk(tenant_id, invoice_code, invoice_num)` 生效 |
-| R2-3 | OCR 回写链路同步投影（`AttachmentService.updateOcrResult` 内收敛） | `AttachmentService.java`、新增 `InvoiceRecordService` | 单测：回写 OCR 后 `invoice_record` 落行 |
-| R2-4 | 历史数据回填脚本（从 `expense_attachment.ocr_result` JSON 抽票号） | 迁移脚本 | 回填报告输出命中数 |
+| R2-1 | `OcrExtractTool.normalize` 补 `invoiceCode`/`invoiceNum`（数据已有，只是被丢弃） | `OcrExtractTool.java` | 单测：VAT 样例输出含发票号 ✅ 9/9 |
+| R2-2 | 新增 `invoice_record` 投影表（绕开 MySQL 5.7 JSON 检索限制）+ 迁移 | `migration-P3.8.sql`、`tables.md` | `uk(tenant_id, invoice_code, invoice_num)` 生效 ✅ 临时库实测拦截重复 |
+| R2-3 | OCR 回写链路同步投影（`AttachmentService.updateOcrResult` 内收敛） | `AttachmentService.java`、新增 `InvoiceRecordService` | 单测：回写 OCR 后 `invoice_record` 落行 ✅ 13/13 |
+| R2-4 | 历史数据回填脚本（从 `expense_attachment.ocr_result` JSON 抽票号） | 迁移脚本 | 回填报告输出命中数 ✅ 临时库实测（中文存量日期亦正确解析） |
 
 ### R3 · 按票查重 + 票据-明细交叉核验（B-4 / B-5）
 
@@ -903,6 +903,137 @@ ERROR c.f.agentcore.support.BizNoInserter : 任务号连续 3 次碰撞，放弃
 
 > 影响面：`reconciledNet` 仅供运维/演练核验，未暴露为 HTTP 端点，**不影响业务主链路**；
 > 但它是"预算被永久吃掉"这一 R1 主要风险的核验手段，公式错了等于没有监控，必须修。
+
+---
+
+### R2 · 发票标识符入链 —— ✅ 后端完成（**待用户执行迁移 + 联调**）
+
+> 业务走查 B-3。发票代码/号码在 OCR 链路里**早已解析出来却被丢弃**：
+> `BaiduOcrService.toVatResult` 把 `InvoiceCode`/`InvoiceNum` 装进了 `VatInvoiceOcr`，
+> 但 `OcrExtractTool.normalize` 的输出里没有这两个字段，且 `expense_attachment.ocr_result`
+> 是 JSON —— MySQL 5.7 无法对 JSON 内部字段建索引，票号也没有可索引的落点。
+> 后果：`duplicate_check` 只能靠「同申请人 + 金额完全相等 + 日期±30天」的启发式，
+> 把正常单据误判为重复（R1 联调时已实测复现该误报）。
+
+**实现要点**
+
+| 序 | 落点 | 要点 |
+|---|---|---|
+| R2-1 | `OcrExtractTool.normalize` | 补 `invoiceCode`/`invoiceNum`：vat 专用结果优先，非增值税模板回退原始中英文字段；统一 `trim`，空白归一为 null（唯一键要求确定性取值）。另补 `ocrDate`（`yyyy-MM-dd`）——`date` 是**展示用原样串**（财会版实际返回中文「2026年08月01日」），`DATE` 列无法直接入库，必须显式解析（vat 的 `LocalDate` → ISO → 中文格式三种来源） |
+| R2-2 | `invoice_record` 表（迁移第 3 节 + `finaudit-schema.sql` + `tables.md`） | 票号投影为普通列：`uk_invoice(tenant_id, invoice_code, invoice_num, deleted)` + `idx_invoice(tenant_id, invoice_code, invoice_num)` 供 R3 硬命中 |
+| R2-3 | 新增 `InvoiceRecordService`（唯一写入口）+ `InvoiceRecord` 实体、`InvoiceRecordMapper` | `AttachmentService.updateOcrResult` 内收敛调用，OCR 回写事务内 UPSERT 语义：同票重复识别**累加 `seen_count` 不新增行**；并发撞唯一键转「读既有行 + 累加」，不让调用方失败 |
+| R2-4 | 迁移第 4 节回填 + 第 5 节报告 | 从 `ocr_result` JSON 抽票号投影存量数据；`INSERT IGNORE` 可重复执行；报告输出命中数 |
+
+**三个设计决策（重要）**
+
+1. **缺失票号归一为「空串」而非 NULL**：MySQL 唯一索引**不约束 NULL**，落 NULL 会让同一张票
+   被无限次重复投影、唯一键形同虚设。`invoice_code` 列因此是 `NOT NULL DEFAULT ''`。
+2. **无票号的票据整体跳过投影**，不用空串占位：火车票/打车票本就没有票号，
+   若统一占位落库，同租户所有无票号票据会挤在同一条唯一键上互相冲突。
+3. **`InvoiceRecordService` 不注入 `AttachmentService`**：`reimbId` 由调用方（`AttachmentService.updateOcrResult`，
+   手里已有附件实体）通过入参传入。反向注入会形成 `AttachmentService ⇄ InvoiceRecordService`
+   构造器循环依赖，Spring 默认禁止循环引用 → **启动直接失败**（本阶段实际踩到并已断开）。
+
+**验证（AI 自测，非用户验收）**
+
+| 项 | 方式 | 结果 |
+|---|---|---|
+| 单测（归一化） | `OcrExtractToolNormalizeTest` | **9/9 通过**：VAT 含票号、电子发票无代码、非 VAT 模板回退中文 key、行程票无票号为 null、空白清洗、vat 优先、中文日期解析、不可解析日期为 null |
+| 单测（投影） | `InvoiceRecordServiceTest` | **13/13 通过**：票号落普通列、无票号跳过、空白跳过、同票累加不新增、并发撞键转累加、缺失代码归一空串、trim 确定性、空集合不生成 `IN ()` 等 |
+| 回归 | `mvn -o clean install`（19 模块） | **BUILD SUCCESS**；agent-core **100 例**（87 + 13）、tool-service **20 例**（11 + 9）、file-service 3 例全绿 |
+| schema DDL | 导入一次性库 | 退出码 0，**20 张表**（19 + `invoice_record`）；`uk_invoice` / `idx_invoice` 均按预期建出（已核对 `SHOW INDEX`） |
+| **唯一键语义** | 临时库实测 | ① 重复票插入被拦：`Duplicate entry '1-C1-N1-0' for key 'uk_invoice'`；② 逻辑删除后可重插同票（`deleted` 位于唯一键的意义），未删行数恒为 1；③ 不同租户同票号互不影响 |
+| **回填 SQL** | 临时库实测（两种存量日期形态） | 中文存量 `"date":"2026年08月01日"` → `inv_date=2026-08-01`；新数据 `ocrDate` ISO → `2026-08-05`；不可解析 `"8月6日"` → NULL；无票号/OCR FAILED/软删行被正确排除；同票两行附件去重为 1 行；重复执行行数不变（幂等） |
+
+> **回填里的一处真 bug（已修）**：初版取 `$.date` 并用 `%Y-%m-%d` 解析。
+> 但 `$.date` 是展示用原样串，财会版返回中文格式；而本回填处理的**正是 R2 之前入库的存量数据**，
+> 那批数据没有 `ocrDate`、只有中文 `date` —— 只试 ISO 会让存量单据的开票日期**全部回填为 NULL**。
+> 已改为 `COALESCE(ISO, 中文格式变体)`，并在临时库用中文存量数据实测通过。
+
+**端到端验收（已实测，用户重启后）**
+
+迁移由 AI 在真实 `finaudit` 库执行（用户授权），结果：
+
+| 项 | 结果 |
+|---|---|
+| 迁移退出码 | 0；表总数 19 → **20**；`budget_occupancy` 2 行未受影响 |
+| 幂等 | 重复执行退出码 0，表数不变 |
+| `invoice_record` | 0 行（回填命中 0，**符合预期**） |
+
+> **一个重要发现**：执行前查明库内 15 条 OCR SUCCESS 的 `ocr_result` JSON 字段只有
+> `date/taxNo/amount/merchant/receiptType` —— **完全没有票号字段**。这是 B-3 缺陷在生产数据上的直接证据：
+> 票号在 `BaiduOcrService` 里解析出来后，被 `normalize` 丢掉、从未落库，故无历史数据可回填。
+
+重启 agent-core（`01:34:35`）与 tool-service（`01:34:44`）后，`docs/test/r2-invoice-record-e2e.ps1`：
+
+| 判据 | 结果 |
+|---|---|
+| ① R2-1 归一化 | **PASS**：新 `ocr_result` JSON 含 `invoiceCode`/`invoiceNum`/`ocrDate` 三个新字段（老代码绝不产生）。实测识别出发票 `invoiceCode=044002311111`、`invoiceNum=07632553`、`ocrDate=2023-06-19` |
+| ② R2-3 投影 | **PASS**：`invoice_record` 落行 `044002311111 / 07632553 / reimb_id=43 / seen_count=1` |
+| 幂等 | **PASS**：用同一张样张重复提交（不同 `file_record`），同一张票**始终只有 1 行**，`seen_count` 随识别次数累加（1→2→3→4→5），`reimb_id`/`attachment_id` 刷新为最新来源 |
+
+**附带修复：审计时间戳失真的框架级缺陷（R2-10）**
+
+联调中发现 `invoice_record.updated_at` 恒等于 `created_at`。严格前后对比（同一行连续改写）：
+
+```
+BEFORE: seen_count=4 attachment_id=45 reimb_id=47 updated_at=01:37:22
+AFTER : seen_count=5 attachment_id=46 reimb_id=48 updated_at=01:37:22   ← 三字段都变了，时间戳不动
+```
+
+**根因**：DDL 里 `updated_at` 是 `ON UPDATE CURRENT_TIMESTAMP`，但 MyBatis-Plus 的
+`updateById(entity)` 默认更新策略为 **NOT_NULL**，会把实体里**从库里读出的旧 `updated_at`**
+一并写进 SET 子句；列一旦被**显式赋值**，MySQL 的 `ON UPDATE` 就不再触发。
+对照实验证实：SET 里去掉 `updated_at` → 时间戳立刻刷新；显式带旧值 → 时间戳冻结。
+
+**影响面**（实测各表 `updated_at <> created_at` 的行数）：
+`agent_task` 0/45、`audit_ticket` 0/39、`budget_occupancy` 0/2 —— **从未刷新过**；
+这些表全部走 `updateById`。而走 `LambdaUpdateWrapper.set(...)` 的更新（SET 里不含 `updated_at`）
+不受影响，故 `agent_task_step` 14/327、`expense_reimbursement` 15/45 呈现混合状态。
+
+**修复**：`common-mybatisplus-starter` 新增 `AuditTimestampMetaObjectHandler`，实体字段标注
+`@TableField(fill = FieldFill.INSERT_UPDATE)`。R2 先作用于 `InvoiceRecord`；
+其余实体的标注属于独立重构项（见 R6/R7），避免本阶段一次改动面过宽。
+
+> 审计时间戳异常直接污染财务系统的追溯性，且该框架缺陷会随新实体不断复制，故在本阶段一并修掉。
+
+**⚠️ 修复过程中踩的三个坑（都记下来，避免重走）**
+
+1. **`strictUpdateFill` 是空转的**。其语义为「字段为 null 才填」，而 `updateById(entity)`
+   传进来的实体恰恰**是从库里读出来的**——`updatedAt` 早有旧值，填充被**静默跳过**，
+   旧时间戳照样进 SET，缺陷原样保留。首版就是这么写的，**运行时验证失败才发现**；
+   单测直接复现：`UPDATE 必须用当前时间覆盖旧 updatedAt，实际=2026-01-01T00:00`。
+   已改用 `setFieldValByName` 强制覆盖。
+2. **`setFieldValByName` 会越过 fill 策略**，连**未标注 `fill` 的实体也一起改**，
+   违反「未标注实体零影响」的承诺（被单测 `updateFillLeavesUnannotatedEntityUntouched` 捕获）。
+   故补显式策略守卫：从 `TableInfo` 读 `@TableField(fill=...)` 的解析结果，
+   只放行 `UPDATE` / `INSERT_UPDATE`。
+3. **测试放错模块**：该测试最初放在 `agent-core-service` 下，而该模块**并不依赖**
+   `common-mybatisplus-starter`——只因"能编译过"就误以为放对了（实为 fat jar 传递才编过）。
+   已移到 `common-mybatisplus-starter` 自身测试，并用本地夹具实体避免反向依赖。
+
+**运行时验证（用户重启后实测通过）**
+
+```
+[1] 第一次提交后: updated_at = 01:49:10  seen_count = 8
+[2] 第二次提交后: updated_at = 01:49:15  seen_count = 9
+  [PASS] seen_count 已累加（8 → 9），确认走了 updateById 路径
+  [PASS] updated_at 在两次提交之间跳变：01:49:10 → 01:49:15（+5 秒）⇒ 自动填充生效
+```
+
+> **断言口径也必须跟着改（重要教训）**：首版脚本只断言 `updated_at <> created_at`（即 `diff > 0`），
+> 结果修复**无效**时它照样"通过"——因为那个 `diff` 是几十分钟前手工实验留下的偏差（128 秒），
+> 与本轮写入无关。已改为比对**两次提交之间的跳变**（`tsAfter > tsBefore`）。
+> **凡"某值应被更新"的断言，必须对比前后跳变，绝不能与 0 或某个绝对值比较。**
+
+**待办**
+
+- [x] **迁移已由 AI 执行**（用户授权）：`source docs/database/migration-P3.8.sql`，退出码 0、幂等
+- [x] **agent-core 与 tool-service 已重启**（`01:34:35` / `01:34:44`）
+- [x] 联调验收：判据 ①② 均 PASS，幂等累加 PASS（见上）
+- [x] **`updated_at` 自动填充运行时复验通过**（重启后实测 `01:49:10 → 01:49:15` 跳变）
+- [ ] **R3 依赖本阶段产出**：`queryDuplicates` 改按 `(invoice_code, invoice_num)` 硬命中
+- [ ] R6/R7：为其余实体补 `@TableField(fill=...)` 标注（R2-10 缺陷对它们仍未修复）
 
 
 

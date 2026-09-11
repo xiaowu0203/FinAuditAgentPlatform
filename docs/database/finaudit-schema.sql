@@ -15,6 +15,7 @@ DROP TABLE IF EXISTS file_record;
 DROP TABLE IF EXISTS expense_reimbursement;
 DROP TABLE IF EXISTS budget;
 DROP TABLE IF EXISTS budget_occupancy;
+DROP TABLE IF EXISTS invoice_record;
 DROP TABLE IF EXISTS finance_rule;
 DROP TABLE IF EXISTS audit_record;
 DROP TABLE IF EXISTS audit_ticket;
@@ -307,7 +308,8 @@ CREATE TABLE budget (
 -- ---------------------------------------------------------------------
 -- 12.1 预算占用记账表（P3.8 R1 新增）
 --    一张报销单一条记录（uk_reimb）；记录占用/释放的当前状态与发生次数；
---    配平公式（对账）：SUM(amount WHERE OCCUPIED) - SUM(amount WHERE RELEASED) == budget.used_amount
+--    配平公式（对账）：SUM(amount WHERE status='OCCUPIED') == budget.used_amount
+--    只算当前占用态，RELEASED 行整条跳过（行转 RELEASED 时 used_amount 已扣回）
 -- ---------------------------------------------------------------------
 CREATE TABLE budget_occupancy (
     id            BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -328,6 +330,35 @@ CREATE TABLE budget_occupancy (
     KEY idx_dept_period (tenant_id, dept_id, period),
     KEY idx_status (status)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '预算占用记账表（P3.8 R1；支撑占用-释放配平对账）';
+
+-- ---------------------------------------------------------------------
+-- 12.2 发票标识符投影表（P3.8 R2 新增）
+--    背景：expense_attachment.ocr_result 是 JSON 且 MySQL 5.7 无法对 JSON 内部字段建索引，
+--    发票代码/号码只能全表扫描 + 应用层解析，无法担当查重主键。故投影出本表。
+--    写入：AttachmentService.updateOcrResult 内收敛（OCR 回写事务内 UPSERT）
+--    uk 口径：发票代码/号码缺失统一归一为 ''（空串而非 NULL），使唯一索引稳定生效
+-- ---------------------------------------------------------------------
+CREATE TABLE invoice_record (
+    id            BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id     BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    invoice_code  VARCHAR(32)   NOT NULL DEFAULT '' COMMENT '发票代码（缺失归一为空串）',
+    invoice_num   VARCHAR(64)   NOT NULL DEFAULT '' COMMENT '发票号码（缺失归一为空串）',
+    seller_tax_no VARCHAR(64)   DEFAULT NULL COMMENT '销售方税号（SellerRegisterNum）',
+    reimb_id      BIGINT        DEFAULT NULL COMMENT '归属报销单ID',
+    file_record_id BIGINT       NOT NULL COMMENT '来源附件 file_record.id',
+    attachment_id BIGINT        DEFAULT NULL COMMENT '来源 expense_attachment.id',
+    amount        DECIMAL(12,2) DEFAULT NULL COMMENT '票面金额（价税合计）',
+    inv_date      DATE          DEFAULT NULL COMMENT '开票日期（OCR 中文格式日期解析成功时落值）',
+    seen_count    INT           NOT NULL DEFAULT 1 COMMENT '同一张票被识别的次数（重复入账时 >1）',
+    created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted       TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0未删 1已删',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_invoice (tenant_id, invoice_code, invoice_num, deleted) COMMENT '同一张票一租户一条（含 deleted，支持逻辑删除后重插）',
+    KEY idx_invoice (tenant_id, invoice_code, invoice_num) COMMENT 'R3 按票硬命中查重',
+    KEY idx_reimb (reimb_id),
+    KEY idx_file_record (file_record_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '发票标识符投影表（P3.8 R2；绕开 MySQL 5.7 JSON 检索限制）';
 
 -- ---------------------------------------------------------------------
 -- 13. 财务规则表（P2b 规则校验工具 rule_check；CRUD/发布归 P2c）

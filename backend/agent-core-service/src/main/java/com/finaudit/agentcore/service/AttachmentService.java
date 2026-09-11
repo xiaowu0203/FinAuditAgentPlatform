@@ -30,10 +30,14 @@ public class AttachmentService {
 
     private final ExpenseAttachmentMapper attachmentMapper;
     private final FileServiceFeign fileServiceFeign;
+    /** 发票标识符投影（P3.8 R2）：OCR 回写时同步落 invoice_record，供按票查重 */
+    private final InvoiceRecordService invoiceRecordService;
 
-    public AttachmentService(ExpenseAttachmentMapper attachmentMapper, FileServiceFeign fileServiceFeign) {
+    public AttachmentService(ExpenseAttachmentMapper attachmentMapper, FileServiceFeign fileServiceFeign,
+                             InvoiceRecordService invoiceRecordService) {
         this.attachmentMapper = attachmentMapper;
         this.fileServiceFeign = fileServiceFeign;
+        this.invoiceRecordService = invoiceRecordService;
     }
 
     /**
@@ -146,6 +150,11 @@ public class AttachmentService {
         attachment.applyOcrResult(ocrStatus, fileType, ocrResult);
         // 更新附件信息
         attachmentMapper.updateById(attachment);
+
+        // P3.8 R2：同步投影发票标识符，供按票查重使用（票号缺失时内部直接跳过）。
+        // reimbId 直接取自已加载的附件实体——不让 InvoiceRecordService 反向注入本类，
+        // 否则形成构造器循环依赖（Spring 默认禁止循环引用，会启动失败）。
+        invoiceRecordService.project(attachment.getId(), fileRecordId, attachment.getReimbId(), ocrResult);
     }
 
     /**

@@ -173,8 +173,11 @@
 | file_record_id | BIGINT | **`file_record.id`（文件元数据在 file-service），索引 `idx_file_record`** |
 | file_type | VARCHAR(32) | 附件类型：`INVOICE` / `ITINERARY` / `CONTRACT` / `OTHER`（P2a 默认 `OTHER`，分类归 P2b OCR 产生） |
 | ocr_status | VARCHAR(16) | OCR 状态：`PENDING` / `SUCCESS` / `FAILED`（P2b 使用） |
-| ocr_result | JSON | OCR 抽取结果（P2b 使用） |
+| ocr_result | JSON | OCR 抽取结果（P2b 使用）。P3.8 R2 起额外含 `invoiceCode`/`invoiceNum`/`ocrDate`（`ocrDate` 为可入库的 `yyyy-MM-dd`，`date` 仍为展示用原样串） |
 | created_at / updated_at / deleted | | 索引 `idx_reimb(reimb_id)`、`idx_file_record(file_record_id)`、`idx_tenant(tenant_id)`、`idx_ocr_status(ocr_status)` |
+
+> P3.8 R2：票号经 `InvoiceRecordService` 投影到 [`invoice_record`](#122-invoice_record-发票标识符投影表p38-r2-新增)，
+> `ocr_result` 仍是 JSON、不参与 WHERE（MySQL 5.7 无法对 JSON 内部字段建索引）。
 
 ## 11. file_record 文件元数据表（file-service：纯二进制资源）
 
@@ -213,7 +216,9 @@
 
 > 归属 agent-core；`BudgetOccupancyService` 是**唯一写入口**（AGENTS.md §5.9）。
 > 一张报销单一条记录（`uk_reimb`），记录占用/释放的当前状态与发生次数；
-> 配平公式（对账）：`SUM(amount WHERE OCCUPIED) - SUM(amount WHERE RELEASED) == budget.used_amount`。
+> 配平公式（对账）：`SUM(amount WHERE status='OCCUPIED') == budget.used_amount`
+> —— 只算**当前占用态**，RELEASED 行整条跳过（行转 RELEASED 时 `used_amount` 已扣回，
+> 若再按「占用 − 释放」计算会把释放额扣减两次）。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -230,6 +235,41 @@
 | created_at / updated_at / deleted | | 唯一键 `uk_reimb(tenant_id, reimb_id)` |
 
 > 迁移：`docs/database/migration-P3.8.sql`；并发验证脚本：`docs/test/budget-occupancy-concurrency.ps1`。
+
+## 12.2 invoice_record 发票标识符投影表（P3.8 R2 新增）
+
+> 归属 agent-core；`InvoiceRecordService` 是**唯一写入口**（AGENTS.md §5.9）。
+> **存在意义（业务走查 B-3）**：发票代码/号码在 OCR 链路里早已解析出来（`VatInvoiceOcr.invoiceCode/invoiceNum`），
+> 却既没进 `OcrExtractTool.normalize` 的输出，也没有可索引落点；而 `ocr_result` 是 JSON、
+> MySQL 5.7 无法对 JSON 内部字段建索引，票号只能全表扫描 + 应用层解析。
+> 本表把票号投影为普通列，使「同一张票是否已报销」可用唯一索引直接判定（R3 查重的地基）。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| invoice_code | VARCHAR(32) | 发票代码；缺失统一归一为**空串**（见下） |
+| invoice_num | VARCHAR(64) | 发票号码；**判重主键** |
+| seller_tax_no | VARCHAR(64) | 销售方税号（`SellerRegisterNum`） |
+| reimb_id | BIGINT | 归属报销单 ID（OCR 可能先于绑定完成，此时为空） |
+| file_record_id | BIGINT | 来源附件 `file_record.id` |
+| attachment_id | BIGINT | 来源 `expense_attachment.id` |
+| amount | DECIMAL(12,2) | 票面金额（价税合计） |
+| inv_date | DATE | 开票日期（由 `ocrDate` 或中文 `date` 解析，解析失败留空） |
+| seen_count | INT | 同一张票被识别的次数（重复上传/任务重跑累加，**不新增行**） |
+| created_at / updated_at / deleted | | 唯一键/索引见下 |
+
+- **唯一键**：`uk_invoice(tenant_id, invoice_code, invoice_num, deleted)` —— 同一张票一租户一条。
+  含 `deleted` 是为了支持逻辑删除后重新插入（同 `agent_task_step.uk_task_step` 惯例）。
+- **查询索引**：`idx_invoice(tenant_id, invoice_code, invoice_num)` —— R3 按票硬命中查重。
+- **为什么缺失票号要归一为空串而不是 NULL**：MySQL 唯一索引**不约束 NULL**，
+  若落 NULL，同一张票可被无限次重复投影，唯一键形同虚设。
+- **无票号票据（火车票/打车票）整体跳过投影**，不用空串占位——否则同租户所有无票号票据
+  会挤在同一条唯一键上互相冲突。
+- 写入口径：`AttachmentService.updateOcrResult` 内收敛调用（OCR 回写事务内 UPSERT 语义），
+  并发插入撞唯一键时转为「读取既有行 + 累加 `seen_count`」，不让调用方失败。
+
+> 迁移：`docs/database/migration-P3.8.sql` 第 3 节建表、第 4 节历史回填（`INSERT IGNORE`，可重复执行）。
 
 ## 13. finance_rule 财务规则表（P2b 建表 / P2c 可视化配置 + Nacos 动态刷新）
 
