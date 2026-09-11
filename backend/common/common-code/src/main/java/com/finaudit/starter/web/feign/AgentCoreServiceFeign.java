@@ -20,6 +20,12 @@ import org.springframework.web.bind.annotation.RequestParam;
  * OCR 结果回写、部门预算查询、财务规则校验、重复报销检测。
  * 规则评估逻辑归属 agent-core（报销域数据收敛，CLAUDE.md §5.8），tool 只做入参装配与结果聚合。
  * 租户经 {@code X-Tenant-Id} 请求头传递，服务间经 Nacos 服务名直连（不经网关）。</p>
+ *
+ * <p><b>P3.8 / R0-6：本契约指向内部端点 {@code /internal/audit/**}，不再复用对外端点 {@code /api/v1/audit/**}</b>。
+ * 原因：原对外端点仅校验 {@code X-Tenant-Id} 非空即放行，被网关暴露后任意登录用户可调用，
+ * 其中 OCR 结果回写为写操作，可篡改审核结论依据。内部前缀不在网关路由表内，外部不可达。</p>
+ *
+ * <p>⚠️ 与 agent-core 的 {@code InternalAuditDataController} 成对修改</p>
  */
 @FeignClient(name = "agent-core-service")
 public interface AgentCoreServiceFeign {
@@ -32,7 +38,7 @@ public interface AgentCoreServiceFeign {
      * @param request      回写业务字段
      * @return 成功空响应
      */
-    @PostMapping("/api/v1/audit/attachments/{fileRecordId}/ocr-result")
+    @PostMapping("/internal/audit/attachments/{fileRecordId}/ocr-result")
     R<Void> writebackOcrResult(@RequestHeader("X-Tenant-Id") Long tenantId,
                                @PathVariable("fileRecordId") Long fileRecordId,
                                @RequestBody OcrResultWritebackRequest request);
@@ -45,7 +51,7 @@ public interface AgentCoreServiceFeign {
      * @param period   预算周期 YYYY-MM
      * @return 部门预算；未配置时 data=null
      */
-    @GetMapping("/api/v1/audit/budgets")
+    @GetMapping("/internal/audit/budgets")
     R<BudgetVO> queryBudget(@RequestHeader("X-Tenant-Id") Long tenantId,
                             @RequestParam("deptName") String deptName,
                             @RequestParam("period") String period);
@@ -58,7 +64,7 @@ public interface AgentCoreServiceFeign {
      * @param period   预算周期 YYYY-MM
      * @return 部门预算；未配置时 data=null
      */
-    @GetMapping("/api/v1/audit/budgets")
+    @GetMapping("/internal/audit/budgets")
     R<BudgetVO> queryBudgetByDeptId(@RequestHeader("X-Tenant-Id") Long tenantId,
                                     @RequestParam("deptId") Long deptId,
                                     @RequestParam("period") String period);
@@ -72,7 +78,7 @@ public interface AgentCoreServiceFeign {
      * @param deptId   请求的部门 ID
      * @return true=允许；false=越权/部门不存在/跨租户
      */
-    @GetMapping("/api/v1/audit/budgets/allowed")
+    @GetMapping("/internal/audit/budgets/allowed")
     R<Boolean> isBudgetQueryAllowed(@RequestHeader("X-Tenant-Id") Long tenantId,
                                     @RequestParam(value = "reimbId", required = false) Long reimbId,
                                     @RequestParam(value = "deptId", required = false) Long deptId);
@@ -84,7 +90,7 @@ public interface AgentCoreServiceFeign {
      * @param request  校验入参
      * @return 命中规则列表 + 超标标记
      */
-    @PostMapping("/api/v1/audit/rules/check")
+    @PostMapping("/internal/audit/rules/check")
     R<RuleCheckVO> checkRules(@RequestHeader("X-Tenant-Id") Long tenantId,
                               @RequestBody RuleCheckRequest request);
 
@@ -95,7 +101,7 @@ public interface AgentCoreServiceFeign {
      * @param reimbId  当前报销单ID
      * @return 疑似重复列表（无则为空）
      */
-    @GetMapping("/api/v1/audit/reimbursements/duplicates")
+    @GetMapping("/internal/audit/reimbursements/duplicates")
     R<DuplicateCheckVO> queryDuplicates(@RequestHeader("X-Tenant-Id") Long tenantId,
                                         @RequestParam("reimbId") Long reimbId);
 
@@ -106,7 +112,7 @@ public interface AgentCoreServiceFeign {
      * @param reimbId  报销单ID
      * @return 该报销单的 tenantId；不存在返回 data=null（越权/不存在）
      */
-    @GetMapping("/api/v1/audit/reimbursements/{reimbId}/tenant")
+    @GetMapping("/internal/audit/reimbursements/{reimbId}/tenant")
     R<Long> findReimbTenantId(@RequestHeader("X-Tenant-Id") Long tenantId,
                               @PathVariable("reimbId") Long reimbId);
 }

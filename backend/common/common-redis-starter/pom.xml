@@ -30,11 +30,24 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-json</artifactId>
         </dependency>
-        <!-- Redisson 分布式锁（版本由 backend/pom.xml dependencyManagement 锁定 3.47.0；
-             redisson-spring-boot-starter 自动装配读取 spring.data.redis.* 前缀，与 Boot 3.5 一致） -->
+        <!-- Redisson 分布式锁（版本由 backend/pom.xml dependencyManagement 锁定 3.47.0）
+
+             ⚠️ P3.8 修复（R0-10）：此处**只引 redisson 核心包，不引 redisson-spring-boot-starter**。
+             原因：starter 会传递 `redisson-spring-data-34`（面向 spring-data-redis 3.4 的适配包），
+             其 `RedissonConnection` 未实现 3.5.0 新增的抽象方法
+             `pExpire(byte[], long, ExpirationOptions.Condition)`；而 `DefaultedRedisConnection`
+             的 `pExpire(byte[], long)` 委托给 `keyCommands()`（即 this）的三参重载 →
+             **无限自我递归 → StackOverflowError**，登录写权限快照时必现（StackOverflowError / pExpire）。
+
+             starter 还会通过 `RedissonAutoConfiguration` 注册 `RedissonConnectionFactory`
+             （`@ConditionalOnMissingBean(RedisConnectionFactory)`），把 Boot 默认的 Lettuce 连接工厂顶掉，
+             而 Lettuce 侧的 `LettuceKeyCommands` 是**正确实现了** 3.5.0 新 API 的。
+
+             故改为：连接工厂交回 Boot 默认 Lettuce（兼容），Redisson 仅提供
+             `RedissonClient`（分布式锁）——由 `CommonRedisAutoConfiguration#redissonClient` 显式构建。 -->
         <dependency>
             <groupId>org.redisson</groupId>
-            <artifactId>redisson-spring-boot-starter</artifactId>
+            <artifactId>redisson</artifactId>
         </dependency>
     </dependencies>
 </project>

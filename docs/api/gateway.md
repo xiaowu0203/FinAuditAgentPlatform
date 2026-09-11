@@ -15,10 +15,23 @@
 | `tool-service` | `/api/v1/tools/**` | `lb://tool-service` |
 | `file-service` | `/api/v1/files/**` | `lb://file-service` |
 | `agent-core-reimbursements` | `/api/v1/reimbursements/**`（P2a-重构单据闭环） | `lb://agent-core-service` |
-| `agent-core-audit-data` | `/api/v1/audit/**`（P2b 工具-facing：OCR 回写/预算/规则/重复检测） | `lb://agent-core-service` |
+| `agent-core-approval` | `/api/v1/audit/tickets/**`（P3b 审批工单，用户侧） | `lb://agent-core-service` |
 | `agent-core-rules` | `/api/v1/rules/**`（P2c 规则可视化配置） | `lb://agent-core-service` |
 
 Discovery locator 已关闭，仅走上述显式路由。
+
+## ⚠️ 内部契约前缀 `/internal/**` 故意不配路由（P3.8）
+
+各业务服务的服务间契约位于 `/internal/**`，**网关不为其配置任何路由**，因此外部请求无法到达：
+
+| 前缀 | 归属 | 为什么不对内网外暴露 |
+|---|---|---|
+| `/internal/files/**` | file-service | 内部读取仅做租户隔离、不做用户可见性校验（业务服务需代读同租户他人附件） |
+| `/internal/audit/**` | agent-core | 含 **OCR 结果回写（写操作）**；原先挂在 `/api/v1/audit/**` 时任意登录用户可篡改审核依据 |
+| `/internal/tools` | tool-service | 工具目录（含入参 Schema）；对外端点已挂 `tool:manage` |
+
+**新增内部端点时不要在此处加路由**；若确需对外，请新建 `/api/v1/**` 端点并挂权限码。
+此隔离是**结构性**保障，不依赖可被伪造的请求头声明。
 
 ## 鉴权白名单
 

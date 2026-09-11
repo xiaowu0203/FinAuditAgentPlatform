@@ -1,6 +1,7 @@
 package com.finaudit.tenant.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.finaudit.starter.web.exception.BizException;
 import com.finaudit.tenant.event.UserAuthChangedEvent;
@@ -116,6 +117,18 @@ public class SysUserService {
         // 应用最新数据并落库
         user.apply(request, encoded);
         userMapper.updateById(user);
+        // ⚠️ P3.8 修复（R0-8）：「deptId=0 解绑」此前实际不生效。
+        //   链路：SysUser.apply 把 0 转为 null → updateById 在 MyBatis-Plus 默认 NOT_NULL
+        //   更新策略下**跳过 null 字段** → dept_id 仍保留旧值，而 UserUpdateRequest 注释与
+        //   前端（`deptId: form.deptId ?? 0`）都承诺「0=解绑」。
+        //   此处用 LambdaUpdateWrapper 显式 SET NULL（不全局改 update-strategy：那会影响所有实体
+        //   的 null 字段语义，风险面过大）。租户条件由多租户拦截器自动附加，无需手写。
+        if (request.deptId() != null && request.deptId() == 0L) {
+            userMapper.update(null, new LambdaUpdateWrapper<SysUser>()
+                    .eq(SysUser::getId, id)
+                    .set(SysUser::getDeptId, null));
+            user.setDeptId(null);
+        }
         // 若是禁用用户 → 则升级会话版本号，踢掉该用户所有已签发 token
         if (request.status() != null && request.status() == 0) {
             authSessionService.revokeAll(id);

@@ -68,17 +68,26 @@ spring:
               predicates:
                 - Path=/api/v1/reimbursements/**
 
-            # agent-core-service：审核数据接口（P2b 工具-facing，OCR 回写/预算/规则/重复检测）
-            - id: agent-core-audit-data
+            # agent-core-service：审批工单接口（P3b 人机协同，用户侧）
+            # ⚠️ P3.8 收窄：原为 Path=/api/v1/audit/**，会将工具-facing 的「审核数据」端点
+            # （OCR 结果回写等写操作）一并暴露给任意登录用户；审核数据端点已迁 /internal/audit/**（不配路由），
+            # 此处只保留工单端点。
+            - id: agent-core-approval
               uri: lb://agent-core-service
               predicates:
-                - Path=/api/v1/audit/**
+                - Path=/api/v1/audit/tickets/**
 
             # agent-core-service：规则配置接口（P2c 可视化配置 + 发布 Nacos 动态刷新）
             - id: agent-core-rules
               uri: lb://agent-core-service
               predicates:
                 - Path=/api/v1/rules/**
+
+          # ⚠️ 安全边界（P3.8 / R0-3、R0-6、R0-7）：/internal/** 是服务间契约前缀，**故意不配置路由**。
+          # 各业务服务的内部端点（/internal/files/**、/internal/audit/**、/internal/tools/**）
+          # 仅做租户隔离、不做用户权限校验，服务间经 Nacos 服务名直连（不经网关）。
+          # 网关只路由 /api/v1/**，因此外部请求无法到达任何 /internal/** 端点。
+          # 新增内部端点时**不要**在此处加路由；若确实需要对外暴露，请新建 /api/v1/** 端点并挂权限码。
 
           # 全局跨域配置，解决前端浏览器跨域请求问题
           globalcors:

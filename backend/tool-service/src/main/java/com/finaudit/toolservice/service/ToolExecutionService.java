@@ -58,8 +58,8 @@ public class ToolExecutionService {
             Map<String, Object> result = executeWithCache(msg);
             // 计算总耗时
             long cost = System.currentTimeMillis() - start;
-            // 保存成功执行日志
-            logService.save(msg, result, ToolExecStatus.SUCCESS, cost);
+            // 保存成功执行日志（旁路留痕，失败不阻断结果回吐）
+            saveLogQuietly(msg, result, ToolExecStatus.SUCCESS, cost);
             // 发布成功结果消息至MQ
             resultPublisher.publish(new ToolResultMessage(msg.taskId(), msg.stepId(), msg.tenantId(),
                     msg.toolCode(), result, true, null, cost));
@@ -67,11 +67,30 @@ public class ToolExecutionService {
             log.error("工具 {} 执行失败: {}", msg.toolCode(), e.getMessage(), e);
             // 计算总耗时
             long cost = System.currentTimeMillis() - start;
-            // 保存失败执行日志，结果为空
-            logService.save(msg, null, ToolExecStatus.FAILED, cost);
+            // 保存失败执行日志，结果为空（同样为旁路留痕）
+            saveLogQuietly(msg, null, ToolExecStatus.FAILED, cost);
             // 发布失败结果消息，携带异常信息
             resultPublisher.publish(new ToolResultMessage(msg.taskId(), msg.stepId(), msg.tenantId(),
                     msg.toolCode(), null, false, e.getMessage(), cost));
+        }
+    }
+
+    /**
+     * 执行日志落库（旁路留痕）：任何异常只告警不抛出。
+     * <p><b>为什么必须吞掉异常</b>：日志写入此前位于 {@code catch} 分支内且无保护，一旦落库失败
+     * （如 {@code tool_execution_log.input_params} 为 {@code JSON NOT NULL} 而消息入参为 null，
+     * MyBatis-Plus 默认 NOT_NULL 策略会跳过该列导致非空约束报错），异常会从 catch 块向上抛出——
+     * 结果是 <b>既不回吐 {@code tool.result} 也不进 DLQ 的正常路径</b>，agent-core 侧步骤永久停在
+     * RUNNING，只能等 30 分钟任务级超时或人工 resume 才能恢复。
+     * 执行日志是审计留痕，不是主链路，<b>不得让留痕失败阻断任务推进</b>。</p>
+     */
+    private void saveLogQuietly(ToolExecuteMessage msg, Map<String, Object> result,
+                                ToolExecStatus status, long cost) {
+        try {
+            logService.save(msg, result, status, cost);
+        } catch (Exception e) {
+            log.warn("工具执行日志落库失败（不影响结果回吐）: taskId={}, stepId={}, toolCode={}, status={}: {}",
+                    msg.taskId(), msg.stepId(), msg.toolCode(), status, e.getMessage());
         }
     }
 

@@ -24,10 +24,14 @@ finaudit:
     baidu:
       api-key: ${FINAUDIT_OCR_BAIDU_API_KEY}        # 百度智能云 AK
       secret-key: ${FINAUDIT_OCR_BAIDU_SECRET_KEY}  # SK
-      # timeout-ms: 10000                           # 单次识别超时，缺省 10s
+      # timeout-ms: 10000                           # 单次识别超时（连接/读取均取该值），缺省 10s；真实生效
 ```
 
 > 凭据一律经环境变量注入（CLAUDE.md §6），禁止硬编码。
+
+**超时语义（P3.8 修正）**：`baidu.timeout-ms` 同时作为 **connect 与 read 超时**（`SimpleClientHttpRequestFactory`）。
+此前该配置被读入却从未接到 `RestClient` 上——**名为生效实为死配置**，一次网络挂起即可无限期占住
+tool-service 的 TOOL 消费线程（`concurrency=1`），冻结全部任务推进。现已接线，并补「配置非正数回退 10s」兜底。
 
 **启动自检**：引入本 starter 即代表工程需要使用 OCR，`CommonOcrAutoConfiguration` 启动时校验
 `api-key / secret-key`，缺失直接启动失败并给出明确提示（配置位置 + 环境变量名），不静默跳过——业务工程无需自行校验。
@@ -38,7 +42,7 @@ finaudit:
 |---|---|---|
 | `baidu.api-key` | - | 百度 API Key（未配置启动即失败并提示，见「启动自检」） |
 | `baidu.secret-key` | - | 百度 Secret Key |
-| `baidu.timeout-ms` | `10000` | 单次识别超时（毫秒） |
+| `baidu.timeout-ms` | `10000` | 单次识别超时（毫秒），**connect 与 read 均取该值**；非正数回退 10000 |
 
 ## 备注
 - **finance 接口必传 `classifierId=10001`**（财会票据预置分类器，百度官方固定值）。缺失/非法时百度报 `216100 invalid param, classifierId is not number`——已踩坑，客户端已内置，勿在业务侧重复传。

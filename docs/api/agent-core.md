@@ -141,7 +141,7 @@
 
 ## 关联
 
-- 附件引用契约：`common-code` `FileServiceFeign`（`GET /api/v1/files` 批量 / `GET /api/v1/files/{id}/preview|download`）
+- 附件引用契约：`common-code` `FileServiceFeign` → **内部前缀 `/internal/files/**`**（`{id}` 单条 / `?ids=` 批量 / `{id}/preview|download`）。P3.8 起不再复用对外端点 `/api/v1/files/**`（对外端点带用户可见性校验，内部代读会被拒导致附件区静默空白）
 - 前端任务详情跳报销单：读 `task.inputParams.reimbId`
 - 网关路由：`/api/v1/reimbursements/**` → `lb://agent-core-service`
 
@@ -215,14 +215,25 @@ reimb:   MANUAL_REVIEW/FAILED/RUNNING + CANCELLED（撤回/撤销同意）
 
 `rerun_count` 全局统一（提交人 resubmit 用同一计数器，上限 3）。重跑失败（`failTask`）自动经 `onRerunFail` 复位 AMENDED 工单，不留孤儿。
 
-## 审核数据 API（P3c 工具防越权新增端点）
+## 审核数据内部契约（`/internal/audit/**`，工具链路专用）
 
-工具-facing 审核数据端点（P2b/P3a 已覆盖 `POST /attachments/{fileRecordId}/ocr-result`、`GET /budgets`、`POST /rules/check`、`GET /reimbursements/duplicates`），P3c 工具防越权新增两个只读归属校验端点，供 tool-service `ToolAccessGuard` 调用（`X-Tenant-Id` 头，按当前租户过滤）：
+> **P3.8 迁移**：本组端点原挂在对外前缀 `/api/v1/audit/**` 且被网关 `Path=/api/v1/audit/**` 路由暴露，
+> 守卫却只有「`X-Tenant-Id` 非空」——**任意登录用户即可调用**，其中 OCR 结果回写是**写操作**，
+> 可覆盖本租户任意附件的 OCR 结果，直接篡改审核结论依据；`/reimbursements/{id}/tenant` 还可跨租户探测单据存在性。
+> 现全部迁入 `/internal/audit/**`：**网关只路由 `/api/v1/**`，/internal/** 故意不配置路由，外部不可达**。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/audit/budgets/dept-exists?deptName=` | 校验 `deptName` 是否为当前租户已知部门（budget 表有过该部门即 true；租户无预算记录放行）。`budget_query` 越权校验用 |
-| GET | `/api/v1/audit/reimbursements/{reimbId}/tenant` | 返回该报销单归属 `tenantId`（不存在返回 `data=null`）。`duplicate_check`/`ocr_extract` 校验 reimbId 归属用 |
+| POST | `/internal/audit/attachments/{fileRecordId}/ocr-result` | OCR 结果回写（`ocr_status`/`file_type`/`ocr_result`）。tool-service `ocr_extract` 调用 |
+| GET | `/internal/audit/budgets?deptName=&deptId=&period=` | 部门预算查询（`deptId` 优先，P3.5b 权威键；未配置返回 `data=null`）。`budget_query` 工具调用 |
+| POST | `/internal/audit/rules/check` | 财务规则校验（`finance_rule` 评估，返回 `hits` + `overLimit`）。`rule_check` 工具调用 |
+| GET | `/internal/audit/reimbursements/duplicates?reimbId=` | 重复报销检测。`duplicate_check` 工具调用 |
+| GET | `/internal/audit/budgets/allowed?reimbId=&deptId=` | `budget_query` 越权校验：预算行 `dept_id == reimb.dept_id`（本人部门语义）；无 `reimbId` 仅查 `sys_dept` 存在性。**P3.5b 替换了早期 `/budgets/dept-exists`** |
+| GET | `/internal/audit/reimbursements/{reimbId}/tenant` | 报销单归属租户（不存在 `data=null`）。`duplicate_check`/`ocr_extract` 校验归属用 |
+
+- 守卫：`X-Tenant-Id` 非空（缺失 body `code=400`「缺少租户标识」）；**不挂 `@RequirePerm`**（内部调用无用户上下文，权限码不适用），越权由 `ToolAccessGuard` 在 tool-service 侧先行校验
+- 消费契约：`common-code` `AgentCoreServiceFeign`（**与 `InternalAuditDataController` 成对修改**）
+- 预算向用户开放的说明：早期对外端点要求 `budget:viewAll`，现已随迁移失效；若后续要向用户开放预算查询，应新建 `/api/v1/**` 端点并挂该权限码
 
 ## 脱敏（P3c 安全风控）
 
@@ -230,7 +241,7 @@ reimb:   MANUAL_REVIEW/FAILED/RUNNING + CANCELLED（撤回/撤销同意）
 
 ## 关联
 
-- 网关路由：`/api/v1/audit/**` → `lb://agent-core-service`（P2 已配，复用）
+- 网关路由：`/api/v1/audit/tickets/**` → `lb://agent-core-service`（**仅工单端点对外**；审核数据端点已迁 `/internal/audit/**`，不配路由）
 - 触发接入：`AgentOrchestrator.finalizeSuccess` 的 `NEED_REVIEW` 分支 → `AuditTicketService.enterApproval`（工单幂等创建/复位）；`AUTO_PASS` 分支 → `closeOnAutoPass`；`failTask` → `onRerunFail`
 - 快照语义：`ReimbursementService.buildSnapshot` 生成顶层字段 + 明细 + 附件结构化引用（fileRecordId/fileType/ocrStatus），**不含 OSS 路径/预签名 URL**，日期转字符串
 - 前端：`views/audit/list.vue` + `detail.vue`（**菜单/路由所有登录用户可见**；列表/详情/留痕按后端 owner-read 收窄——普通用户仅本人只读、无审批操作按钮；approve/reject/terminate/withdraw-agree|refuse 操作按钮仅财务角色展示，且后端 `AuditTicketService.action()` 强校验 `FinanceRoles.isFinance`）；提交人动作在 `views/reimbursement/detail.vue`（修改重跑/撤回/发起撤销）

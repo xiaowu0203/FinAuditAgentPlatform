@@ -1,6 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -101,13 +100,58 @@ const router = createRouter({
   ],
 })
 
-// 登录守卫：未登录访问受保护页 → /login（带 redirect）；已登录访问 /login → /dashboard
+/**
+ * 登录守卫：未登录访问受保护页 → /login（带 redirect）；已登录访问 /login → /dashboard。
+ *
+ * <b>为什么不在这里取 Pinia store（P3.8 / R0-12）</b>：
+ * `app.use(router)` 会**立即触发首次导航**（`vue-router install()` → `push()` →
+ * `runWithContext()` → 本守卫）。此阶段只要时序稍偏——实测在装有浏览器扩展（扩展自身也跑 Vue，
+ * 会干扰模块执行/注入上下文）或 HMR 反复重连时即命中——`getActivePinia()` 就会返回 undefined：
+ * ```
+ * Error: [🍍]: "getActivePinia()" was called but there was no active Pinia.
+ * [Vue Router warn]: Unexpected error when starting the router
+ * ```
+ * 后果是**路由初始化整体失败**：页面既不渲染也不跳登录（并连带
+ * `injection "Symbol(router view location)" not found`、`Cannot read properties of undefined`）。
+ *
+ * 因此守卫改为**只读 localStorage**（token 本就持久化在那里，是唯一真相），完全不碰 store：
+ * 既避开 Pinia 时序，也顺带消除 `router → stores/auth → api/request → router` 的循环依赖。
+ * 权限码 `meta.perm` 取自同一个持久化 user 对象；解析失败按"无权限"处理（fail-closed，交后端兜底）。
+ */
+const TOKEN_KEY = 'finaudit_token'
+const USER_KEY = 'finaudit_user'
+
+/** 已过期（或无 exp 之外可判定）的本地 JWT 视为未登录，避免先闪一下受保护页再被 401 弹回。 */
+function isTokenUsable(raw: string | null): boolean {
+  if (!raw) return false
+  const payload = raw.split('.')[1]
+  if (!payload) return true // 结构异常，交给后端 401 兜底，不误拦
+  try {
+    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
+    if (!json.exp) return true
+    return json.exp * 1000 > Date.now()
+  } catch {
+    return true // 解析失败不误拦，交后端判定
+  }
+}
+
+/** 读取本地持久化的权限码（用于 meta.perm 路由守卫），任何异常都按空集合处理。 */
+function localPerms(): string[] {
+  try {
+    const user = JSON.parse(localStorage.getItem(USER_KEY) || 'null')
+    return Array.isArray(user?.perms) ? user.perms : []
+  } catch {
+    return []
+  }
+}
+
 router.beforeEach((to) => {
-  const auth = useAuthStore()
-  if (to.path !== '/login' && !auth.token) {
+  const token = localStorage.getItem(TOKEN_KEY)
+  const loggedIn = isTokenUsable(token)
+  if (to.path !== '/login' && !loggedIn) {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
-  if (to.path === '/login' && auth.token) {
+  if (to.path === '/login' && loggedIn) {
     return { path: '/dashboard' }
   }
   // 数据可见性由后端承担：审批工单按 createdBy 过滤本人、财务可见全部；
@@ -116,7 +160,8 @@ router.beforeEach((to) => {
   const requiredPerm = to.meta.perm as string | string[] | undefined
   if (requiredPerm) {
     const codes = Array.isArray(requiredPerm) ? requiredPerm : [requiredPerm]
-    if (!auth.hasAnyPerm(codes)) {
+    const held = localPerms()
+    if (!codes.some((c) => held.includes(c))) {
       ElMessage?.warning?.('无权限访问该页面')
       return { path: '/dashboard' }
     }

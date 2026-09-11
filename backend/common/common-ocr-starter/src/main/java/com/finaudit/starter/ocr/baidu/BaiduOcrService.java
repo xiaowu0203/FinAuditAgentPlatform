@@ -11,6 +11,7 @@ import com.finaudit.starter.ocr.model.VatInvoiceOcr;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
@@ -54,6 +55,9 @@ public class BaiduOcrService implements OcrService {
     /** 百度OCR单张图片最大限制 4MB */
     private static final long MAX_IMAGE_BYTES = 4L * 1024 * 1024;
 
+    /** 单次识别超时缺省值 10s（配置非正数时兜底，与 {@code OcrProperties.Baidu.timeoutMs} 默认值同源） */
+    private static final int DEFAULT_TIMEOUT_MS = 10_000;
+
     /**
      * Token安全刷新提前量：提前10分钟刷新token
      * 避免请求时token刚好过期导致鉴权失败
@@ -89,11 +93,27 @@ public class BaiduOcrService implements OcrService {
     public BaiduOcrService(OcrProperties.Baidu baidu) {
         this.apiKey = baidu.getApiKey();
         this.secretKey = baidu.getSecretKey();
-        this.timeoutMs = baidu.getTimeoutMs();
+        // 超时兜底：配置缺失/非正数时回退 10s（OcrProperties 默认值同源）
+        int timeout = baidu.getTimeoutMs() > 0 ? baidu.getTimeoutMs() : DEFAULT_TIMEOUT_MS;
+        this.timeoutMs = timeout;
         this.restClient = RestClient.builder()
                 .baseUrl(BASE_URL)
+                .requestFactory(httpRequestFactory(timeout))
                 .defaultHeader("Accept", MediaType.APPLICATION_JSON_VALUE)
                 .build();
+    }
+
+    /**
+     * OCR HTTP 请求工厂：连接/读取超时均取 {@code finaudit.ocr.baidu.timeout-ms}（默认 10s）。
+     * <p>此前 RestClient 未接 requestFactory，配置项被读入却从未生效——一次网络挂起即可
+     * <b>无限期占住 tool-service 的 TOOL 消费线程</b>（`concurrency=1`），冻结全部任务推进。
+     * 与 {@code OcrExtractTool} 的附件下载超时同款做法，对齐 P3.5d 的加固口径。</p>
+     */
+    private static SimpleClientHttpRequestFactory httpRequestFactory(int timeoutMs) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(timeoutMs);
+        factory.setReadTimeout(timeoutMs);
+        return factory;
     }
 
     /**
