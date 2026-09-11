@@ -1,12 +1,17 @@
 package com.finaudit.agentcore.controller;
 
+import com.finaudit.agentcore.pojo.entity.InvoiceRecord;
 import com.finaudit.agentcore.service.AttachmentService;
 import com.finaudit.agentcore.service.BudgetService;
 import com.finaudit.agentcore.service.FinanceRuleService;
+import com.finaudit.agentcore.service.InvoiceRecordService;
 import com.finaudit.agentcore.service.ReimbursementService;
 import com.finaudit.starter.web.exception.BizException;
 import com.finaudit.starter.web.feign.dto.BudgetVO;
 import com.finaudit.starter.web.feign.dto.DuplicateCheckVO;
+import com.finaudit.starter.web.feign.dto.InvoiceMatchRequest;
+import com.finaudit.starter.web.feign.dto.InvoiceMatchVO;
+import com.finaudit.starter.web.feign.dto.InvoiceRecordVO;
 import com.finaudit.starter.web.feign.dto.OcrResultWritebackRequest;
 import com.finaudit.starter.web.feign.dto.RuleCheckRequest;
 import com.finaudit.starter.web.feign.dto.RuleCheckVO;
@@ -21,6 +26,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 审核数据<b>内部契约</b>（tool-service 工具执行专用，P3.8 / R0-6）。
@@ -48,15 +55,19 @@ public class InternalAuditDataController {
     private final BudgetService budgetService;
     private final FinanceRuleService financeRuleService;
     private final ReimbursementService reimbursementService;
+    /** 发票标识符投影 + 票据-明细交叉核验（P3.8 R3） */
+    private final InvoiceRecordService invoiceRecordService;
 
     public InternalAuditDataController(AttachmentService attachmentService,
                                        BudgetService budgetService,
                                        FinanceRuleService financeRuleService,
-                                       ReimbursementService reimbursementService) {
+                                       ReimbursementService reimbursementService,
+                                       InvoiceRecordService invoiceRecordService) {
         this.attachmentService = attachmentService;
         this.budgetService = budgetService;
         this.financeRuleService = financeRuleService;
         this.reimbursementService = reimbursementService;
+        this.invoiceRecordService = invoiceRecordService;
     }
 
     @Operation(summary = "OCR 结果回写（内部）", description = "按 file_record_id 定位附件，回填 ocr_status/file_type/ocr_result")
@@ -113,6 +124,28 @@ public class InternalAuditDataController {
                                      @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
         requireTenant(tenantId);
         return R.success(reimbursementService.findTenantIdByReimb(reimbId));
+    }
+
+    @Operation(summary = "发票标识符投影查询（内部）", description = "P3.8 R3：返回该报销单已投影的发票（发票代码/号码/税号/金额/开票日期），供 invoice_match 工具做票据-明细交叉核验")
+    @GetMapping("/reimbursements/{reimbId}/invoices")
+    public R<List<InvoiceRecordVO>> listInvoicesByReimb(@PathVariable("reimbId") Long reimbId,
+                                                        @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+        requireTenant(tenantId);
+        // 转换封装在实体侧（InvoiceRecord.toVO），common-code 不反向依赖 agent-core 实体
+        return R.success(invoiceRecordService.listByReimbId(reimbId).stream()
+                .map(InvoiceRecord::toVO)
+                .toList());
+    }
+
+    @Operation(summary = "票据-明细交叉核验（内部）", description = "P3.8 R3-3/R3-5：票面合计 vs 申报合计 + 单笔越界 + 发票代码位数/开票日期离线验真")
+    @PostMapping("/reimbursements/{reimbId}/invoice-match")
+    public R<InvoiceMatchVO> matchInvoices(@PathVariable("reimbId") Long reimbId,
+                                           @RequestBody InvoiceMatchRequest request,
+                                           @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+        requireTenant(tenantId);
+        return R.success(invoiceRecordService.matchInvoices(reimbId,
+                request == null ? List.of() : request.items(),
+                request == null ? null : request.claimedTotal()));
     }
 
     /**

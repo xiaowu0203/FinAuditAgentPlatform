@@ -143,6 +143,31 @@ class ToolAccessGuardTest {
     }
 
     @Test
+    void invoiceMatchValidatesReimbOwnership() {
+        // P3.8 R3：invoice_match 同样按 reimbId 取发票数据，必须做同一道归属校验
+        when(agentCoreServiceFeign.findReimbTenantId(1L, 400L)).thenReturn(R.success(2L));
+        TenantContextHolder.setTenantId(1L);
+        try {
+            assertThrows(BizException.class, () -> guard.check(1L, ToolCode.INVOICE_MATCH,
+                    Map.of("reimbId", 400L, "items", java.util.List.of())));
+        } finally {
+            TenantContextHolder.clear();
+        }
+    }
+
+    @Test
+    void invoiceMatchAllowsOwnReimb() {
+        when(agentCoreServiceFeign.findReimbTenantId(1L, 500L)).thenReturn(R.success(1L));
+        TenantContextHolder.setTenantId(1L);
+        try {
+            assertDoesNotThrow(() -> guard.check(1L, ToolCode.INVOICE_MATCH,
+                    Map.of("reimbId", 500L, "items", java.util.List.of())));
+        } finally {
+            TenantContextHolder.clear();
+        }
+    }
+
+    @Test
     void ocrExtractValidatesReimbOwnership() {
         when(agentCoreServiceFeign.findReimbTenantId(1L, 300L)).thenReturn(R.success(1L));
         TenantContextHolder.setTenantId(1L);

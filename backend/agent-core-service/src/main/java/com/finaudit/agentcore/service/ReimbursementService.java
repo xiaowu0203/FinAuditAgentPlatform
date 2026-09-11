@@ -13,6 +13,7 @@ import com.finaudit.agentcore.pojo.dto.ReimbursementSubmitRequest;
 import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
 import com.finaudit.agentcore.pojo.entity.ExpenseAttachment;
 import com.finaudit.agentcore.pojo.entity.ExpenseReimbursement;
+import com.finaudit.agentcore.pojo.entity.InvoiceRecord;
 import com.finaudit.agentcore.pojo.vo.AttachmentVO;
 import com.finaudit.agentcore.pojo.vo.ReimbursementDetailVO;
 import com.finaudit.agentcore.pojo.vo.ReimbursementItemVO;
@@ -41,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 报销单业务服务
@@ -62,17 +64,25 @@ public class ReimbursementService {
     private final AgentTaskService taskService;
     /** tenant-service 部门契约（P3.5b 提交时部门存在性校验） */
     private final TenantServiceFeign tenantServiceFeign;
+    /**
+     * 发票标识符投影服务（P3.8 R3：按票硬命中查重的数据源）。
+     * <p>依赖方向为单向：InvoiceRecordService 只依赖自己的 Mapper，
+     * 不存在与 AttachmentService / ReimbursementService 的循环。</p>
+     */
+    private final InvoiceRecordService invoiceRecordService;
 
     public ReimbursementService(ExpenseReimbursementMapper reimbursementMapper,
                                 AttachmentService attachmentService,
                                 FileServiceFeign fileServiceFeign,
                                 AgentTaskService taskService,
-                                TenantServiceFeign tenantServiceFeign) {
+                                TenantServiceFeign tenantServiceFeign,
+                                InvoiceRecordService invoiceRecordService) {
         this.reimbursementMapper = reimbursementMapper;
         this.attachmentService = attachmentService;
         this.fileServiceFeign = fileServiceFeign;
         this.taskService = taskService;
         this.tenantServiceFeign = tenantServiceFeign;
+        this.invoiceRecordService = invoiceRecordService;
     }
 
     /**
@@ -489,14 +499,23 @@ public class ReimbursementService {
     }
 
     /**
-     * 重复报销检测工具方法（P2b duplicate_check 工具委托，报销域数据收敛本类）。
-     * 风控审计Agent依赖能力：检索同一员工、同金额、前后30天内的历史报销单，匹配商户判定疑似重复单据
-     * 判定规则：
-     * 1. 同一申请人、排除当前单据、金额完全一致、报销日期前后30天区间
-     * 2. 匹配附件OCR解析出的商户名称（大小写忽略），标记疑似重复
+     * 重复报销检测（P2b duplicate_check 工具委托，报销域数据收敛本类）。
+     *
+     * <p><b>P3.8 R3 重写为两级判定</b>（业务走查 B-4）。原判定只有「同申请人 + 金额完全相等 +
+     * 日期±30天」再叠加商户近似，命中即判疑似重复——把正常单据误判（R1 联调实测复现：
+     * 一张 100 元小额单因库里存在同额历史单而误报）。现改为：</p>
+     * <ul>
+     *   <li><b>一级（LEVEL_HIGH）发票号硬命中</b>：本单任一发票的 {@code (invoice_code, invoice_num)}
+     *       已存在于<b>其他</b>报销单（数据源 {@code invoice_record} 投影表，走唯一索引）。
+     *       同一张票被报销两次是客观事实，据此认定重复入账。</li>
+     *   <li><b>二级（LEVEL_MEDIUM）金额+商户+日期近似</b>：同申请人、金额完全相等、
+     *       日期±30天，且商户匹配（或双侧商户均缺失无法判断）。<b>仅作展示供人工参考</b>，
+     *       不触发风控命中（由 ReviewFlowDecider 仅对 HIGH 触发）。</li>
+     * </ul>
+     *
      * @param tenantId 租户ID（MybatisPlus多租户拦截器自动过滤，方法入参预留扩展）
      * @param reimbId 当前待校验报销单主键ID
-     * @return 重复检测结果VO，无疑似单据返回空对象
+     * @return 重复检测结果VO（含最高等级 dupLevel），无命中返回 {@link DuplicateCheckVO#empty()}
      * @throws BizException 报销单不存在时抛出业务异常
      */
     public DuplicateCheckVO queryDuplicates(Long tenantId, Long reimbId) {
@@ -506,45 +525,93 @@ public class ReimbursementService {
             throw new BizException("报销单不存在: " + reimbId);
         }
 
-        // 提取当前单据第一张有效OCR识别的商户名称
-        String currentMerchant = firstMerchant(current.getId());
+        List<DuplicateItemVO> suspected = new ArrayList<>();
 
-        // 计算日期区间：报销日期前后各30天；无报销日期则区间条件失效
+        // ---------------- 一级：发票号硬命中（R3-1） ----------------
+        // 当前单据的全部发票投影 → 逐个反查是否已被【其他】报销单占用。
+        // ⚠️ 占用关系必须查 invoice_reimb_link（一票多单），不能查 invoice_record.reimb_id ——
+        //    后者只记录「最近一次归属」，同一张票提交多次后只剩最后一个单号，
+        //    各单查询时都会把自己排除掉，硬命中恒不触发（R3 联调实测踩到）。
+        Map<String, InvoiceRecord> currentInvoices = new LinkedHashMap<>();
+        for (InvoiceRecord ir : invoiceRecordService.listByReimbId(reimbId)) {
+            if (ir.hasInvoiceIdentity() && ir.getId() != null) {
+                currentInvoices.put(invoiceKey(ir.getInvoiceCode(), ir.getInvoiceNum()), ir);
+            }
+        }
+        for (InvoiceRecord ir : currentInvoices.values()) {
+            for (Long otherReimbId : invoiceRecordService.findOtherReimbIds(ir.getId(), reimbId)) {
+                ExpenseReimbursement other = reimbursementMapper.selectById(otherReimbId);
+                if (other == null) {
+                    continue;
+                }
+                // 同一其他单不重复计入（一张单可能有多张共用票）
+                boolean dup = suspected.stream().anyMatch(i -> otherReimbId.equals(i.reimbId()));
+                if (dup) {
+                    continue;
+                }
+                suspected.add(DuplicateItemVO.high(other.getId(), other.getReimbNo(), other.getTitle(),
+                        other.getTotalAmount(),
+                        other.getClaimDate() == null ? null : other.getClaimDate().toString(),
+                        firstMerchant(other.getId()), ir.getInvoiceCode(), ir.getInvoiceNum()));
+                log.info("发票号硬命中重复报销: reimbId={}, 发票={}/{} 同时属于 reimbId={}",
+                        reimbId, ir.getInvoiceCode(), ir.getInvoiceNum(), otherReimbId);
+            }
+        }
+
+        // 当前单据自身的发票投影（键集合仅用于日志追溯，二级判定按金额+商户独立进行）
+        Set<String> currentInvoiceKeys = currentInvoices.keySet();
+        if (!currentInvoiceKeys.isEmpty()) {
+            log.debug("reimbId={} 本单发票投影 {} 张", reimbId, currentInvoiceKeys.size());
+        }
+        // ---------------- 二级：金额+商户+日期近似 ----------------
+        String currentMerchant = firstMerchant(current.getId());
         LocalDate from = current.getClaimDate() == null ? null : current.getClaimDate().minusDays(30);
         LocalDate to = current.getClaimDate() == null ? null : current.getClaimDate().plusDays(30);
 
-        // 批量筛选疑似候选报销单
         List<ExpenseReimbursement> candidates = reimbursementMapper.selectList(
                 new LambdaQueryWrapper<ExpenseReimbursement>()
-                        // 同一申请人
                         .eq(ExpenseReimbursement::getApplicantId, current.getApplicantId())
-                        // 排除自身单据
                         .ne(ExpenseReimbursement::getId, reimbId)
-                        // 排除已作废单据（撤回/撤销后不得再当疑似重复候选）
                         .ne(ExpenseReimbursement::getStatus, ReimbursementStatus.CANCELLED.name())
-                        // 报销总金额完全相等
                         .eq(ExpenseReimbursement::getTotalAmount, current.getTotalAmount())
-                        // 有日期才加30天区间过滤
                         .between(from != null && to != null, ExpenseReimbursement::getClaimDate, from, to)
-                        // 最新单据排在前面
                         .orderByDesc(ExpenseReimbursement::getId));
 
-        // 无候选单据，直接返回空结果
-        if (candidates.isEmpty()) {
-            return DuplicateCheckVO.empty();
-        }
-
-        // 遍历候选单据，匹配商户生成疑似重复条目
-        List<DuplicateItemVO> suspected = new ArrayList<>(candidates.size());
         for (ExpenseReimbursement c : candidates) {
-            // 商户名称大小写一致则标记为高度疑似重复
+            // 一级已判定的单据不重复计入二级
+            boolean alreadyHigh = suspected.stream().anyMatch(i -> i.reimbId().equals(c.getId()));
+            if (alreadyHigh) {
+                continue;
+            }
             String merchant = firstMerchant(c.getId());
-            boolean matched = currentMerchant != null && !currentMerchant.isBlank()
-                    && merchant != null && currentMerchant.equalsIgnoreCase(merchant);
-            suspected.add(new DuplicateItemVO(c.getId(), c.getReimbNo(), c.getTitle(), c.getTotalAmount(),
+            boolean matched = sameMerchant(currentMerchant, merchant);
+            suspected.add(DuplicateItemVO.medium(c.getId(), c.getReimbNo(), c.getTitle(), c.getTotalAmount(),
                     c.getClaimDate() == null ? null : c.getClaimDate().toString(), merchant, matched));
         }
-        return new DuplicateCheckVO(suspected);
+
+        return DuplicateCheckVO.of(suspected);
+    }
+
+    /**
+     * 商户比对：双侧都可得时按忽略大小写的精确匹配；<b>双侧均缺失时也视为匹配</b>。
+     * <p>后者是刻意的：OCR 未识别出商户时若直接判「不匹配」，会把二级命中整体降级，
+     * 反而漏掉真正可疑的单据；而二级本就只作展示、不触发风控，宽松些更合适。</p>
+     */
+    private static boolean sameMerchant(String a, String b) {
+        boolean aBlank = a == null || a.isBlank();
+        boolean bBlank = b == null || b.isBlank();
+        if (aBlank && bBlank) {
+            return true;
+        }
+        if (aBlank || bBlank) {
+            return false;
+        }
+        return a.equalsIgnoreCase(b);
+    }
+
+    /** 发票自然键：代码 + 号码拼成单一键（用不可见分隔符避免歧义） */
+    private static String invoiceKey(String code, String num) {
+        return (code == null ? "" : code.trim()) + "\u0001" + (num == null ? "" : num.trim());
     }
 
     /**

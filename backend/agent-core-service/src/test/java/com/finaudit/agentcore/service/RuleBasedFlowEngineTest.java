@@ -27,15 +27,20 @@ class RuleBasedFlowEngineTest {
 
         List<TaskPlanStep> steps = engine.plan(task);
 
-        assertEquals(7, steps.size());
+        // P3.8 R3-4：有附件时在 rule_check 之后插入 invoice_match，共 8 步
+        assertEquals(8, steps.size());
         assertEquals("ocr_extract", steps.get(0).toolName());
         assertEquals(List.of(101L), steps.get(0).inputParams().get("attachmentIds"));
         assertEquals("budget_query", steps.get(1).toolName());
         assertEquals("amount_verify", steps.get(2).toolName());
         assertEquals("rule_check", steps.get(3).toolName());
-        assertEquals("duplicate_check", steps.get(4).toolName());
-        assertEquals("RISK_AUDITOR", steps.get(5).agentRole());
-        assertEquals("SCHEDULER", steps.get(6).agentRole());
+        // 票据核验紧跟规则校验，且必须携带 reimbId/items/claimedTotal
+        assertEquals("invoice_match", steps.get(4).toolName());
+        assertEquals(12L, steps.get(4).inputParams().get("reimbId"));
+        assertEquals(1000, steps.get(4).inputParams().get("claimedTotal"));
+        assertEquals("duplicate_check", steps.get(5).toolName());
+        assertEquals("RISK_AUDITOR", steps.get(6).agentRole());
+        assertEquals("SCHEDULER", steps.get(7).agentRole());
     }
 
     @Test
@@ -48,6 +53,7 @@ class RuleBasedFlowEngineTest {
 
         List<TaskPlanStep> steps = engine.plan(task);
 
+        // 无附件 ⇒ 无 ocr_extract 且无 invoice_match（无票据无从核验）
         assertEquals(5, steps.size());
         assertEquals("amount_verify", steps.get(0).toolName());
         assertEquals("rule_check", steps.get(1).toolName());

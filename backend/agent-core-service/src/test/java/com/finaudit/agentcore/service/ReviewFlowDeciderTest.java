@@ -70,6 +70,70 @@ class ReviewFlowDeciderTest {
         assertTrue(decision.reviewReasons().contains("LLM_DECISION:NEED_INFO"));
     }
 
+    // ---------- P3.8 R3：重复报销分级 + 票据核验 ----------
+
+    @Test
+    void mediumLevelDuplicateDoesNotTriggerRiskHit() {
+        // B-4 根治点：中置信（金额+商户近似）只作展示，不得触发风控命中。
+        // 这正是 R1 联调中那张 100 元小额单被误判为重复的路径。
+        FlowDecision decision = decider.decide(List.of(
+                step("duplicate_check", Map.of("dupLevel", "LEVEL_MEDIUM",
+                        "suspectedHigh", false, "suspected", true)),
+                step(null, Map.of("decision", "APPROVE"), "LLM", AgentRole.SCHEDULER.name())));
+
+        assertEquals(FlowDecision.AUTO_PASS, decision.flowBranch(),
+                "仅中置信疑似重复不得阻断自动通过，实际原因=" + decision.reviewReasons());
+    }
+
+    @Test
+    void highLevelDuplicateTriggersRiskHit() {
+        // 一级：发票号硬命中（同一张票已报销）→ 必须触发风控命中
+        FlowDecision decision = decider.decide(List.of(
+                step("duplicate_check", Map.of("dupLevel", "LEVEL_HIGH",
+                        "suspectedHigh", true, "suspected", true)),
+                step(null, Map.of("decision", "APPROVE"), "LLM", AgentRole.SCHEDULER.name())));
+
+        assertEquals(FlowDecision.NEED_REVIEW, decision.flowBranch());
+        assertTrue(decision.reviewReasons().stream().anyMatch(v -> v.contains("发票号硬命中")),
+                "实际原因=" + decision.reviewReasons());
+    }
+
+    @Test
+    void legacyDuplicateOutputWithoutDupLevelStillTriggers() {
+        // 兼容：老输出无 suspectedHigh 字段时回落到 suspected，行为不突变
+        FlowDecision decision = decider.decide(List.of(
+                step("duplicate_check", Map.of("suspected", true)),
+                step(null, Map.of("decision", "APPROVE"), "LLM", AgentRole.SCHEDULER.name())));
+
+        assertEquals(FlowDecision.NEED_REVIEW, decision.flowBranch());
+        assertTrue(decision.reviewReasons().contains("RISK_HIT:疑似重复报销"));
+    }
+
+    @Test
+    void invoiceMismatchProducesRuleFailWithFlagCodes() {
+        FlowDecision decision = decider.decide(List.of(
+                step("invoice_match", Map.of("match", false, "flags", List.of(
+                        Map.of("code", "AMOUNT_MISMATCH", "message", "申报合计大于票面合计"),
+                        Map.of("code", "ITEM_EXCEEDS_INVOICE", "message", "单笔超过票面合计")))),
+                step(null, Map.of("decision", "APPROVE"), "LLM", AgentRole.SCHEDULER.name())));
+
+        assertEquals(FlowDecision.NEED_REVIEW, decision.flowBranch());
+        String reason = decision.reviewReasons().stream()
+                .filter(v -> v.startsWith("RULE_FAIL:票据")).findFirst().orElse("");
+        assertTrue(reason.contains("AMOUNT_MISMATCH"), "原因应带异常编码便于定位，实际=" + reason);
+        assertTrue(reason.contains("ITEM_EXCEEDS_INVOICE"));
+    }
+
+    @Test
+    void consistentInvoiceMatchDoesNotBlock() {
+        FlowDecision decision = decider.decide(List.of(
+                step("invoice_match", Map.of("match", true, "flags", List.of())),
+                step(null, Map.of("decision", "APPROVE"), "LLM", AgentRole.SCHEDULER.name())));
+
+        assertEquals(FlowDecision.AUTO_PASS, decision.flowBranch(),
+                "票据一致不得阻断，实际原因=" + decision.reviewReasons());
+    }
+
     private static AgentTaskStep step(String tool, Map<String, Object> output) {
         return step(tool, output, "TOOL", null);
     }

@@ -73,8 +73,15 @@ public class ReviewFlowDecider {
             }
             // ---------------- duplicate_check 重复报销检测工具 --------------
             else if ("duplicate_check".equals(tool)) {
-                // 疑似重复报销标记
-                if (Boolean.TRUE.equals(out.get("suspected"))) {
+                // P3.8 R3：仅发票号硬命中（同一张票已报销）才触发风控；
+                // 中置信（金额+商户近似）只作展示，不阻断 —— 这是 B-4 误报的根治。
+                // 兼容：老输出无 suspectedHigh 字段时，回落看 suspected，保持既有行为不突变
+                Object highFlag = out.get("suspectedHigh");
+                if (highFlag != null) {
+                    if (Boolean.TRUE.equals(highFlag)) {
+                        reasons.add("RISK_HIT:发票号硬命中（同一张票已报销）");
+                    }
+                } else if (Boolean.TRUE.equals(out.get("suspected"))) {
                     reasons.add("RISK_HIT:疑似重复报销");
                 }
             }
@@ -83,6 +90,13 @@ public class ReviewFlowDecider {
                 // 明细金额与申报总额不匹配
                 if (Boolean.FALSE.equals(out.get("match"))) {
                     reasons.add("RISK_HIT:明细金额与申报总额不符");
+                }
+            }
+            // ---------------- invoice_match 票据-明细交叉核验工具（P3.8 R3-6） ----------------
+            else if ("invoice_match".equals(tool)) {
+                // 票面与明细对不上 → 规则性失败（进人工复核，非硬失败）
+                if (Boolean.FALSE.equals(out.get("match"))) {
+                    reasons.add("RULE_FAIL:票据与明细不一致" + summarizeFlags(out.get("flags")));
                 }
             }
             // ---------------- LLM风控审计Agent步骤 ----------------
@@ -112,6 +126,34 @@ public class ReviewFlowDecider {
 
         // 无风险原因：自动通过；存在风险原因：需要人工复核
         return reasons.isEmpty() ? FlowDecision.autoPass() : FlowDecision.needReview(reasons);
+    }
+
+    /**
+     * 汇总 invoice_match 的异常编码，拼成简短后缀供人工快速定位。
+     * <p>只取前 3 个编码，避免 review_reasons 过长。</p>
+     */
+    private static String summarizeFlags(Object flags) {
+        List<?> list = asList(flags);
+        if (list.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("（");
+        int n = 0;
+        for (Object o : list) {
+            if (o instanceof Map<?, ?> m && m.get("code") != null) {
+                if (n > 0) {
+                    sb.append("/");
+                }
+                sb.append(m.get("code"));
+                if (++n >= 3) {
+                    break;
+                }
+            }
+        }
+        if (n == 0) {
+            return "";
+        }
+        return sb.append("）").toString();
     }
 
     /**

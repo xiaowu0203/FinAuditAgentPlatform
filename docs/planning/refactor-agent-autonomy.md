@@ -368,16 +368,94 @@
 | R2-3 | OCR 回写链路同步投影（`AttachmentService.updateOcrResult` 内收敛） | `AttachmentService.java`、新增 `InvoiceRecordService` | 单测：回写 OCR 后 `invoice_record` 落行 ✅ 13/13 |
 | R2-4 | 历史数据回填脚本（从 `expense_attachment.ocr_result` JSON 抽票号） | 迁移脚本 | 回填报告输出命中数 ✅ 临时库实测（中文存量日期亦正确解析） |
 
-### R3 · 按票查重 + 票据-明细交叉核验（B-4 / B-5）
+### R3 · 按票查重 + 票据-明细交叉核验（B-4 / B-5）—— ✅ 后端完成（**待用户重启联调**）
 
-| 序 | 动作 | 涉及文件 | 验收断言 |
-|---|---|---|---|
-| R3-1 | 重写 `queryDuplicates`：一级按 `(invoice_code, invoice_num)` 硬命中（HIGH），二级保留金额+日期+商户（MEDIUM） | `ReimbursementService.java` | 单测：同票重复入账 → HIGH；同额同商户不同票 → MEDIUM |
-| R3-2 | `DuplicateCheckVO` 增 `dupLevel`；`ReviewFlowDecider` **仅 HIGH 触发** `RISK_HIT`，MEDIUM 只展示 | `DuplicateCheckVO.java`、`ReviewFlowDecider.java` | 单测：MEDIUM 不产生 reviewReason |
-| R3-3 | 新增 `invoice_match` 工具（票据金额/日期/商户 vs 明细行，容差 0.01） | 新增 `InvoiceMatchTool.java`、`ToolCode` 枚举、`tool_registry` 种子 | 单测：100 元票 + 800 元明细 → 不一致 |
-| R3-4 | `RuleBasedFlowEngine` 在 `rule_check` 后插入 `invoice_match` 步骤 | `RuleBasedFlowEngine.java` | `RuleBasedFlowEngineTest` 断言步骤序列 |
-| R3-5 | 离线规则验真（已决策：先做免费方案）：发票代码位数规则、税号格式、开票日期与票号区间合理性 | `InvoiceMatchTool` 或独立 `InvoiceVerifyTool` | 单测：构造非法票号 → 命中 |
-| R3-6 | `ReviewFlowDecider` 接入 `invoice_match` 命中 → `RULE_FAIL` | `ReviewFlowDecider.java` | 单测：不一致 → NEED_REVIEW |
+> B-4：`duplicate_check` 只有「同申请人 + 金额完全相等 + 日期±30天」再叠加商户近似，
+> 命中即判疑似重复 → 正常单据被误判（R1 联调实测复现：100 元小额单因库里存在同额历史单而误报）。
+> B-5：`amount_verify` 只校验「明细合计 == 申报总额」（同一份数据内部自洽）、
+> `rule_check` 只校验限额标准，**两者都没有把「票面」与「明细」对上** ——
+> 「明细写 800 元、实际票据只有 100 元」这类虚报走不到任何检查。
+
+**实现要点**
+
+| 序 | 落点 | 要点 |
+|---|---|---|
+| R3-1 | `ReimbursementService.queryDuplicates` 重写为两级判定 | 一级 `<b>发票号硬命中</b>`：本单任一发票的 `(invoice_code, invoice_num)` 已存在于**其他**报销单（数据源 `invoice_record`，走唯一索引）；二级：金额+商户+日期±30天近似。一级命中不再重复计入二级 |
+| R3-2 | `DuplicateItemVO` 增 `dupLevel`/`invoiceCode`/`invoiceNum`；`DuplicateCheckVO` 增汇总等级 + `hasHighLevelHit()`；`DuplicateCheckTool` 输出 `dupLevel`+`suspectedHigh`；`ReviewFlowDecider` **仅 HIGH 触发 RISK_HIT** | 中置信只作展示、不阻断——这是 B-4 误报的根治。老输出无 `suspectedHigh` 字段时回落看 `suspected`，行为不突变 |
+| R3-3 | 新增 `invoice_match` 工具 + `InvoiceRecordService.matchInvoices` + 内部端点 `/internal/audit/reimbursements/{id}/invoice-match` | 三项交叉核验：有明细无发票（`NO_INVOICE`）、申报合计超票面合计（`AMOUNT_MISMATCH`）、单笔明细超票面合计（`ITEM_EXCEEDS_INVOICE`）；容差 0.01 |
+| R3-4 | `RuleBasedFlowEngine` 在 `rule_check` 之后插入 `invoice_match` 步骤（**仅当有附件**） | 紧跟规则校验：此时限额已判完，正好用票面数据校验明细是否虚报 |
+| R3-5 | 离线规则验真（已决策：先做免费方案，不引入付费查真接口） | 发票代码位数（10/12/20，缺失合法——2018 年起电子发票代码并入号码）、代码纯数字、开票日期不得晚于当前日期、不得早于当前 10 年 |
+| R3-6 | `ReviewFlowDecider` 接入 `invoice_match` 命中 → `RULE_FAIL:票据与明细不一致（编码…）` | 进人工复核而非硬失败；原因串带异常编码便于定位 |
+
+**设计决策**
+
+1. **分级用 `dupLevel` 字符串（`LEVEL_HIGH`/`LEVEL_MEDIUM`）而非布尔**：布尔无法表达未来可能出现的
+   第三级（如「同商户同额但日期超出容差」），且字符串前缀便于日志与前端分档展示。
+2. **比对逻辑放 agent-core 而非 tool-service**：`invoice_record` 数据访问收敛在
+   `InvoiceRecordService`（AGENTS.md §5.9），tool 只做入参装配与结果聚合——
+   与本项目既有分工一致（规则评估在 agent-core、工具只装配）。
+3. **`invoice_match` 也纳入 `ToolAccessGuard` 的 `checkReimbOwnership`**：它按 `reimbId` 取发票数据，
+   与 `duplicate_check`/`ocr_extract` 同类，必须做同一道跨租户归属校验。
+4. **`NO_INVOICE` 判为「不一致」而非「一致」**：有明细却无发票时若判一致，
+   等于把「没数据」当成「没问题」。
+
+**验证（AI 自测，非用户验收）**
+
+| 项 | 方式 | 结果 |
+|---|---|---|
+| 交叉核验单测 | 新增 `InvoiceMatchTest` | **13/13 通过**：100 元票 + 800 元明细 → 不一致（含单笔越界）；金额相符一致；0.01 容差；申报小于票面不误报；有明细无发票 → `NO_INVOICE`；claimedTotal 缺省时按明细求和 |
+| 离线验真单测 | 同上 | 代码位数异常/含非数字/Future 日期/过旧日期各自命中；**电子发票无代码不误报**；合法发票零 flags |
+| 分级单测 | `ReviewFlowDeciderTest` 扩到 9 例 | **中置信不触发 RISK_HIT**（B-4 根治点）、硬命中触发、老输出兼容回落、票据不一致 → `RULE_FAIL` 且带编码、票据一致不阻断 |
+| 分级单测 | `ReimbursementServiceTest` | 二级命中 `dupLevel=LEVEL_MEDIUM` 且 `hasHighLevelHit()==false` |
+| 流水线单测 | `RuleBasedFlowEngineTest` | 有附件 8 步（含 `invoice_match` 且携 reimbId/items/claimedTotal）、无附件 5 步（跳过 OCR 与票据核验） |
+| 防越权单测 | `ToolAccessGuardTest` 扩到 13 例 | `INVOICE_MATCH` 跨租户拒绝、本租户放行 |
+| 构建 | `mvn -o clean install`（19 模块） | **BUILD SUCCESS** |
+| schema | 导入一次性库 | 退出码 0，**20 张表**，`tool_registry` 含 `invoice_match`（id=6） |
+| 迁移 | 已在真实 `finaudit` 库执行 | 退出码 0，`invoice_match` 注册成功；**重复执行退出码 0 且行数不变（幂等）** |
+
+> 一个必须记住的运维点：`tool-service` 执行工具前会按 `tool_code` 查 `tool_registry`，
+> **查不到即抛「工具未注册或已禁用」**，流水线到该步直接失败。故新工具必须同时
+> ① 加 `ToolCode` 枚举、② 实现 `ToolExecutor`、③ 在 `tool_registry` 注册（见迁移第 6 节）。
+> 本阶段漏了 ③ 会表现为「票据核验」步骤必然失败。
+
+**⚠️ R3-7（端到端验收暴露的架构缺陷）：一票多单的归属关系存不下，硬命中恒不触发**
+
+首轮端到端跑出 `dupLevel=NONE`（判据① 失败）。逐单核对后发现根因不是时序、也不是判定逻辑，
+而是**表结构设计缺陷**：
+
+```
+同一张票提交 5 次后，invoice_record 只有 1 行：
+  invoice_num=07632553  reimb_id=57（最后一次）  seen_count=14
+逐单查询：当前单 53/54/55/56 各自的判定都是「命中行的 reimb_id == 当前单 → 属于自己 → 排除」
+         而 reimb_id 恒为 57 —— 于是除 57 之外的所有单都把自己排除掉，硬命中永不触发
+```
+
+- **根因**：`invoice_record` 的 `uk_invoice(tenant_id, invoice_code, invoice_num, deleted)` 决定
+  一张票只有一行，而该行只带**一个** `reimb_id`；「同一张票被多张报销单共用」这个事实**无处存放**，
+  可按票查重的判定恰恰要回答「这张票还属于哪张单」。
+- **修复**：新增 `invoice_reimb_link` 关联表承接一对多（`uk(tenant_id, invoice_record_id, reimb_id, deleted)`），
+  OCR 投影时同步建立/累加归属；硬命中改为查关联表
+  （`InvoiceRecordService.findOtherReimbIds(invoiceRecordId, currentReimbId)`）；
+  `invoice_record.reimb_id` 降级为「最近一次归属」仅供展示。
+- **迁移第 6 节**建表 + 按现有 `reimb_id` 回填历史归属（`INSERT IGNORE`）。
+
+> 教训：**「唯一索引决定一行」与「需要记录多对多」是同一张表上的冲突**。
+> 设计投影表时就该问一句「这张表要回答的关系是一对一还是一对多」——
+> 我当时只想着「一张票一条记录」（对票本身成立），却把「票与单的归属」也塞进了同一行。
+
+**首轮端到端结果（修复前）**：判据②③ 通过、判据① 失败（`dupLevel=NONE`）；
+判据② 的实测输出同时证实交叉核验工作正常：
+`{"match": false, "invoiceTotal": 7741.75, "claimTotal": 50000, "gap": 42258.25, "flags": [AMOUNT_MISMATCH, ITEM_EXCEEDS_INVOICE]}`。
+
+**待办**
+
+- [x] 迁移已在真实库执行（关联表 + `invoice_match` 注册）
+- [ ] **重启 agent-core-service（关联表修复需重新构建 + 重启才生效）**
+- [ ] 联调复验：① 同一张票提交两次 → `duplicate_check` 返回 `LEVEL_HIGH`；
+      ② 一张金额明显小于明细的单据 → `invoice_match` 报 `AMOUNT_MISMATCH`；
+      ③ 普通正常单据不因「同额历史单」被误判重复（B-4 回归）
+
+
 
 ### R4 · 结构化 findings 与驳回重提引导（B-7）
 

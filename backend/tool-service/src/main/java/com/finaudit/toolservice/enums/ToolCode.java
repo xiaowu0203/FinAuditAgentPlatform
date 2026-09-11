@@ -20,7 +20,9 @@ public enum ToolCode {
     /** 财务规则校验（P2b） */
     RULE_CHECK("rule_check"),
     /** 重复报销检测（P2b） */
-    DUPLICATE_CHECK("duplicate_check");
+    DUPLICATE_CHECK("duplicate_check"),
+    /** 票据-明细交叉核验 + 离线验真（P3.8 R3） */
+    INVOICE_MATCH("invoice_match");
 
     private final String code;
 

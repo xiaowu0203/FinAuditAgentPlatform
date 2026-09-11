@@ -32,8 +32,11 @@ public class RuleBasedFlowEngine {
      * 条件步骤：
      * 1. 存在附件：创建票据解析OCR步骤
      * 2. 传入deptName部门名称：创建预算核算步骤
+     * 3. 存在附件：创建票据核验步骤（P3.8 R3-3，票据-明细交叉核验）
      * 其余金额核验、规则校验、重复检测、LLM风控、LLM汇总结论为必选步骤
      * </p>
+     * <p>执行顺序：OCR → 预算 → 金额核验 → 规则校验 → <b>票据核验</b> → 重复检测 → LLM风控 → LLM汇总。
+     * 票据核验紧随规则校验，此时限额已判完，正好用票面数据校验明细是否虚报。</p>
      *
      * @param task Agent任务对象，携带报销入参
      * @return 规划后的任务步骤列表 TaskPlanStep
@@ -86,19 +89,32 @@ public class RuleBasedFlowEngine {
         steps.add(new TaskPlanStep("规则校验", "TOOL", "rule_check", rc,
                 AgentRole.RULE_VALIDATOR.name()));
 
-        // 5.重复报销检测：传入报销单号，检测历史是否存在疑似重复报销单据
+        // 5.票据-明细交叉核验（P3.8 R3-3）：把票面金额与申报明细对上。
+        //   紧跟在 rule_check 之后：此时规则限额已判完，正好用票面数据校验明细是否虚报。
+        //   仅当有附件时才建（无票据无从核验，工具内部也会以 NO_INVOICE 标记）。
+        if (!attachmentIds.isEmpty()) {
+            Map<String, Object> im = new LinkedHashMap<>();
+            im.put("reimbId", asLong(in.get("reimbId")));
+            im.put("items", projectAmounts(in.get("items")));
+            im.put("claimedTotal", in.get("claimedTotal"));
+            // 添加票据核验步骤（TOOL类型）
+            steps.add(new TaskPlanStep("票据核验", "TOOL", "invoice_match", im,
+                    AgentRole.RULE_VALIDATOR.name()));
+        }
+
+        // 6.重复报销检测：传入报销单号，检测历史是否存在疑似重复报销单据
         Map<String, Object> dc = new LinkedHashMap<>();
         dc.put("reimbId", asLong(in.get("reimbId")));
         // 添加重复报销检测步骤（TOOL类型）
         steps.add(new TaskPlanStep("重复报销检测", "TOOL", "duplicate_check", dc,
                 AgentRole.RISK_AUDITOR.name()));
 
-        // 6.风控语义判断LLM步骤，无工具名，执行时由executeLlmStep组装上下文prompt
+        // 7.风控语义判断LLM步骤，无工具名，执行时由executeLlmStep组装上下文prompt
         // 添加风控语义判断步骤（LLM类型）
         steps.add(new TaskPlanStep("风控语义判断", "LLM", null, null,
                 AgentRole.RISK_AUDITOR.name()));
 
-        // 7.审核结论汇总LLM步骤，调度器角色，综合全部工具输出输出最终decision
+        // 8.审核结论汇总LLM步骤，调度器角色，综合全部工具输出输出最终decision
         // 添加审核结论汇总步骤（LLM类型）
         steps.add(new TaskPlanStep("审核结论汇总", "LLM", null, null,
                 AgentRole.SCHEDULER.name()));

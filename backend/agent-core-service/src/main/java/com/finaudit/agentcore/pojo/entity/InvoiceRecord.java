@@ -129,6 +129,17 @@ public class InvoiceRecord {
     }
 
     /**
+     * 投影为跨服务契约 VO（P3.8 R3，供 tool-service 的 invoice_match 工具消费）。
+     * <p>转换封装在本类而非 common-code：common-code 是公共契约模块，
+     * 不得反向依赖 agent-core 实体（依赖倒置）。</p>
+     */
+    public com.finaudit.starter.web.feign.dto.InvoiceRecordVO toVO() {
+        return new com.finaudit.starter.web.feign.dto.InvoiceRecordVO(
+                invoiceCode, invoiceNum, sellerTaxNo, amount,
+                invDate == null ? null : invDate.toString(), reimbId);
+    }
+
+    /**
      * 同一张票再次被识别（重复上传同一发票，或重跑时再次 OCR）。
      * <p>累加 {@code seen_count} 并把来源附件更新为最新一次，便于追溯
      * 「同一张票出现在哪几张附件里」。{@code reimb_id} 非空时同步刷新，

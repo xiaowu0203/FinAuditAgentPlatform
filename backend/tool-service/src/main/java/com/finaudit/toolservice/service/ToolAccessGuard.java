@@ -18,7 +18,7 @@ import java.util.Map;
  * <ul>
  *   <li><b>租户一致性</b>：请求上下文租户（{@link TenantContextHolder}）若存在，须与本次执行声明租户一致，防跨租户直调/篡改头。</li>
  *   <li><b>部门归属（budget_query）</b>：入参 deptId 与报销单 dept_id 一致且部门为真实 sys_dept（P3.5b，经 agent-core 校验），防跨部门/虚构部门查询。</li>
- *   <li><b>单据归属（duplicate_check / ocr_extract）</b>：入参 reimbId 须属于当前租户（经 agent-core 校验），防操作他租户单据。</li>
+ *   <li><b>单据归属（duplicate_check / ocr_extract / invoice_match）</b>：入参 reimbId 须属于当前租户（经 agent-core 校验），防操作他租户单据。</li>
  * </ul>
  * <p>校验只读、不改变执行器内部逻辑；误判风险低（未知部门/单据才拒绝，正常流程放行）。</p>
  */
@@ -44,7 +44,8 @@ public class ToolAccessGuard {
         checkTenantConsistency(tenantId);
         switch (code) {
             case BUDGET_QUERY -> checkDeptOwnership(tenantId, inputParams);
-            case DUPLICATE_CHECK, OCR_EXTRACT -> checkReimbOwnership(tenantId, inputParams);
+            // INVOICE_MATCH 同样按 reimbId 取发票投影，必须做同一道归属校验（P3.8 R3）
+            case DUPLICATE_CHECK, OCR_EXTRACT, INVOICE_MATCH -> checkReimbOwnership(tenantId, inputParams);
             default -> {
                 // 其余工具暂无跨域入参，无需额外校验
             }
@@ -91,7 +92,7 @@ public class ToolAccessGuard {
     }
 
     /**
-     * duplicate_check / ocr_extract 单据归属：入参 reimbId 须属于当前租户。
+     * duplicate_check / ocr_extract / invoice_match 单据归属：入参 reimbId 须属于当前租户。
      */
     private void checkReimbOwnership(Long tenantId, Map<String, Object> inputParams) {
         Object reimbObj = inputParams == null ? null : inputParams.get("reimbId");

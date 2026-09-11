@@ -1,7 +1,10 @@
 package com.finaudit.agentcore.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.finaudit.agentcore.mapper.InvoiceRecordMapper;
+import com.finaudit.agentcore.mapper.InvoiceReimbLinkMapper;
 import com.finaudit.agentcore.pojo.entity.InvoiceRecord;
+import com.finaudit.agentcore.pojo.entity.InvoiceReimbLink;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -17,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,6 +42,14 @@ class InvoiceRecordServiceTest {
 
     @Mock
     private InvoiceRecordMapper invoiceRecordMapper;
+
+    /**
+     * R3 修复：一票多单的归属关系落在关联表。
+     * <p>本测试默认关联无既有行（insert 路径）；归属判定本身由
+     * {@code findOtherReimbIds} 的单测与端到端脚本覆盖。</p>
+     */
+    @Mock
+    private InvoiceReimbLinkMapper invoiceReimbLinkMapper;
 
     @InjectMocks
     private InvoiceRecordService service;    private static Map<String, Object> ocrResult(String code, String num, String taxNo,
@@ -213,5 +225,75 @@ class InvoiceRecordServiceTest {
         assertEquals(1, r.getSeenCount());
         assertNotNull(r.getInvoiceNum());
         assertTrue(r.hasInvoiceIdentity());
+    }
+
+    // ---------------- R3 修复：一票多单归属 ----------------
+
+    @Test
+    void projectionCreatesReimbLink() {
+        when(invoiceRecordMapper.selectOne(any())).thenReturn(null);
+        // 真实 DB 会在 insert 后回填自增主键，mock 必须模拟这一点，否则关联无法建立
+        when(invoiceRecordMapper.insert(any(InvoiceRecord.class))).thenAnswer(inv -> {
+            inv.getArgument(0, InvoiceRecord.class).setId(500L);
+            return 1;
+        });
+        when(invoiceReimbLinkMapper.selectOne(any())).thenReturn(null);
+        ArgumentCaptor<InvoiceReimbLink> linkCaptor = ArgumentCaptor.forClass(InvoiceReimbLink.class);
+
+        service.project(77L, 88L, 9L, ocrResult("044002311111", "07632553", null, null, null));
+
+        verify(invoiceReimbLinkMapper).insert(linkCaptor.capture());
+        InvoiceReimbLink link = linkCaptor.getValue();
+        // 归属关系必须落库 —— 这正是 R3 联调发现「一票多单存不下」后补的表
+        assertEquals(500L, link.getInvoiceRecordId(), "关联需指向投影行");
+        assertEquals(9L, link.getReimbId(), "关联必须记录本单归属");
+        assertEquals(88L, link.getFileRecordId());
+        assertEquals(1, link.getSeenCount());
+    }
+
+    @Test
+    void projectionSkipsLinkWhenReimbIdNull() {
+        // OCR 可能早于提交绑定完成 → reimbId 为空；此时只投影票号，不建归属
+        when(invoiceRecordMapper.selectOne(any())).thenReturn(null);
+
+        service.project(77L, 88L, null, ocrResult("044002311111", "07632553", null, null, null));
+
+        verify(invoiceRecordMapper).insert(any(InvoiceRecord.class));
+        verify(invoiceReimbLinkMapper, never()).insert(any(InvoiceReimbLink.class));
+    }
+
+    @Test
+    void sameInvoiceSameReimbAccumulatesLinkSeenCount() {
+        InvoiceRecord existing = InvoiceRecord.from("044002311111", "07632553", null, 9L, 88L, 77L, null, null);
+        existing.setId(600L);
+        when(invoiceRecordMapper.selectOne(any())).thenReturn(existing);
+        InvoiceReimbLink link = InvoiceReimbLink.of(600L, 9L, 88L);
+        link.setSeenCount(1);
+        when(invoiceReimbLinkMapper.selectOne(any())).thenReturn(link);
+
+        service.project(78L, 89L, 9L, ocrResult("044002311111", "07632553", null, null, null));
+
+        // 同一票 + 同一单 → 不新增关联行，只累加次数
+        verify(invoiceReimbLinkMapper, never()).insert(any(InvoiceReimbLink.class));
+        verify(invoiceReimbLinkMapper).updateById(link);
+        assertEquals(2, link.getSeenCount());
+    }
+
+    @Test
+    void findOtherReimbIdsExcludesSelf() {
+        // ⚠️ `ne(reimbId, current)` 由 SQL 执行，mock 不会过滤 —— 故 mock 只返回「DB 本会返回的行」，
+        //    否则会把实际由 SQL 排除的行也算进来，得到假失败。
+        InvoiceReimbLink other = InvoiceReimbLink.of(1L, 20L, 200L);
+        when(invoiceReimbLinkMapper.selectList(any())).thenReturn(List.of(other));
+
+        List<Long> others = service.findOtherReimbIds(1L, 10L);
+
+        assertEquals(List.of(20L), others, "应仅返回其他报销单，不含当前单自身");
+    }
+
+    @Test
+    void findOtherReimbIdsEmptyForNullInvoice() {
+        assertTrue(service.findOtherReimbIds(null, 1L).isEmpty());
+        verify(invoiceReimbLinkMapper, never()).selectList(any());
     }
 }

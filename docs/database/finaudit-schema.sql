@@ -15,6 +15,7 @@ DROP TABLE IF EXISTS file_record;
 DROP TABLE IF EXISTS expense_reimbursement;
 DROP TABLE IF EXISTS budget;
 DROP TABLE IF EXISTS budget_occupancy;
+DROP TABLE IF EXISTS invoice_reimb_link;
 DROP TABLE IF EXISTS invoice_record;
 DROP TABLE IF EXISTS finance_rule;
 DROP TABLE IF EXISTS audit_record;
@@ -361,6 +362,30 @@ CREATE TABLE invoice_record (
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '发票标识符投影表（P3.8 R2；绕开 MySQL 5.7 JSON 检索限制）';
 
 -- ---------------------------------------------------------------------
+-- 12.3 发票—报销单关联表（P3.8 R3 新增）
+--    背景（R3 联调发现的架构缺陷）：invoice_record 每张票只有一行、只带一个 reimb_id，
+--    「同一张票被多张报销单共用」这个事实存不下 —— 而按票查重的判定恰恰要回答
+--    「这张票还属于哪张单」。实测同一张票提交 5 次后，投影行 reimb_id 只记录了最后一次，
+--    其余各单查询时都把自己排除掉，硬命中恒不触发。
+--    故把归属关系拆到本表（一对多：一票多单）；invoice_record.reimb_id 降级为「最近一次归属」仅供展示。
+-- ---------------------------------------------------------------------
+CREATE TABLE invoice_reimb_link (
+    id                BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id         BIGINT      NOT NULL DEFAULT 1 COMMENT '租户ID',
+    invoice_record_id BIGINT      NOT NULL COMMENT '发票投影ID（invoice_record.id）',
+    reimb_id          BIGINT      NOT NULL COMMENT '报销单ID',
+    file_record_id    BIGINT      DEFAULT NULL COMMENT '来源附件 file_record.id（最近一次）',
+    seen_count        INT         NOT NULL DEFAULT 1 COMMENT '同一张票在本单内被识别的次数',
+    created_at        DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted           TINYINT     NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0未删 1已删',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_invoice_reimb (tenant_id, invoice_record_id, reimb_id, deleted) COMMENT '一票一单一条（含 deleted，支持逻辑删除后重插）',
+    KEY idx_invoice (invoice_record_id),
+    KEY idx_reimb (reimb_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '发票—报销单关联表（P3.8 R3；承接一票多单的归属关系）';
+
+-- ---------------------------------------------------------------------
 -- 13. 财务规则表（P2b 规则校验工具 rule_check；CRUD/发布归 P2c）
 --    rule_config 仅存储结构化规则，不参与 WHERE（MySQL 5.7 JSON 检索限制）
 -- ---------------------------------------------------------------------
@@ -561,6 +586,10 @@ INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, inp
     (5, 1, 'duplicate_check', '重复报销检测',
      '按申请人+商户+金额+日期区间查历史报销单，返回疑似重复。入参 reimbId（报销单ID，agent-core 按此读当前+历史 OCR 商户）。',
      '{"type":"object","properties":{"reimbId":{"type":"integer"}},"required":["reimbId"]}',
+     1, '1.0', 'FINANCE', 0),
+    (6, 1, 'invoice_match', '票据-明细交叉核验',
+     '把票面金额与申报明细交叉比对（票面合计 vs 申报合计、单笔是否超过票面合计），并对发票代码位数/开票日期做离线验真。补 amount_verify（只校验明细与总额自洽）与 rule_check（只校验限额标准）都覆盖不到的「明细与票面对不上」缺口。入参 reimbId + items + claimedTotal。',
+     '{"type":"object","properties":{"reimbId":{"type":"integer"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"}},"required":["name","amount"]}},"claimedTotal":{"type":"number"}},"required":["reimbId","items"]}',
      1, '1.0', 'FINANCE', 0);
 
 -- P2b 部门预算种子（默认租户 2026-08，部分已用；P3.5b dept_id 关联 sys_dept）

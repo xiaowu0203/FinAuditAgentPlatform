@@ -1,5 +1,5 @@
 -- =====================================================================
--- P3.8 增量迁移（R1：预算真实占用与释放 / R2：发票标识符入链）
+-- P3.8 增量迁移（R1：预算占用 / R2：发票标识符入链 / R3：按票查重与票据核验）
 -- 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
 -- 执行: mysql -uroot -p < docs/database/migration-P3.8.sql
 --
@@ -11,16 +11,22 @@
 -- 背景（业务走查 B-3）：
 --   发票代码/号码此前在 BaiduOcrService → VatInvoiceOcr 链路里**已解析出来却被丢弃**
 --   （OcrExtractTool.normalize 未纳入输出），下游查重只能靠「同申请人 + 金额完全相等 +
---   日期±30天」的启发式，产生大量误报。本阶段把票号补入归一化结果，并投影出可索引的
+--   日期±30天」的启发式，产生大量误报。R2 把票号补入归一化结果并投影出可索引的
 --   invoice_record 表（ocr_result 是 JSON，MySQL 5.7 无法对其内部字段建索引）。
+--
+-- 背景（业务走查 B-4/B-5）：
+--   R3 用 invoice_record 做「按票号硬命中」查重（一级），把金额+商户近似降级为二级仅展示；
+--   并新增 invoice_match 工具做票据-明细交叉核验，补上 amount_verify（只校验明细与总额自洽）
+--   与 rule_check（只校验限额标准）都覆盖不到的「明细与票面对不上」缺口。
 --
 -- 内容:
 --   ① 新增 budget_occupancy 占用记账表（R1）
 --   ② budget.used_amount 语义变更：由「只读种子值」变为「真实累加值」（R1，无需 DDL）
 --   ③ 新增 invoice_record 发票标识符投影表（R2）
 --   ④ 历史数据回填：从 expense_attachment.ocr_result JSON 抽票号投影（R2）
+--   ⑤ 注册 invoice_match 工具（R3，未注册则流水线到该步报「工具未注册或已禁用」）
 --
--- 幂等: CREATE TABLE IF NOT EXISTS + 回填 INSERT IGNORE；可重复执行
+-- 幂等: CREATE TABLE IF NOT EXISTS + INSERT IGNORE + WHERE NOT EXISTS；可重复执行
 --
 -- ⚠️ 执行顺序：①③ 必须先于 ④（回填依赖表已建出）
 -- =====================================================================
@@ -155,4 +161,62 @@ SELECT r.id, r.tenant_id, r.invoice_code, r.invoice_num, r.seller_tax_no,
 FROM invoice_record r
 WHERE r.deleted = 0
 ORDER BY r.id;
+
+-- ---------------------------------------------------------------------
+-- 6. 发票—报销单关联表（R3 修复）
+--    ⚠️ 为什么必须补这张表：invoice_record 每张票只有一行、只带一个 reimb_id，
+--    「同一张票被多张报销单共用」这个事实【存不下】—— 而按票查重的判定恰恰要回答
+--    「这张票还属于哪张单」。R3 联调实测：同一张票提交 5 次后，投影行 reimb_id
+--    只记录了最后一次（=57），于是 53/54/55/56 各单查询时都把自己排除掉，
+--    硬命中【恒不触发】（脚本判据① 报 dupLevel=NONE）。
+--    故把归属关系拆到本表（一对多：一票多单）；invoice_record.reimb_id 降级为
+--    「最近一次归属」仅供展示。
+--    幂等：CREATE TABLE IF NOT EXISTS；可重复执行
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS invoice_reimb_link (
+    id                BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id         BIGINT      NOT NULL DEFAULT 1 COMMENT '租户ID',
+    invoice_record_id BIGINT      NOT NULL COMMENT '发票投影ID（invoice_record.id）',
+    reimb_id          BIGINT      NOT NULL COMMENT '报销单ID',
+    file_record_id    BIGINT      DEFAULT NULL COMMENT '来源附件 file_record.id（最近一次）',
+    seen_count        INT         NOT NULL DEFAULT 1 COMMENT '同一张票在本单内被识别的次数',
+    created_at        DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted           TINYINT     NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0未删 1已删',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_invoice_reimb (tenant_id, invoice_record_id, reimb_id, deleted) COMMENT '一票一单一条（含 deleted，支持逻辑删除后重插）',
+    KEY idx_invoice (invoice_record_id),
+    KEY idx_reimb (reimb_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '发票—报销单关联表（P3.8 R3；承接一票多单的归属关系）';
+
+-- 历史归属回填：已存在的投影行按其当前 reimb_id 补一条关联（它们本就只记录了一个归属）
+INSERT IGNORE INTO invoice_reimb_link (tenant_id, invoice_record_id, reimb_id, file_record_id, seen_count)
+SELECT r.tenant_id, r.id, r.reimb_id, r.file_record_id, r.seen_count
+FROM invoice_record r
+WHERE r.deleted = 0 AND r.reimb_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------
+-- 7. 工具注册：invoice_match（R3-3 / R3-5）
+--    tool-service 执行工具前会按 tool_code 查 tool_registry，查不到即抛
+--    「工具未注册或已禁用」，故新工具必须在此登记，否则流水线到该步直接失败。
+--    幂等：WHERE NOT EXISTS，可重复执行。
+-- ---------------------------------------------------------------------
+INSERT INTO tool_registry
+    (tenant_id, tool_code, tool_name, description, input_schema, enabled, version, scenario, cacheable)
+SELECT 1, 'invoice_match', '票据-明细交叉核验',
+       '把票面金额与申报明细交叉比对（票面合计 vs 申报合计、单笔是否超过票面合计），并对发票代码位数/开票日期做离线验真。补 amount_verify（只校验明细与总额自洽）与 rule_check（只校验限额标准）都覆盖不到的「明细与票面对不上」缺口。入参 reimbId + items + claimedTotal。',
+       '{"type":"object","properties":{"reimbId":{"type":"integer"},"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"}},"required":["name","amount"]}},"claimedTotal":{"type":"number"}},"required":["reimbId","items"]}',
+       1, '1.0', 'FINANCE', 0
+FROM DUAL
+WHERE NOT EXISTS (
+    SELECT 1 FROM tool_registry WHERE tenant_id = 1 AND tool_code = 'invoice_match'
+);
+
+-- ---------------------------------------------------------------------
+-- 8. 核对：工具注册表最终状态（应含 invoice_match）
+-- ---------------------------------------------------------------------
+SELECT id, tool_code, tool_name, enabled, scenario, cacheable
+FROM tool_registry
+WHERE deleted = 0
+ORDER BY id;
 

@@ -10,6 +10,7 @@ import com.finaudit.agentcore.pojo.entity.ExpenseAttachment;
 import com.finaudit.agentcore.pojo.entity.ExpenseReimbursement;
 import com.finaudit.starter.web.feign.FileServiceFeign;
 import com.finaudit.starter.web.feign.dto.DuplicateCheckVO;
+import com.finaudit.starter.web.feign.dto.DuplicateItemVO;
 import com.finaudit.starter.web.feign.dto.FileRecordVO;
 import com.finaudit.starter.web.result.R;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -38,6 +41,7 @@ import static org.mockito.Mockito.when;
  * buildSnapshot 快照内容（不含 OSS 路径/预签名 URL、日期转字符串）、queryDuplicates 排除已作废单据。
  */
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class ReimbursementServiceTest {
 
     @Mock
@@ -48,6 +52,15 @@ class ReimbursementServiceTest {
     private FileServiceFeign fileServiceFeign;
     @Mock
     private AgentTaskService taskService;
+    /**
+     * P3.8 R3：queryDuplicates 改为两级判定后新增依赖（发票号硬命中数据源）。
+     * <p>本测试聚焦「金额+商户」二级路径与 CANCELLED 排除，发票投影按空桩处理；
+     * 硬命中路径由 {@code InvoiceRecordServiceTest} 与端到端脚本覆盖。</p>
+     * <p>类上放开严格桩校验：多数用例并不走 queryDuplicates，
+     * 若按严格模式会因「无用的空桩」报 UnnecessaryStubbingException。</p>
+     */
+    @Mock
+    private InvoiceRecordService invoiceRecordService;
 
     @InjectMocks
     private ReimbursementService service;
@@ -158,6 +171,8 @@ class ReimbursementServiceTest {
         current.setClaimDate(LocalDate.of(2026, 8, 1));
         current.setTotalAmount(new BigDecimal("553.00"));
         when(reimbursementMapper.selectById(1L)).thenReturn(current);
+        // R3：发票投影为空 → 走二级（金额+商户）路径
+        when(invoiceRecordService.listByReimbId(1L)).thenReturn(List.of());
         // 候选：一张 CANCELLED（应被查询条件排除）、一张有效（同金额 + 同商户）
         ExpenseReimbursement cancelled = reimb(2L, "R2024010100000002", "CANCELLED", new BigDecimal("553.00"));
         ExpenseReimbursement valid = reimb(3L, "R2024010100000003", "SUCCESS", new BigDecimal("553.00"));
@@ -180,6 +195,10 @@ class ReimbursementServiceTest {
         // 服务自身不做二次过滤（信任 Mapper 查询结果）：mock 返回含 CANCELLED 行时一并处理
         assertEquals(2, vo.suspected().size());
         assertTrue(vo.suspected().stream().allMatch(d -> d.merchantMatched()));
+        // R3 分级：无发票号硬命中 ⇒ 全部为中置信，且整体等级为 MEDIUM（决定是否触发风控）
+        assertTrue(vo.suspected().stream().allMatch(d -> DuplicateItemVO.LEVEL_MEDIUM.equals(d.dupLevel())));
+        assertEquals(DuplicateItemVO.LEVEL_MEDIUM, vo.dupLevel());
+        assertFalse(vo.hasHighLevelHit(), "二级（金额+商户近似）不得被当作硬命中触发风控");
     }
 
     // ---------- 构造辅助 ----------

@@ -2,6 +2,9 @@ package com.finaudit.starter.web.feign;
 
 import com.finaudit.starter.web.feign.dto.BudgetVO;
 import com.finaudit.starter.web.feign.dto.DuplicateCheckVO;
+import com.finaudit.starter.web.feign.dto.InvoiceMatchRequest;
+import com.finaudit.starter.web.feign.dto.InvoiceMatchVO;
+import com.finaudit.starter.web.feign.dto.InvoiceRecordVO;
 import com.finaudit.starter.web.feign.dto.OcrResultWritebackRequest;
 import com.finaudit.starter.web.feign.dto.RuleCheckRequest;
 import com.finaudit.starter.web.feign.dto.RuleCheckVO;
@@ -13,6 +16,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
+
+import java.util.List;
 
 /**
  * agent-core-service 审核数据契约（跨服务 Feign 客户端，统一放 common-code 供 tool-service 复用）。
@@ -115,4 +120,28 @@ public interface AgentCoreServiceFeign {
     @GetMapping("/internal/audit/reimbursements/{reimbId}/tenant")
     R<Long> findReimbTenantId(@RequestHeader("X-Tenant-Id") Long tenantId,
                               @PathVariable("reimbId") Long reimbId);
+
+    /**
+     * 查询报销单的发票标识符投影（P3.8 R3，invoice_match 工具数据源）。
+     *
+     * @param tenantId 租户ID（经 X-Tenant-Id 请求头传递）
+     * @param reimbId  报销单ID
+     * @return 该单的发票列表（无票号投影则为空列表）
+     */
+    @GetMapping("/internal/audit/reimbursements/{reimbId}/invoices")
+    R<List<InvoiceRecordVO>> listInvoicesByReimb(@RequestHeader("X-Tenant-Id") Long tenantId,
+                                                 @PathVariable("reimbId") Long reimbId);
+
+    /**
+     * 票据-明细交叉核验 + 离线规则验真（P3.8 R3-3 / R3-5，invoice_match 工具）。
+     *
+     * @param tenantId 租户ID（经 X-Tenant-Id 请求头传递）
+     * @param reimbId  报销单ID
+     * @param request  申报明细与合计
+     * @return 核验结果（票面 vs 明细差额、异常清单）
+     */
+    @PostMapping("/internal/audit/reimbursements/{reimbId}/invoice-match")
+    R<InvoiceMatchVO> matchInvoices(@RequestHeader("X-Tenant-Id") Long tenantId,
+                                    @PathVariable("reimbId") Long reimbId,
+                                    @RequestBody InvoiceMatchRequest request);
 }
