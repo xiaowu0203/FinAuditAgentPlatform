@@ -18,6 +18,7 @@ import com.finaudit.agentcore.pojo.vo.ReimbursementDetailVO;
 import com.finaudit.agentcore.pojo.vo.ReimbursementItemVO;
 import com.finaudit.agentcore.pojo.vo.ReimbursementVO;
 import com.finaudit.agentcore.pojo.vo.TaskVO;
+import com.finaudit.agentcore.support.BizNoInserter;
 import com.finaudit.starter.web.exception.BizException;
 import com.finaudit.starter.web.auth.UserContext;
 import com.finaudit.starter.web.auth.UserContextHolder;
@@ -100,9 +101,10 @@ public class ReimbursementService {
         // 3. 服务端重新计算报销总金额，不信任前端传入total，防止前端篡改金额
         BigDecimal total = computeTotal(request.items());
 
-        // 4. 组装报销单实体并插入数据库
+        // 4. 组装报销单实体并插入数据库（单号撞库自动换号重试，见 BizNoInserter）
         ExpenseReimbursement reimb = ExpenseReimbursement.from(request, tenantId, applicantId, total);
-        reimbursementMapper.insert(reimb);
+        BizNoInserter.insertWithRetry("报销单", "报销单号", ExpenseReimbursement::generateReimbNo,
+                reimb::setReimbNo, () -> reimb.setId(null), () -> reimbursementMapper.insert(reimb));
 
         // 5. 将附件ID与当前报销单做关联绑定（file_record 引用；fileType 默认 OTHER，分类归 P2b OCR）
         attachmentService.attachToReimb(fileRecordIds, reimb.getId(), tenantId);

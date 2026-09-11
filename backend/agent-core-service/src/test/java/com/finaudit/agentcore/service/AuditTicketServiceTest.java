@@ -72,6 +72,8 @@ class AuditTicketServiceTest {
     private DistributedLockTemplate lockTemplate;
     @Mock
     private RuleBasedFlowEngine flowEngine;
+    @Mock
+    private BudgetOccupancyService budgetOccupancyService;
 
     @InjectMocks
     private AuditTicketService service;

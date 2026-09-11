@@ -60,11 +60,13 @@ public class AuditTicketService {
     private final ReimbursementService reimbursementService;
     private final DistributedLockTemplate lockTemplate;
     private final RuleBasedFlowEngine flowEngine;
+    /** 预算占用服务（P3.8 R1：审批通过时真实占用部门预算，各终态释放） */
+    private final BudgetOccupancyService budgetOccupancyService;
 
     public AuditTicketService(AuditTicketMapper ticketMapper, AuditRecordMapper recordMapper,
                               AgentTaskService taskService, AgentTaskStepService stepService,
                               ReimbursementService reimbursementService, DistributedLockTemplate lockTemplate,
-                              RuleBasedFlowEngine flowEngine) {
+                              RuleBasedFlowEngine flowEngine, BudgetOccupancyService budgetOccupancyService) {
         this.ticketMapper = ticketMapper;
         this.recordMapper = recordMapper;
         this.taskService = taskService;
@@ -72,6 +74,7 @@ public class AuditTicketService {
         this.reimbursementService = reimbursementService;
         this.lockTemplate = lockTemplate;
         this.flowEngine = flowEngine;
+        this.budgetOccupancyService = budgetOccupancyService;
     }
 
     // ===================== 编排器回调入口（由AgentOrchestrator调用） =====================
@@ -536,6 +539,12 @@ public class AuditTicketService {
                                   AuditActionRequest request) {
         // 获取任务信息
         AgentTask task = taskService.getRequired(ticket.getTaskId());
+        // ---- P3.8 R1：审批通过 = 真实占用部门预算 ----
+        // 必须在 markSuccess 之前占用：若先标记成功、占用又因额度不足抛错，
+        // 整个事务回滚会把「已通过的任务」一起回滚（用错误的方式失败）。
+        // 正常流程下额度充足（不足的单据已在流水线内被 budget_query 拦成 NEED_REVIEW），
+        // 此处若抛 BizException 则由上层事务回滚，审批人看到"预算不足"提示。
+        budgetOccupancyService.occupyByTask(task);
         // CAS 更新任务为成功状态（期望态含 APPROVAL_PENDING），写入相应结果
         // （markApprovalPending阶段已经落库result与finishedSteps，直接复用）；竞争失败则整个动作回滚
         if (!taskService.markSuccess(task, task.getResult(),
@@ -571,6 +580,8 @@ public class AuditTicketService {
         }
         // 将报销单设置为【审核失败】状态
         reimbursementService.updateStatusByTaskId(ticket.getTaskId(), ReimbursementStatus.FAILED);
+        // P3.8 R1：驳回即释放预算占用（防御式——正常流程此时尚未占用，幂等空操作）
+        releaseBudgetOf(task);
         // 工单状态填充为【已驳回】
         ticket.applyAudit(AuditTicketStatus.REJECTED, userId, commentOf(request));
         // 更新工单信息
@@ -598,6 +609,8 @@ public class AuditTicketService {
         }
         // 将报销单设置为【审核失败】状态
         reimbursementService.updateStatusByTaskId(ticket.getTaskId(), ReimbursementStatus.FAILED);
+        // P3.8 R1：终止即释放预算占用（同驳回，防御式幂等）
+        releaseBudgetOf(task);
         // 工单状态填充为【已终止】
         ticket.applyAudit(AuditTicketStatus.TERMINATED, userId, commentOf(request));
         // 更新工单信息
@@ -627,6 +640,10 @@ public class AuditTicketService {
         }
         // 将报销单设置为【已作废】状态
         reimbursementService.markCancelledByTaskId(ticket.getTaskId());
+        // P3.8 R1：同意撤销即释放预算占用。
+        // 这条路径是释放的关键场景——工单此前已 APPROVED（审批通过时占用了预算），
+        // 若此处不释放，预算会被作废单据永久吃掉（比不占用更糟）。
+        releaseBudgetOf(task);
         // 工单状态填充为【已撤销】
         ticket.applyWithdraw(userId, commentOf(request));
         // 更新工单信息
@@ -772,6 +789,37 @@ public class AuditTicketService {
     /**
      * 根据任务inputParams里面reimbId，构建报销业务快照。
      * 构建失败不阻断主流程，打印warn日志返回null。
+     * @param task agent任务
+     * @return 报销单快照map，失败返回null
+     */
+    /**
+     * 释放该任务对应报销单的预算占用（P3.8 R1）。
+     *
+     * <p>所有「非通过」终态（驳回/终止/同意撤销）都必须调用：驳回与终止时正常流程尚未占用
+     * （幂等空操作），而{@code 同意撤销}是**真正需要释放**的路径——工单此前已 APPROVED、
+     * 审批通过时占用了预算，若不释放，预算会被作废单据永久吃掉，比不占用更糟。</p>
+     *
+     * <p>非报销任务（无 reimbId）直接跳过；释放失败不抛错——状态机已推进，不能因预算回滚整条审批动作，
+     * 失败仅告警，由 {@code BudgetOccupancyService} 的占用-释放配平对账事后暴露。</p>
+     */
+    private void releaseBudgetOf(AgentTask task) {
+        if (task == null || task.getInputParams() == null) {
+            return;
+        }
+        Object raw = task.getInputParams().get("reimbId");
+        if (raw == null) {
+            return;
+        }
+        try {
+            budgetOccupancyService.release(Long.valueOf(raw.toString()));
+        } catch (Exception e) {
+            log.warn("预算释放失败（不影响审批动作）: taskId={}, reimbId={}: {}", task.getId(), raw, e.getMessage());
+        }
+    }
+
+    /**
+     * 根据任务 inputParams 里的 reimbId 构建报销业务快照。
+     * 构建失败不阻断主流程，打印 warn 日志返回 null。
      * @param task agent任务
      * @return 报销单快照map，失败返回null
      */

@@ -720,3 +720,189 @@ Uncaught TypeError: Cannot read properties of undefined (reading 'value')   (vue
 **经验沉淀**：`app.use(router)` 会立即导航，**任何在 `beforeEach` 里取 store 的项目都必须先
 `setActivePinia` 或把实例显式传入 `useStore(pinia)`**；否则该错误只在特定时序（扩展注入、
 WebSocket 重连、慢机器）下偶发，表现为「白屏 + 不跳登录」而非明确报错，极易被误判为守卫逻辑写错。
+
+---
+
+### R1 · 预算真实占用与释放 —— ✅ 后端完成（**待用户迁移 DB + 联调**）
+
+> 业务地基（B-1 / B-2）：`budget.used_amount` 此前**全仓无写入点**，只做只读预检，
+> 同一部门同月多笔报销全部报"预算充足"、系统一次都不拦。
+
+**实现要点**
+
+| 项 | 落点 | 要点 |
+|---|---|---|
+| 建表 | `migration-P3.8.sql` + `finaudit-schema.sql` + `tables.md` | `budget_occupancy`：一单一记录 `uk(tenant_id, reimb_id)`；状态 OCCUPIED/RELEASED + 占用/释放次数 |
+| 原子 SQL | `BudgetMapper.xml` | `occupy`：`used_amount+amount<=total_budget` **写在 WHERE 里**（行锁串行化）；`release`：`GREATEST(...,0)` 防负数；`findBudgetRow`：只读试算 |
+| 服务 | 新增 `BudgetOccupancyService` | 唯一写入口；幂等（重复占用不二次累加、重复释放不二次扣减）；未配置预算跳过仅告警；`reconciledNet` 提供占用-释放配平对账 |
+| 占用接入 | `AgentOrchestrator.finalizeSuccess`（AUTO_PASS 前）、`AuditTicketService.approve` | **刻意置于 markSuccess 之前**：若先标记成功、占用又失败，事务回滚会把已完成任务一起回滚 |
+| 释放接入 | `approve` 之外的各终态：`reject`/`terminate`（防御式幂等）、**`withdraw-agree`（真正需要释放——此前已 APPROVED 已占用）** | 同意撤销若不释放，预算会被作废单据永久吃掉，比不占用更糟 |
+
+**两个设计决策（重要）**
+
+1. **用「只读试算 + 原子占用」两步，而不是「占用后 catch 异常转人工」**：
+   在事务内捕获 `BizException` 后继续写库（如 `enterApproval` 建工单）是危险的——
+   MySQL 尚可，**PostgreSQL 下事务已被标记 aborted（25P02）**，后续语句全失败，
+   且依赖 Spring 对回滚异常的判定过脆。故把"预算不足"变成一次不写库的预检（`canOccupy`），
+   AUTO_PASS 前判定不通过则连同原因一并转 NEED_REVIEW。
+   预检存在 TOCTOU 窗口，最终正确性仍由原子 UPDATE 保证（并发抢额度时抛错回滚）。
+2. **未配置预算不阻断**（保持历史宽松语义，仅告警）：存量种子只覆盖 4 个部门 1 个周期，
+   强制阻断会让大量单据直接失败。
+
+**验证（均已实测）**
+
+| 项 | 方式 | 结果 |
+|---|---|---|
+| 单测 | `BudgetOccupancyServiceTest` | **15 例全绿**（幂等/未配置/不足拦截/重跑再占用/配平/周期推导） |
+| 回归 | `mvn test`（全后端） | agent-core **86 例**全绿（原 66 + R1 新增 15 + 单号重试新增 5）；其余模块全绿 |
+| **并发正确性** | `docs/test/budget-occupancy-concurrency.ps1` 直连真实 MySQL 5.7.10 | **7/7 PASS**：场景1（20 并发×600/预算10000）成功 16 笔、`used_amount=9600` 与成功笔数×600 一致（无丢失更新）；**场景2（核心，20 并发×6000/预算10000）仅 1 笔成功、`used_amount=6000` 未超总额**；场景3 `GREATEST` 防负数生效 |
+| 迁移脚本 | 实际执行 `migration-P3.8.sql` | 表已建出、结构与预期一致；沙箱数据（tenant_id=9999）已清理 |
+| 全量 schema | 导入一次性库 `finaudit_schema_check` | exit 0，19 张表齐全（含 `budget_occupancy`） |
+
+> 场景2 是关键判据：若用"先查再算再写"，20 个线程会读到同一个 `used_amount=0` 而全部判定充足，
+> 最终 `used_amount=120000` 超支 12 倍。
+
+**待办**
+
+- [ ] **用户执行迁移**：`mysql -uroot -p < docs/database/migration-P3.8.sql`
+- [ ] **重启 agent-core-service**（新表 + 新服务生效）
+- [ ] 联调验收：approve 后 `used_amount` 增加 → `withdraw-agree` 后回落且不为负；同一预算并发两笔超额单据，第二笔进 NEED_REVIEW/被拦
+- [ ] **R1-7 前端展示延后**（按 AGENTS.md §7 后端先行）：报销单详情/预算页展示「本单占用 / 部门已用 / 剩余」
+
+---
+
+### R1-8（联调期发现的偶发故障）：单号熵不足导致同秒提交撞库
+
+> 现象：R1 端到端脚本连跑时，偶发第二笔提交返回 400「数据唯一约束冲突，请检查后重试」。
+> 起初怀疑并发写坏数据，实际是**单号生成器随机位不够**。
+
+**根因**
+
+`ExpenseReimbursement.generateReimbNo()` 与 `AgentTask.generateTaskNo()` 都是
+`前缀 + yyyyMMddHHmmss(秒级) + ThreadLocalRandom.nextInt(10000)` 的 4 位随机段，
+分别对应唯一索引 `uk_reimb_no` / `uk_task_no`。同一秒内提交 N 笔时，碰撞概率约
+`C(N,2)/10000` —— 单笔看是万分之一，但脚本连跑 / 生产高峰期必然命中。
+碰撞后抛 `DuplicateKeyException`，被 `GlobalExceptionHandler` 兜成用户可见的
+400「数据唯一约束冲突」，用户只看到一个莫名其妙的失败。
+
+> 复现难度也印证了这一点：手工在**同一秒**连续提交两笔（`R202609120057 011854` /
+> `R202609120057 017607`）**均成功**，无法按需复现——它是概率事件而非确定性缺陷。
+> 全表唯一索引仅 17 个，逐项排除后只剩 `uk_reimb_no` / `uk_task_no`
+> （`expense_attachment` 无唯一索引），定位收敛。
+
+**修复**（`BizNoInserter`，新增）
+
+| 项 | 落点 | 要点 |
+|---|---|---|
+| 换号重试 | 新增 `support/BizNoInserter.java` | 捕获 `DuplicateKeyException` → 重新生成单号 → 重试，最多 3 次 |
+| 清主键 | 同上，`idClearer` 回调 | 首轮 INSERT 失败时自增主键可能已被回填，**重试前必须置 null**，否则会按主键写入冲突行 |
+| 只吞撞号 | 同上 | 其余 `RuntimeException`（字段超长、非空约束等）原样上抛，不掩盖真实故障；连续 3 次仍撞才抛可读的 `BizException` |
+| 接入 | `ReimbursementService.submit`、`AgentTaskService.createTask` | 仅这两处单号落库点 |
+| 可见性 | 两个 `generateXxxNo()` 改 `public` | 跨包方法引用需 public；均为纯函数，无副作用 |
+
+> 未改成「提高随机位数 / 雪花 ID」：单号是**对外可读**的业务编号，前缀+时间的格式
+> 有查询与沟通价值；重试方案不改变格式与既有数据，且对未来任何唯一索引变更都免疫。
+
+**验证（AI 自测，非用户验收）**
+
+| 项 | 方式 | 结果 |
+|---|---|---|
+| 单测 | `BizNoInserterTest` | **5/5 通过**：首次成功不重试 / 撞号换号成功 / 重试前清主键 / 连续 3 次撞号抛 `BizException` / 非撞号异常原样上抛 |
+| 回归 | `mvn -o clean install`（19 模块） | **BUILD SUCCESS**；agent-core 86 例全绿（81 + 5），tool 11 / tenant 20 / file 3 全绿 |
+| **端到端造撞** | `docs/test/bizno-collision-retry.ps1` | **4/4 PASS**（见下） |
+| **服务端日志实证** | agent-core 控制台（用户提取） | 见下：`第 2 次/第 3 次碰撞 → 放弃重试` 三行，最坏分支与对外语义均已实测 |
+
+**端到端造撞（务实难点：怎么让万分之一必然发生）**
+
+自然撞号概率万分之一，靠连跑脚本验证不到。本脚本用「占满整秒」把概率变成必然：
+
+1. 等到下一整秒瞬间 → 立即向 `agent_task` 插入该秒的 **10000 个尾号**（0000-9999）→ 该秒内无论随机数抽到什么，`uk_reimb_no` / `uk_task_no` 必撞；
+2. 请求发出后由**后台占有线程**连续占满后续每秒（覆盖请求后 1~9 秒）。
+
+> 中途两次方案失败也记在这里，避免后人重走：
+> - **只占尾号 0-9 是错的**：撞中概率仍只有 `10/10000`，等于换个姿势继续赌千分之一；
+> - **"先占号再提交"也是错的**：单号并非在提交那一刻生成，`submit()` 在生成号段前还要走
+>   「文件服务 Feign 校验附件 → 部门校验 → 金额重算」等远程调用，**实测号段生成时刻比请求发出晚 2~4 秒**，
+>   先前占好的那一秒早已过去。必须用后台线程在请求进行中持续占号。
+
+实测结果：`R202609120108336852` / `T202609120108331737`，秒段 `20260912010833` 正是被占满的那一秒。
+反证同样有力——`uk_task_no` 在 `agent_task` 的唯一索引上，该秒 0-9999 全部被占，
+插入成功的 `14642` **只能是换号得来**（探针占用 id 6400~14641）。
+
+**服务端日志实证（用户从 agent-core 控制台提取，2026-09-12 01:14:09）**
+
+```
+WARN  c.f.agentcore.support.BizNoInserter : 任务号碰撞，换号重试（第 2 次）：任务号=T202609120114086523
+WARN  c.f.agentcore.support.BizNoInserter : 任务号碰撞，换号重试（第 3 次）：任务号=T202609120114091757
+ERROR c.f.agentcore.support.BizNoInserter : 任务号连续 3 次碰撞，放弃重试：任务号=T202609120114095370
+```
+
+这段日志把三条结论一次性钉死：
+
+1. **重试确实重新生成了单号**：`…6523` → `…1757` → `…5370` 三个号互不相同，
+   证明不是拿同一个号反复重插（那才是无意义重试）。
+2. **三次尝试全落在 `01:14:09` 同一秒内**（`.151` / `.157` / `.163`，间隔仅 6ms）：
+   因为该秒 10000 个尾号已被占满，`now()` 不变 ⇒ 换号后仍在同一秒 ⇒ 必然继续撞。
+   这也顺带证明了"连续 3 次撞号"这一最坏分支可被真实触发，而非纸面推演。
+3. **耗尽重试后对外返回可读提示**：对应的正是脚本第 `[2.1]` 次提交返回
+   `code=400`，而非暴露唯一索引细节的「数据唯一约束冲突」。
+
+> 老代码在此处**不可能**产生任何 `BizNoInserter` 日志：它只做单次
+> `taskMapper.insert(task)`，撞了就抛 `DuplicateKeyException` 被全局处理器兜住。
+> 故"存在这些日志"本身就是"新代码在跑"的充分证据。
+
+**同轮的成功分支**（`01:15:40`，脚本 **4/4 PASS**）：号段生成于
+`20260912011542`（该秒已确认占满 10000/10000），换号后成功落库
+`R202609120115429457` / `T202609120115427480`，对外 `code=0`——
+即"撞号但用户无感"的预期行为。
+
+
+> 另：产品侧 `BudgetOccupancyService.reconciledNet` 的对账公式同期发现同一处错误
+> （见 R1-9），本脚本的对账断言口径已一并按正确公式修正。
+
+> **日志可验证性（记录在案，未实施）**：全仓无 logback 配置，日志只进控制台，
+> IDE 控制台与自动化脚本所在 shell 相互隔离，脚本读不到日志，只能人工确认。
+> 曾尝试为 agent-core 增加 `logback-spring.xml` 落盘，**按用户要求撤回**
+> （明确不要落盘实体日志文件）。故本脚本的日志判据仍需人工在控制台核对。
+
+
+---
+
+### R1-9（端到端脚本牵出的产品缺陷）：配平对账公式重复扣减释放额
+
+> 现象：R1 端到端脚本报「本轮记账净额 == budget.used_amount」失败，算出 `-6863.00`，
+> 而 DB 里 `used_amount = 142.00` 完全正确。起初判为脚本断言写错，**实为产品代码同款错误**。
+
+**根因**
+
+`budget_occupancy` 是「**一行一单 + 状态流转**」：`OCCUPIED ⇄ RELEASED` 是**同一行**的状态迁移
+（`applyRelease()` / `applyReoccupy()`），转 `RELEASED` 时 `budget.release` 已把该行金额
+从 `used_amount` 扣回。所以 RELEASED 行本身就表示「不再计入」，**整条跳过**即可。
+
+但 `reconciledNet` 用了 `Σ(OCCUPIED) − Σ(RELEASED)`，等于把已释放金额**再扣一次**。
+实测一轮「占 142 → 占 7005 → 撤销释放 7005」：`142 − 7005 = −6863`，而真实 `used_amount = 142`。
+
+**为什么单测没拦住**：原单测是「占用 600 + 释放 600 → 期望 0」，这个期望值恰好让错误公式
+算出"看着很对"的 0；而真实值应是 600。断言与实现同源于同一个错误理解，形成闭环。
+
+**修复**
+
+| 项 | 落点 | 要点 |
+|---|---|---|
+| 对账口径 | `BudgetOccupancyService.reconciledNet` | 改为只累加 `status='OCCUPIED'` 的行，RELEASED 整条跳过 |
+| 语义注释 | `BudgetOccupancy` 类注释 | 配平公式更正为 `Σ(amount WHERE OCCUPIED) == used_amount`，并注明"再按占用−释放计算会扣减两次" |
+| 单测 | `BudgetOccupancyServiceTest` | 原 `reconciledNetSubtractsReleasedFromOccupied`（期望 0）改为 `reconciledNetCountsOnlyOccupiedRows`（期望 600）；新增 `reconciledNetZeroWhenAllReleased` |
+| 脚本口径 | `r1-budget-occupancy-e2e.ps1` | 两处对账断言改为 `SUM(amount) WHERE status='OCCUPIED'` |
+
+**验证**
+
+| 项 | 方式 | 结果 |
+|---|---|---|
+| 单测 | `BudgetOccupancyServiceTest` | **16/16 通过**（原 15 + 新增 1） |
+| 端到端 | `docs/test/r1-budget-occupancy-e2e.ps1` | **19/19 全 PASS**（此前 17 PASS / 2 FAIL，两处 FAIL 即本缺陷导致的假失败） |
+
+> 影响面：`reconciledNet` 仅供运维/演练核验，未暴露为 HTTP 端点，**不影响业务主链路**；
+> 但它是"预算被永久吃掉"这一 R1 主要风险的核验手段，公式错了等于没有监控，必须修。
+
+
+

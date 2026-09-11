@@ -73,6 +73,12 @@ public class ExpenseAttachment {
 
     /**
      * 仅用于回填 reimb_id 的批量 UPDATE 载体（转换封装在实体类，业务层不手写 set 组装，见 CLAUDE.md §5.6）。
+     *
+     * <p><b>⚠️ 只能传非 null 值</b>：MyBatis-Plus 默认 NOT_NULL 更新策略会跳过实体中的 null 字段，
+     * 若传 null，SET 子句为空 → 生成非法 SQL（{@code UPDATE expense_attachment  WHERE ...}）→
+     * JSqlParser 报 {@code unexpected token "UPDATE"}。
+     * <b>置 NULL 请改用 {@code LambdaUpdateWrapper.set(列, null)} 且实体参数传 null</b>
+     * （见 {@code AttachmentService.unbindByReimb}）。</p>
      */
     public static ExpenseAttachment forBindReimb(Long reimbId) {
         ExpenseAttachment attachment = new ExpenseAttachment();

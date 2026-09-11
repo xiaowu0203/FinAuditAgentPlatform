@@ -14,6 +14,7 @@ DROP TABLE IF EXISTS expense_attachment;
 DROP TABLE IF EXISTS file_record;
 DROP TABLE IF EXISTS expense_reimbursement;
 DROP TABLE IF EXISTS budget;
+DROP TABLE IF EXISTS budget_occupancy;
 DROP TABLE IF EXISTS finance_rule;
 DROP TABLE IF EXISTS audit_record;
 DROP TABLE IF EXISTS audit_ticket;
@@ -122,7 +123,7 @@ CREATE TABLE sys_user_role (
 CREATE TABLE agent_task (
     id            BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
     tenant_id     BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
-    task_no       VARCHAR(40)   NOT NULL COMMENT '任务编号，如 T20260813120000123456',
+    task_no       VARCHAR(40)   NOT NULL COMMENT '任务编号 = T + yyyyMMddHHmmss + 4 位随机数，如 T202608131200001234；同秒撞号由 BizNoInserter 换号重试',
     title         VARCHAR(128)  NOT NULL COMMENT '任务标题',
     task_type     VARCHAR(20)   NOT NULL DEFAULT 'GENERIC' COMMENT '业务类型：REIMBURSEMENT 报销审核 / GENERIC 通用分析（P2a 新增，规划器按业务注入提示词/工具）',
     input_params  JSON          NOT NULL COMMENT '任务入参（原始输入，含明细金额等）',
@@ -218,7 +219,7 @@ CREATE TABLE tool_execution_log (
 CREATE TABLE expense_reimbursement (
     id           BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
     tenant_id    BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
-    reimb_no     VARCHAR(40)   NOT NULL COMMENT '报销单号，如 R2026081512345678',
+    reimb_no     VARCHAR(40)   NOT NULL COMMENT '报销单号 = R + yyyyMMddHHmmss + 4 位随机数，如 R2026081512345678；同秒撞号由 BizNoInserter 换号重试',
     title        VARCHAR(128)  NOT NULL COMMENT '报销标题',
     expense_type VARCHAR(32)   NOT NULL COMMENT '费用类型: TRAVEL/ENTERTAINMENT/OFFICE',
     applicant_id BIGINT        NOT NULL COMMENT '申请人用户ID',
@@ -285,7 +286,8 @@ CREATE TABLE file_record (
 
 -- ---------------------------------------------------------------------
 -- 12. 部门预算表（P2b 预算核算工具 budget_query）
---    period 预算周期 YYYY-MM；P3b 审批通过后 used_amount 累加（待实现）
+--    period 预算周期 YYYY-MM；**P3.8 R1 起 used_amount 真实累加/释放**
+--    （由 BudgetOccupancyService 在「AUTO_PASS 收尾 / 审批通过」时原子占用，各终态释放）
 -- ---------------------------------------------------------------------
 CREATE TABLE budget (
     id           BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -294,13 +296,38 @@ CREATE TABLE budget (
     dept_id      BIGINT        NOT NULL COMMENT '部门ID（P3.5b 权威关联键）',
     period       VARCHAR(7)    NOT NULL COMMENT '预算周期 YYYY-MM',
     total_budget DECIMAL(14,2) NOT NULL COMMENT '预算总额',
-    used_amount  DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '已用额度（审核通过后累加）',
+    used_amount  DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '已用额度（P3.8 R1 起真实累加）',
     created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted      TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
     PRIMARY KEY (id),
     UNIQUE KEY uk_dept_period (tenant_id, dept_id, period)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '部门预算表（P3.5b：唯一键改为 dept_id）';
+
+-- ---------------------------------------------------------------------
+-- 12.1 预算占用记账表（P3.8 R1 新增）
+--    一张报销单一条记录（uk_reimb）；记录占用/释放的当前状态与发生次数；
+--    配平公式（对账）：SUM(amount WHERE OCCUPIED) - SUM(amount WHERE RELEASED) == budget.used_amount
+-- ---------------------------------------------------------------------
+CREATE TABLE budget_occupancy (
+    id            BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id     BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    reimb_id      BIGINT        NOT NULL COMMENT '报销单ID（一单一记录，业务幂等键）',
+    task_id       BIGINT        DEFAULT NULL COMMENT '关联审核任务ID（追溯用）',
+    dept_id       BIGINT        NOT NULL COMMENT '部门ID（budget 权威关联键，P3.5b）',
+    period        VARCHAR(7)    NOT NULL COMMENT '预算周期 YYYY-MM（按报销日期推导）',
+    amount        DECIMAL(12,2) NOT NULL COMMENT '占用金额（Decimal 强制）',
+    status        VARCHAR(16)   NOT NULL DEFAULT 'OCCUPIED' COMMENT '占用状态: OCCUPIED 已占用 / RELEASED 已释放',
+    occupy_count  INT           NOT NULL DEFAULT 1 COMMENT '累计占用次数（resubmit 重跑会累加）',
+    release_count INT           NOT NULL DEFAULT 0 COMMENT '累计释放次数',
+    created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted       TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0未删 1已删',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_reimb (tenant_id, reimb_id) COMMENT '一单一记录，防重复占用',
+    KEY idx_dept_period (tenant_id, dept_id, period),
+    KEY idx_status (status)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '预算占用记账表（P3.8 R1；支撑占用-释放配平对账）';
 
 -- ---------------------------------------------------------------------
 -- 13. 财务规则表（P2b 规则校验工具 rule_check；CRUD/发布归 P2c）

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.finaudit.agentcore.mapper.BudgetMapper">
+
+    <!--
+      预算占用/释放必须为单条原子 SQL（P3.8 R1）。
+      若改为"先 SELECT 再 UPDATE"，并发下两笔单据会读到同一个 used_amount、
+      各自判定"预算充足"，最终共同超支——这是预算管控最典型的失效方式。
+      故：把"是否超支"的判断直接放进 UPDATE 的 WHERE，由数据库的行锁保证串行化。
+    -->
+
+    <!-- 原子占用：used_amount += amount，且加总后不得超过 total_budget -->
+    <update id="occupy">
+        UPDATE budget
+        SET used_amount = used_amount + #{amount},
+            updated_at  = NOW()
+        WHERE tenant_id   = #{tenantId}
+          AND dept_id     = #{deptId}
+          AND period      = #{period}
+          AND deleted     = 0
+          AND used_amount + #{amount} &lt;= total_budget
+    </update>
+
+    <!-- 原子释放：GREATEST 防负数（重复释放时 used_amount 不会被扣成负值） -->
+    <update id="release">
+        UPDATE budget
+        SET used_amount = GREATEST(used_amount - #{amount}, 0),
+            updated_at  = NOW()
+        WHERE tenant_id = #{tenantId}
+          AND dept_id   = #{deptId}
+          AND period    = #{period}
+          AND deleted   = 0
+    </update>
+
+    <!-- 预算行只读试算：区分「未配置预算」与「额度不足」，返回 null 表示未配置。
+         不参与超支判定——超支由 occupy 的原子 UPDATE 在数据库层拦死。 -->
+    <select id="findBudgetRow" resultType="com.finaudit.agentcore.pojo.entity.Budget">
+        SELECT id, tenant_id, dept_name, dept_id, period, total_budget, used_amount
+        FROM budget
+        WHERE tenant_id = #{tenantId}
+          AND dept_id   = #{deptId}
+          AND period    = #{period}
+          AND deleted   = 0
+        LIMIT 1
+    </select>
+
+</mapper>

@@ -101,8 +101,12 @@ public class AgentTask {
         return task;
     }
 
-    /** 任务号：T + yyyyMMddHHmmss + 4 位随机数 */
-    private static String generateTaskNo() {
+    /**
+     * 任务号：T + yyyyMMddHHmmss + 4 位随机数。
+     * <p>随机段存在同秒碰撞概率，调用方须经
+     * {@link com.finaudit.agentcore.support.BizNoInserter#insertWithRetry} 落库以获得换号重试。</p>
+     */
+    public static String generateTaskNo() {
         return "T" + LocalDateTime.now().format(TASK_NO_FMT)
                 + String.format("%04d", ThreadLocalRandom.current().nextInt(10000));
     }

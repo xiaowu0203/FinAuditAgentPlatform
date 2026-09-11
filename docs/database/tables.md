@@ -193,7 +193,10 @@
 
 ## 12. budget 部门预算表（P2b）
 
-> 归属 agent-core；`total_budget`/`used_amount` 一律 DECIMAL（金额 Decimal 强制）。审核通过后 `used_amount` 累加。
+> 归属 agent-core；`total_budget`/`used_amount` 一律 DECIMAL（金额 Decimal 强制）。
+> **P3.8 R1 起 `used_amount` 才真正被写入**：此前注释写着"审核通过后累加"但全仓无写入点（只读预检），
+> 现由 `BudgetOccupancyService` 在「AUTO_PASS 收尾 / 审批通过」时原子累加，各终态（驳回/终止/同意撤销）释放。
+> 占用/释放 SQL 见 `BudgetMapper.xml`（超支条件写在 UPDATE 的 WHERE 里，由行锁串行化）。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -203,8 +206,30 @@
 | dept_id | BIGINT | 部门 ID（P3.5b 权威关联键，NOT NULL，FK→sys_dept.id 语义） |
 | period | VARCHAR(7) | 预算周期 `YYYY-MM` |
 | total_budget | DECIMAL(14,2) | 预算总额 |
-| used_amount | DECIMAL(14,2) | 已用额度（审核通过后累加） |
+| used_amount | DECIMAL(14,2) | 已用额度（**P3.8 R1 起真实累加**；释放用 `GREATEST(...,0)` 防负数） |
 | created_at / updated_at / deleted | | 唯一键 `uk_dept_period(tenant_id, dept_id, period)`（P3.5b 切换） |
+
+## 12.1 budget_occupancy 预算占用记账表（P3.8 R1 新增）
+
+> 归属 agent-core；`BudgetOccupancyService` 是**唯一写入口**（AGENTS.md §5.9）。
+> 一张报销单一条记录（`uk_reimb`），记录占用/释放的当前状态与发生次数；
+> 配平公式（对账）：`SUM(amount WHERE OCCUPIED) - SUM(amount WHERE RELEASED) == budget.used_amount`。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| reimb_id | BIGINT | 报销单 ID（业务幂等键，一单一记录） |
+| task_id | BIGINT | 关联审核任务 ID（追溯用） |
+| dept_id | BIGINT | 部门 ID（budget 权威关联键） |
+| period | VARCHAR(7) | 预算周期 `YYYY-MM`（按报销日期推导） |
+| amount | DECIMAL(12,2) | 占用金额 |
+| status | VARCHAR(16) | `OCCUPIED` 已占用 / `RELEASED` 已释放 |
+| occupy_count | INT | 累计占用次数（resubmit 重跑累加） |
+| release_count | INT | 累计释放次数 |
+| created_at / updated_at / deleted | | 唯一键 `uk_reimb(tenant_id, reimb_id)` |
+
+> 迁移：`docs/database/migration-P3.8.sql`；并发验证脚本：`docs/test/budget-occupancy-concurrency.ps1`。
 
 ## 13. finance_rule 财务规则表（P2b 建表 / P2c 可视化配置 + Nacos 动态刷新）
 

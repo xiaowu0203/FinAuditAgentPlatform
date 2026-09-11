@@ -10,6 +10,7 @@ import com.finaudit.agentcore.pojo.vo.TaskVO;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
 import com.finaudit.agentcore.mapper.AgentTaskMapper;
 import com.finaudit.agentcore.mq.TaskEventPublisher;
+import com.finaudit.agentcore.support.BizNoInserter;
 import com.finaudit.starter.web.exception.BizException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,8 +50,9 @@ public class AgentTaskService {
     public TaskVO createTask(TaskSubmitRequest request, Long tenantId, Long createdBy) {
         // 类型转换，初始化状态为已提交待执行
         AgentTask task = AgentTask.from(request, tenantId, createdBy);
-        // 落库
-        taskMapper.insert(task);
+        // 落库（任务号撞库自动换号重试，见 BizNoInserter）
+        BizNoInserter.insertWithRetry("任务", "任务号", AgentTask::generateTaskNo,
+                task::setTaskNo, () -> task.setId(null), () -> taskMapper.insert(task));
         // 发布任务提交事件：必须在事务提交【之后】发布，否则消费者可能在事务提交前
         // 抢先消费，读不到任务行报「任务不存在」（发布先于提交的竞态，已实测复现）。
         // 事务提交后触发 afterCommit，此时任务行（及外层报销单事务）对消费者可见；
@@ -244,6 +246,15 @@ public class AgentTaskService {
      * 更新任务为作废终态，记录原因供展示，
      * resume/onToolResult 均以 CANCELLED 拒绝，防迟到回调写脏状态。
      *
+     * <p><b>期望态含 SUCCESS（P3.8 R1 修复）</b>：两条作废路径的源状态不同——
+     * <ul>
+     *   <li>提交人 PENDING 撤回：任务处于 {@code APPROVAL_PENDING}（待审批暂停态）</li>
+     *   <li>财务同意撤销：任务处于 {@code SUCCESS}（此前已审批通过）</li>
+     * </ul>
+     * 原实现漏了 SUCCESS，导致「同意撤销」在 CAS 处必然失败并抛「任务状态已变更」——
+     * 即 P3b 的 {@code withdraw-agree} 端点一直是**不可用**的（400），连带作废、附件解绑、
+     * 以及 R1 的预算释放全都执行不到。此为既存缺陷，联调实测发现。</p>
+     *
      * @return false = 状态已被并发迁移
      */
     public boolean markCancelled(AgentTask task, String reason) {
@@ -251,7 +262,7 @@ public class AgentTaskService {
         return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
                 .eq(AgentTask::getId, task.getId())
                 .in(AgentTask::getStatus, TaskStatus.PENDING.name(), TaskStatus.RUNNING.name(),
-                        TaskStatus.APPROVAL_PENDING.name())) > 0;
+                        TaskStatus.APPROVAL_PENDING.name(), TaskStatus.SUCCESS.name())) > 0;
     }
 
     /**

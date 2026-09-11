@@ -30,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -74,6 +75,8 @@ public class AgentOrchestrator {
     private final AuditTicketService auditTicketService;
     /** 执行加固配置（P3.5d：任务级超时预算） */
     private final AgentExecutionProperties executionProperties;
+    /** 预算占用服务（P3.8 R1：AUTO_PASS 收尾时真实占用部门预算） */
+    private final BudgetOccupancyService budgetOccupancyService;
 
     /**
      * 构造注入所有依赖组件
@@ -87,13 +90,15 @@ public class AgentOrchestrator {
      * @param reimbursementService 报销单服务（终态回写审核状态）
      * @param auditTicketService 审批工单服务（P3b 审批态进入/闭合）
      * @param executionProperties 执行加固配置（任务级超时预算）
+     * @param budgetOccupancyService 预算占用服务（R1 真实占用/释放）
      */
     public AgentOrchestrator(AgentTaskService taskService, AgentTaskStepService stepService,
                              TaskPlanner planner, RuleBasedFlowEngine flowEngine,
                              ReviewFlowDecider reviewFlowDecider, TaskEventPublisher eventPublisher,
                              ChatClientFactory modelFactory, ReimbursementService reimbursementService,
                              AuditTicketService auditTicketService,
-                             AgentExecutionProperties executionProperties) {
+                             AgentExecutionProperties executionProperties,
+                             BudgetOccupancyService budgetOccupancyService) {
         this.taskService = taskService;
         this.stepService = stepService;
         this.planner = planner;
@@ -104,6 +109,7 @@ public class AgentOrchestrator {
         this.reimbursementService = reimbursementService;
         this.auditTicketService = auditTicketService;
         this.executionProperties = executionProperties;
+        this.budgetOccupancyService = budgetOccupancyService;
     }
 
     /**
@@ -497,6 +503,25 @@ public class AgentOrchestrator {
                 log.info("任务 {} 命中人工复核分支，原因: {}", task.getTaskNo(), decision.reviewReasons());
                 return;
             }
+            // ---- P3.8 R1：AUTO_PASS 前先真实占用部门预算 ----
+            // 顺序刻意如此：必须在 markSuccess 之前占用。若先标记任务成功、占用时又因预算不足抛错，
+            // 整个事务回滚会把「已完成的任务」一起回滚掉，属于用错误的方式失败。
+            //
+            // 这里用**前置试算 + 原子占用**两步，而不是 try/catch 后转人工：
+            // 在同一个事务里捕获 BizException 再继续做写操作（如 enterApproval）是危险的——
+            // MySQL 尚可，PostgreSQL 下事务已被标记 aborted，后续语句全部报 25P02，
+            // 且依赖 Spring 的回滚异常判定过脆。故把「预算不足」变成一次只读试算（不写库、不抛异常）。
+            if (!budgetOccupancyService.canOccupy(task, result)) {
+                List<String> reasons = new ArrayList<>(decision.reviewReasons());
+                reasons.add("BUDGET_INSUFFICIENT:部门预算不足，无法占用本次额度");
+                result.put("flowBranch", FlowDecision.NEED_REVIEW);
+                result.put("reviewReasons", reasons);
+                auditTicketService.enterApproval(task, result, steps.size(), reasons);
+                log.info("任务 {} 预算不足，AUTO_PASS 转人工复核", task.getTaskNo());
+                return;
+            }
+            // 试算通过后真实占用：此处理论上不会再失败（除非并发抢额度，届时由外层事务回滚整条流水线重试）
+            budgetOccupancyService.occupyByTask(task);
             // CAS 更新任务为成功状态（AUTO_PASS）
             if (!taskService.markSuccess(task, result, steps.size())) {
                 log.warn("任务 {} 收尾竞争失败（状态已被并发迁移），放弃 AUTO_PASS 收尾", task.getId());

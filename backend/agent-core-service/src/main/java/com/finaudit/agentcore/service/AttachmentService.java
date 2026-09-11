@@ -83,12 +83,20 @@ public class AttachmentService {
      * 解绑报销单全部附件（P3b 工作流重设计）：reimb_id 置 NULL，释放文件占用。
      * <p>场景：报销单作废（撤回 / 撤销同意）释放占用，以及修改重跑时移除项的再绑定。
      * 解绑后同 file_record 可重新挂到新报销单（{@link #attachToReimb} 的重复绑定校验不拦截）。</p>
+     *
+     * <p><b>⚠️ 必须用 wrapper 的 {@code set(..., null)} 显式写 NULL（P3.8 R1 修复）</b>：
+     * 原实现写成 {@code update(ExpenseAttachment.forBindReimb(null), wrapper)}——把 null 值放进
+     * <b>实体</b>参数里，而 MyBatis-Plus 默认 NOT_NULL 更新策略会**跳过实体中的 null 字段**，
+     * 于是 SET 子句为空，生成出 {@code UPDATE expense_attachment  WHERE (...)} 这种非法 SQL，
+     * 多租户拦截器拿它喂 JSqlParser 直接抛
+     * {@code ParseException: Encountered unexpected token: "UPDATE"}。
+     * 该缺陷此前被「同意撤销」更早的一处 CAS 失败（400）掩盖，修掉那处后才暴露。</p>
      */
     @Transactional
     public void unbindByReimb(Long reimbId) {
-        attachmentMapper.update(ExpenseAttachment.forBindReimb(null),
-                new LambdaUpdateWrapper<ExpenseAttachment>()
-                        .eq(ExpenseAttachment::getReimbId, reimbId));
+        attachmentMapper.update(null, new LambdaUpdateWrapper<ExpenseAttachment>()
+                .eq(ExpenseAttachment::getReimbId, reimbId)
+                .set(ExpenseAttachment::getReimbId, null));
     }
 
     /**
@@ -106,10 +114,11 @@ public class AttachmentService {
                     .filter(id -> !newIds.contains(id))
                     .toList();
             if (!removed.isEmpty()) {
-                attachmentMapper.update(ExpenseAttachment.forBindReimb(null),
-                        new LambdaUpdateWrapper<ExpenseAttachment>()
-                                .eq(ExpenseAttachment::getReimbId, reimbId)
-                                .in(ExpenseAttachment::getFileRecordId, removed));
+                // 同 unbindByReimb：置 NULL 必须走 wrapper 的 set(...,null)，实体里的 null 会被 NOT_NULL 策略跳过
+                attachmentMapper.update(null, new LambdaUpdateWrapper<ExpenseAttachment>()
+                        .eq(ExpenseAttachment::getReimbId, reimbId)
+                        .in(ExpenseAttachment::getFileRecordId, removed)
+                        .set(ExpenseAttachment::getReimbId, null));
             }
         }
         attachToReimb(newFileRecordIds, reimbId, tenantId);

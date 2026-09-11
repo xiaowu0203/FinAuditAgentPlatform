@@ -137,9 +137,11 @@ public class ExpenseReimbursement {
     }
 
     /**
-     * 报销单号：R + yyyyMMddHHmmss + 4 位随机数（包私有，供单测）。
+     * 报销单号：R + yyyyMMddHHmmss + 4 位随机数。
+     * <p>随机段存在同秒碰撞概率，调用方须经
+     * {@link com.finaudit.agentcore.support.BizNoInserter#insertWithRetry} 落库以获得换号重试。</p>
      */
-    static String generateReimbNo() {
+    public static String generateReimbNo() {
         return "R" + LocalDateTime.now().format(REIMB_NO_FMT)
                 + String.format("%04d", ThreadLocalRandom.current().nextInt(10000));
     }
