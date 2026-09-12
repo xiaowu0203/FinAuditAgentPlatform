@@ -457,16 +457,84 @@
 
 
 
-### R4 · 结构化 findings 与驳回重提引导（B-7）
+### R4 · 结构化 findings 与驳回重提引导（B-7）—— 🔶 后端主体完成（R4-4/4-5 前端延后、R4-6 幂等未做）
 
-| 序 | 动作 | 涉及文件 | 验收断言 |
-|---|---|---|---|
-| R4-1 | 新增 `ReviewFinding` 结构（`code/level/itemIndex/itemName/expected/actual/gap/suggestion`） | 新增 `domain/ReviewFinding.java` | 纯数据类可单测 |
-| R4-2 | `review_reasons` 从字符串升级为结构化 findings：改造 `TriggerTypeResolver` + 各判定点产出 finding | `TriggerTypeResolver.java`、`ReviewFlowDecider.java`、`RuleBasedFlowEngine.java` | 单测：规则超标 → finding 含 expected/actual/gap |
-| R4-3 | `audit_ticket` 增 `review_findings JSON` 列（`risk_desc` 字符串摘要兼容保留）+ 迁移 | `migration-P3.8.sql`、`AuditTicket.java`、`AuditTicketVO.java` | 工单详情返回结构化 findings |
-| R4-4 | 前端"待修正项清单"：报销单详情/工单详情展示定位到明细行的期望值/实际值/差额/建议 | `reimbursement/detail.vue`、`audit/detail.vue` | 手动：超标单据显示"住宿费 实际680 标准500 超180 建议调整" |
-| R4-5 | `edit.vue` 明细行标注问题项 + 预填建议值 | `reimbursement/edit.vue` | 手动：进入修改页对应行标红并预填 |
-| R4-6 | 提交幂等（B-9）：`submit` 增幂等键（前端 UUID + `uk(tenant_id, idem_key)`） | `ReimbursementSubmitRequest`、`ExpenseReimbursement`、迁移 | 单测：同幂等键重复提交 → 返回原单不新建 |
+> B-7：驳回只给一句 `risk_desc` 文字（如「规则校验超标」），提交人**不知道该改哪一行、改成多少**。
+> 本阶段把复核原因从「字符串列表」升级为「结构化问题项」，直接支撑业务目标里的**驳回重提引导**。
+
+**R4a（本次完成：R4-1 ~ R4-3）**
+
+| 序 | 落点 | 要点 |
+|---|---|---|
+| R4-1 | 新增 `domain/ReviewFinding` | `code / level / itemIndex / itemName / expected / actual / gap / suggestion`；提供 `ofItem` / `ofDocument` / `ofDocumentAmount` 三个工厂（自动算 gap）；`toReason()` 派生兼容的原因串（带行号与差额） |
+| R4-2 | `ReviewFlowDecider` 改为产出 findings；`FlowDecision` 同时承载 `findings`（权威）+ `reviewReasons`（派生） | 各判定点（rule_check / budget_query / duplicate_check / amount_verify / invoice_match / LLM）各自产出结构化问题项；`reasons` 严格由 `findings` 逐条派生，不再是独立数据源 |
+| R4-2b | `RuleHitVO` 增 `itemIndex/itemName/expected/actual`；`FinanceRuleService` 四处规则评估改为输出结构化数值 | 这是关键决策：**不再从 `message` 文本反向解析金额**（那种做法极脆弱）。差旅标准的标准值取「单日标准 × 晚数」，与住宿总金额同口径才可比 |
+| R4-3 | `audit_ticket` 增 `review_findings JSON` 列（迁移第 9 节，幂等）+ `AuditTicket` / `AuditTicketVO` 透出 | `review_reasons` 继续保留（字符串摘要，兼容既有消费方）；重跑复位时 findings 一并刷新 |
+| R4-3b | `TriggerTypeResolver.resolveByFindings` | 结构化后直接按 `level` 解析 triggerType，无需再解析文本前缀（`resolve(List<String>)` 保留给历史数据） |
+
+**设计决策**
+
+1. **`findings` 是权威、`reasons` 是派生视图**：结构化改造最怕「两套数据各写各的」，故 `needReview(findings)`
+   内部统一从 findings 派生 reasons，并有单测断言两者逐条一致（`reasonsAreDerivedFromFindingsConsistently`）。
+2. **不改 `LLM_DECISION` 前缀**：它是 `FlowDecision` 文档化的既有前缀，既有消费方依赖该格式。
+   结构化后 `ReviewFinding.toReason()` 对 `code=LLM_DECISION` 特判沿用该前缀，
+   而不是顺手改成 `RISK_HIT:`（该 code 仍按 RISK_HIT 级别参与 triggerType 解析）。
+3. **`AMOUNT_LIMIT` 命中保留双条语义**：产出 `OVER_LIMIT` 级别项（决定工单 triggerType：OVER_LIMIT 优先）
+   + 一条 `RULE_FAIL` 级别项（规则侧展示）。这是既有契约，不能因结构化改造而丢。
+4. **金额字段缺失时 gap 为 null，不强造**：避免前端展示「差额 null 元」。
+
+**验证（AI 自测，非用户验收）**
+
+| 项 | 方式 | 结果 |
+|---|---|---|
+| 结构 + 判定产出的结构化字段 | 新增 `ReviewFindingTest` | **11/11 通过**：item 级 finding 带「行号/标准/实际/差额」；单据级无行定位；单侧数值缺失时 gap 为 null；`toReason` 含行号与差额；`LLM_DECISION` 前缀保持；rule_check 命中给出行定位与数值；AMOUNT_LIMIT → OVER_LIMIT 级；重复硬命中 finding 带发票号与撞单号；票据不一致 finding 带票面/申报总额与差额；reasons 与 findings 逐条一致；AUTO_PASS 无 findings |
+| 工单落库 | `AuditTicketServiceTest` | 4 处 `enterApproval` 调用同步；断言 `reviewFindings` 落库、triggerType 由 findings 的 level 解析、重跑复位刷新 findings |
+| 既有断言同步 | `ReviewFlowDeciderTest` | 文案改由 findings 派生，断言改为「前缀 + 关键语义」（不再逐字比对文案） |
+| 全量构建 | `mvn -o clean install`（19 模块） | **BUILD SUCCESS**；agent-core **135 例**（100 + R3 的 13+18 + R4 的 11 等）、tool-service 22 例 |
+| 迁移 | 已在真实 `finaudit` 库执行 | 退出码 0，`review_findings` 列已建出（`json` 类型）；**重复执行退出码 0（幂等**，用 information_schema 判定后动态 DDL——MySQL 5.7 无 `ADD COLUMN IF NOT EXISTS`） |
+
+**过程中修掉的一个真 bug**
+
+`collectRuleHits` 的兜底判定我最初写成「若没有 `RULE_FAIL` 级别的 finding 才补一条」，
+但 `AMOUNT_LIMIT` 命中产出的是 `OVER_LIMIT` 级别，于是漏判 → 多补一条重复的 `RULE_FAIL`。
+已改为「没有任何具体命中项被处理（`!anyHit`）才补兜底」——与「`overLimit` 且无具体 hit」的原语义一致。
+
+**⚠️ R4-7（端到端验收暴露的传输层字段丢失）：`RuleCheckTool` 手工装配 Map 漏传新字段**
+
+首轮端到端跑出 `itemIndex=null / expected=null / itemName=""`（判据① 的 8 项里 6 项 FAIL）。
+根因不在判定逻辑，而在**工具输出的装配层**：
+
+- `RuleCheckTool` 用**手工装配 Map** 把 `RuleHitVO` 转成工具输出（不是整体序列化）：
+  ```java
+  m.put("ruleCode", h.ruleCode());
+  m.put("ruleName", h.ruleName());
+  m.put("ruleType", h.ruleType());
+  m.put("message",  h.message());
+  m.put("overLimit", h.overLimit());
+  // ← R4 给 RuleHitVO 加了 itemIndex/itemName/expected/actual，这里没同步，字段在此被静默丢弃
+  ```
+- 后果：字段在 VO 里、在 agent-core 里都正确，**经过工具输出这一层就没了**，
+  下游 `ReviewFlowDecider` 拿到 null → 结构化 findings 只剩 code/level/suggestion，定位与数值全失效。
+- 修复：同步补上四个字段；并新增 `RuleCheckToolTest`（3 例）锁住「结构化字段必须透传」。
+- **教训**：手工装配的传输层是「新增字段的静默黑洞」——它不会编译报错、也不会被 VO 的单测覆盖。
+  **凡是给跨服务 DTO 加字段，必须全链路搜一遍手工装配点**（`m.put("xxx", ...)`）。
+  本次靠端到端脚本才发现，单测当时完全没覆盖 `RuleCheckTool`。
+
+> 另一个观察（非缺陷）：判据① 那次工单同时含 6 条 `DUPLICATE_INVOICE` 问题项，
+> 因为复核脚本复用同一张样张，该票此前已被 6 张单报销过。
+> 这说明按票硬命中在真实数据下工作正常；但也提示**同一张问题票会产出多条同类 finding**，
+> 未来若前端清单过长可考虑按 code 折叠（已记入 R4-4 前端项）。
+
+
+**待办**
+
+- [x] 迁移已在真实库执行（`review_findings` 列）
+- [ ] **重启 agent-core-service**（findings 产出 + 工单新列 + 规则结构化数值生效）
+- [ ] 联调验收：构造一张超标单据 → 工单 `review_findings` 含明细行号/标准值/实际值/差额/建议
+- [ ] **R4-4 / R4-5 前端延后**（按 AGENTS.md §7 后端先行）：报销单详情/工单详情「待修正项清单」、
+      编辑页明细行标注问题项 + 预填建议值
+- [ ] **R4-6 提交幂等未做**（见下）
+
 
 ### R5 · Agent 语义自校验与自主纠错（A-1，放大器；依赖 R2/R3 数据）
 
@@ -631,12 +699,96 @@
 
 ## 11. 执行进度
 
-### R0 · 主链路止血 —— ✅ 代码已改完（**待构建验证与提交**）
+### 阶段总览（截至 2026-09-12）
 
-> ⚠️ **执行环境限制**：本次实施期间 shell 被沙箱拒绝（`SetNamedSecurityInfoW failed (Win32 5): grantWrite(...)`，
-> 尝试 7 次 / 4 种调用方式均失败），因此 **`mvn clean install`、单测、`git commit/push` 全部无法执行**。
-> 以下改动仅经静态审查（逐文件通读 import/签名/路径一致性），**未经编译验证**。首次可构建时请优先跑：
-> `mvn -q clean install` + 前端 `npm run build`，再执行提交推送。
+分支 `refactor/agent-autonomy-hardening`，**一阶段一提交**，双仓（gitee / github）已同步。
+
+| 阶段 | 状态 | 提交 | 说明 |
+|---|---|---|---|
+| **R0** 主链路止血 | ✅ 完成并推送 | `3114b60` | 登录 500、OCR 超时死配置、tool.result 丢失、内部契约收口、4 个前端缺陷 |
+| **R1** 预算真实占用与释放 | ✅ 完成并推送 | `d8f1586` | `budget_occupancy` 记账表 + 原子占用 SQL；含 R1-8 单号撞库、R1-9 配平公式两个联调缺陷 |
+| **R2** 发票标识符入链 | ✅ 完成并推送 | `1acaa9a` | 票号入链 + `invoice_record` 投影表；含 R2-10 审计时间戳填充框架缺陷 |
+| **R3** 按票查重 + 票据核验 | ✅ 完成并推送 | `a4df2e7` | 两级查重 + `invoice_match` 工具；含 R3-7 一票多单归属的**架构缺陷**修复 |
+| **R4a** 结构化 findings | ✅ 代码完成 + 端到端验收通过（**未提交**） | — | `ReviewFinding` + `review_findings` 列；含 R4-7 传输层字段丢失 |
+| R4-4 / R4-5 前端展示 | ⏸ 延后（§7 后端先行） | — | 待修正项清单、编辑页标红预填 |
+| R4-6 提交幂等 | ⏸ 移出 R4 | — | 幂等键由前端生成，与前端阶段一起做才可验证 |
+| R5 ~ R9 | ⬜ 未开始 | — | 见 §5 |
+
+**当前验证基线**：`mvn -o clean install` 19 模块 BUILD SUCCESS；agent-core 135 例、tool-service 25 例、
+common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudit` 共 **21 张表**
+（迁移脚本 `migration-P3.8.sql` 共 10 节，全部幂等可重复执行）。
+
+**六个端到端/专项验收脚本**（`docs/test/`，均带 UTF-8 BOM）：
+
+| 脚本 | 覆盖 | 最近结果 |
+|---|---|---|
+| `r1-budget-occupancy-e2e.ps1` | R1 预算占用→释放全链路 | 19/19 PASS |
+| `budget-occupancy-concurrency.ps1` | R1 并发正确性（直连 MySQL） | 7/7 PASS |
+| `bizno-collision-retry.ps1` | R1-8 单号撞库换号重试（占满整秒造撞） | 4/4 PASS |
+| `r2-invoice-record-e2e.ps1` | R2 票号入链 + 投影幂等 | 6/6 PASS |
+| `r2-audit-timestamp-check.ps1` | R2-10 审计时间戳填充 | 2/2 PASS |
+| `r3-invoice-dedup-e2e.ps1` | R3 按票查重 + 票据核验 | 5/5 PASS |
+| `r4-review-findings-e2e.ps1` | R4a 结构化问题项 | 19/19 PASS |
+
+### 跨阶段踩坑清单（按「下次一定还会踩」排序）
+
+工程/环境类：
+
+1. **`docs/test/*.ps1` 必须是 UTF-8 with BOM**。PS 5.1 对无 BOM 的 UTF-8 按 ANSI 解析，
+   中文字符串会直接让脚本语法崩掉。⚠️ **`edit` 工具每次写回都会吃掉 BOM**，改完脚本务必复核：
+   ```powershell
+   $b=[IO.File]::ReadAllBytes($p); '{0:X2} {1:X2} {2:X2}' -f $b[0],$b[1],$b[2]   # 应为 EF BB BF
+   ```
+   用 `[System.Management.Automation.Language.Parser]::ParseFile(...)` 做语法自检可提前拦住。
+2. **不要用 `git commit -m` 传含 `#` 的中文消息**：PowerShell 把 `#` 当注释截断参数。
+   统一写消息文件 + `git commit -F <file>`（UTF-8 无 BOM）。
+3. **`git checkout <rev> -- .` 只还原文件、不会删除已不存在的文件**。
+   重建历史时必须额外 `git rm` 掉该 rev 中已删除的文件，否则内容悄悄多出来（R1/R2 重写时踩到）。
+4. **PowerShell 里 `$pid` 是只读内置变量**，别拿它存进程号。
+
+框架/框架约定类：
+
+5. **MyBatis-Plus 的 `ne()` 等条件在 SQL 里执行，mock 不会过滤** —— 单测里若 mock 返回
+   「DB 本会排除的行」，会得到假失败。mock 应只返回「DB 本会返回的行」。
+6. **mock 的 `insert` 不会回填自增主键**（真实 DB 会）。依赖 `entity.getId()` 的后续逻辑
+   （如建关联行）在单测里必须用 `thenAnswer` 模拟回填。
+7. **`strictUpdateFill` 是「字段为 null 才填」**，对「实体从库里读出来、字段已有值」的场景是**空转**。
+   要覆盖旧值必须用 `setFieldValByName`，并自行校验 `FieldFill` 策略（否则会连未标注的实体一起改）。
+8. **`updated_at` 写回会抑制 MySQL 的 `ON UPDATE CURRENT_TIMESTAMP`**：
+   `updateById(entity)` 会把实体里读出来的旧 `updated_at` 一并写进 SET（NOT_NULL 策略），
+   列一旦被显式赋值，`ON UPDATE` 不再触发。走 `LambdaUpdateWrapper.set(...)` 的更新不受影响 →
+   同一张表会呈现「部分行时间戳正确、部分从未刷新」的混合状态。
+9. **`@TableField(fill=...)` 必须与 `MetaObjectHandler` 同时就位**，且新增实体的审计字段要记得标注。
+10. **手工装配的传输层是「新增字段的静默黑洞」**：`RuleCheckTool`、`DuplicateCheckTool` 等
+    用 `m.put("xxx", h.xxx())` 手工把 VO 转成工具输出。给 DTO 加字段时**必须全链路搜一遍装配点**，
+    否则字段在 VO 里正确、经过装配层被静默丢弃（不报错、不被 VO 单测覆盖）。
+11. **新工具必须三件事齐全**：① `ToolCode` 枚举 → ② `ToolExecutor` 实现 →
+    ③ **`tool_registry` 注册**。漏了 ③，`tool-service` 会抛「工具未注册或已禁用」，流水线到该步硬失败。
+12. **`@Valid` 嵌套集合不会被级联校验**：`items` 元素上的 JSR303 注解只在配了 `@Valid` 时生效。
+    例：明细级 5000 元上限整条链路都是死代码，金额上限实际由 `rule_check` 兜住。
+13. **唯一索引决定「一行」，与「需要记录多对多」是同一张表上的冲突**。
+    设计投影/快照表时先问：这张表要回答的关系是一对一还是一对多？（R3-7 架构缺陷的根因）
+
+验证方法类：
+
+14. **「某值应被更新」的断言必须对比前后跳变**，绝不能与 0 或某个绝对值比较 ——
+    否则历史遗留偏差会让「修复无效」也报 PASS（R2-10 首版就假通过了）。
+15. **删掉能 PR 的符号必然留下死代码**：R0 拆 `/internal` 漏删 `AuditDataController`、
+    R3 删 `findBudgetRow` 留下失效 `@link`。删改端点/方法后必须全仓 grep 旧名。
+16. **端到端验收不可省**：R3-7（一票多单归属）、R4-7（装配层丢字段）两个缺陷
+    **单测全绿、只有端到端才暴露**。
+17. **验收前先确认目标进程还活着**：R1-8 首次造撞其实成功了，但目标进程随后重启导致日志丢失，
+    被误判为「没撞上」，白折腾数轮。
+
+
+---
+
+### R0 · 主链路止血 —— ✅ 已完成（提交 `3114b60`，双仓已推送）
+
+> 📌 **历史说明**：本阶段实施期间 shell 曾被沙箱拒绝（`SetNamedSecurityInfoW failed (Win32 5): grantWrite(...)`，
+> 尝试 7 次 / 4 种调用方式均失败），故当时所有改动仅经静态审查，标注为"未经编译验证"。
+> **该限制已解除**：后续在 JDK 21 下完成 `mvn clean install`（19 模块 BUILD SUCCESS）、
+> 全部单测与端到端验收，并已按「一阶段一提交」推送到双仓。以下内容保留作过程记录。
 
 | 序 | 状态 | 落点 | 要点 |
 |---|---|---|---|
@@ -660,8 +812,13 @@
 
 - [x] ~~首次可构建环境验证 R0~~ **已完成**：`mvn clean install`（JDK 21）19 模块 BUILD SUCCESS；`mvn test` 全绿（tenant 20 / agent-core 66 / tool 11 / file 3 / starter 若干，0 失败 0 错误）
 - [x] ~~`git rm` 停用的 `AuditDataController.java`~~ **已删除**
-- [ ] 按 AGENTS.md §6 提交 + 双仓推送（R0 为一个阶段）
-- [ ] 进入 R1（预算真实占用与释放）
+- [x] ~~按 AGENTS.md §6 提交 + 双仓推送（R0 为一个阶段）~~ **已完成**：提交 `3114b60`，双仓已推送
+- [x] ~~进入 R1（预算真实占用与释放）~~ **已完成**：见下文 R1 段落
+- [x] R1 / R2 / R3 均已完成并推送；R4a 代码与端到端验收完成（**待提交**）
+- [ ] **下一步：提交 R4a**（一阶段一提交，双仓推送）→ 然后进入 **R5**（Agent 语义自校验与自主纠错）
+- [ ] R6 / R7 中需补的历史欠账：**R2-10 审计时间戳填充对其余实体仍未生效**
+      （`agent_task` / `audit_ticket` / `budget_occupancy` 等仍走 `updateById` 且未标注 `FieldFill`，
+      `updated_at` 依然从不刷新）——需逐个实体评估后补标注
 
 ### R0-10（新增，联调期发现的阻断级故障）：Redis 连接工厂与 spring-data-redis 3.5.0 不兼容
 

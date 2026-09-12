@@ -1,6 +1,7 @@
 package com.finaudit.agentcore.service;
 
 import com.finaudit.agentcore.domain.FlowDecision;
+import com.finaudit.agentcore.domain.ReviewFinding;
 import com.finaudit.agentcore.enums.AgentRole;
 import com.finaudit.agentcore.pojo.entity.AgentTaskStep;
 import org.junit.jupiter.api.Test;
@@ -38,9 +39,20 @@ class ReviewFlowDeciderTest {
                 step(null, Map.of("decision", "APPROVE"), "LLM", AgentRole.SCHEDULER.name())));
 
         assertEquals(FlowDecision.NEED_REVIEW, decision.flowBranch());
-        assertTrue(decision.reviewReasons().stream().anyMatch(v -> v.startsWith("RISK_HIT:")));
-        assertTrue(decision.reviewReasons().stream().anyMatch(v -> v.startsWith("OVER_LIMIT:")));
-        assertTrue(decision.reviewReasons().stream().anyMatch(v -> v.startsWith("RULE_FAIL:")));
+        assertTrue(decision.reviewReasons().stream().anyMatch(v -> v.startsWith("RISK_HIT:")), "实际=" + decision.reviewReasons());
+        assertTrue(decision.reviewReasons().stream().anyMatch(v -> v.startsWith("OVER_LIMIT:")), "实际=" + decision.reviewReasons());
+        assertTrue(decision.reviewReasons().stream().anyMatch(v -> v.startsWith("RULE_FAIL:")), "实际=" + decision.reviewReasons());
+    }
+
+    /** 规则校验只有全局超标标记、无具体命中项时，补一条单据级 RULE_FAIL 兜底 */
+    @Test
+    void ruleCheckOverLimitWithoutHitsFallsBackToRuleFail() {
+        FlowDecision decision = decider.decide(List.of(
+                step("rule_check", Map.of("overLimit", true, "hits", List.of())),
+                step(null, Map.of("decision", "APPROVE"), "LLM", AgentRole.SCHEDULER.name())));
+
+        assertEquals(FlowDecision.NEED_REVIEW, decision.flowBranch());
+        assertTrue(decision.reviewReasons().stream().anyMatch(v -> v.startsWith("RULE_FAIL:")), "实际=" + decision.reviewReasons());
     }
 
     @Test
@@ -50,8 +62,19 @@ class ReviewFlowDeciderTest {
                 step(null, Map.of("decision", "NEED_INFO"), "LLM", AgentRole.SCHEDULER.name())));
 
         assertEquals(FlowDecision.NEED_REVIEW, decision.flowBranch());
-        assertTrue(decision.reviewReasons().contains("RISK_HIT:风控置信度低于 0.7"));
-        assertTrue(decision.reviewReasons().contains("LLM_DECISION:NEED_INFO"));
+        // P3.8 R4：文案由 findings 派生，断言改为「前缀 + 关键语义」而非逐字比对
+        assertTrue(decision.reviewReasons().stream()
+                        .anyMatch(v -> v.startsWith("RISK_HIT:") && v.contains("置信度低于 0.7")),
+                "实际=" + decision.reviewReasons());
+        assertTrue(decision.reviewReasons().stream()
+                        .anyMatch(v -> v.startsWith("LLM_DECISION:") && v.contains("NEED_INFO")),
+                "实际=" + decision.reviewReasons());
+        // 结构化问题项：无明细定位、级别为 RISK_HIT
+        assertTrue(decision.findings().stream()
+                        .anyMatch(f -> "RISK_CONFIDENCE_LOW".equals(f.code())
+                                && ReviewFinding.LEVEL_RISK_HIT.equals(f.level())
+                                && f.itemIndex() == null),
+                "实际=" + decision.findings());
     }
 
     @Test
@@ -65,9 +88,14 @@ class ReviewFlowDeciderTest {
                 step(null, Map.of("decision", "NEED_INFO"), "LLM", AgentRole.SCHEDULER.name())));
 
         assertEquals(FlowDecision.NEED_REVIEW, decision.flowBranch());
-        assertTrue(decision.reviewReasons().contains("RISK_HIT:风控语义判断存疑"));
+        assertTrue(decision.reviewReasons().stream()
+                        .anyMatch(v -> v.startsWith("RISK_HIT:") && v.contains("存疑")),
+                "实际=" + decision.reviewReasons());
         // 汇总步骤为 NEED_INFO（非 APPROVE），同步命中
-        assertTrue(decision.reviewReasons().contains("LLM_DECISION:NEED_INFO"));
+        assertTrue(decision.reviewReasons().stream()
+                        .anyMatch(v -> v.startsWith("LLM_DECISION:") && v.contains("NEED_INFO")),
+                "实际=" + decision.reviewReasons());
+        assertTrue(decision.findings().stream().anyMatch(f -> "RISK_UNCERTAIN".equals(f.code())));
     }
 
     // ---------- P3.8 R3：重复报销分级 + 票据核验 ----------
@@ -106,7 +134,9 @@ class ReviewFlowDeciderTest {
                 step(null, Map.of("decision", "APPROVE"), "LLM", AgentRole.SCHEDULER.name())));
 
         assertEquals(FlowDecision.NEED_REVIEW, decision.flowBranch());
-        assertTrue(decision.reviewReasons().contains("RISK_HIT:疑似重复报销"));
+        assertTrue(decision.reviewReasons().stream().anyMatch(v -> v.startsWith("RISK_HIT:")),
+                "实际=" + decision.reviewReasons());
+        assertTrue(decision.findings().stream().anyMatch(f -> "DUPLICATE_INVOICE".equals(f.code())));
     }
 
     @Test
@@ -118,10 +148,13 @@ class ReviewFlowDeciderTest {
                 step(null, Map.of("decision", "APPROVE"), "LLM", AgentRole.SCHEDULER.name())));
 
         assertEquals(FlowDecision.NEED_REVIEW, decision.flowBranch());
-        String reason = decision.reviewReasons().stream()
-                .filter(v -> v.startsWith("RULE_FAIL:票据")).findFirst().orElse("");
-        assertTrue(reason.contains("AMOUNT_MISMATCH"), "原因应带异常编码便于定位，实际=" + reason);
-        assertTrue(reason.contains("ITEM_EXCEEDS_INVOICE"));
+        // P3.8 R4：异常编码改为落在 findings.code（结构化后不必再塞进文本才能定位）
+        assertTrue(decision.findings().stream().anyMatch(f -> "AMOUNT_MISMATCH".equals(f.code())),
+                "实际=" + decision.findings());
+        assertTrue(decision.findings().stream().anyMatch(f -> "ITEM_EXCEEDS_INVOICE".equals(f.code())),
+                "实际=" + decision.findings());
+        assertTrue(decision.reviewReasons().stream().allMatch(v -> v.startsWith("RULE_FAIL:")),
+                "票据不一致应统一归 RULE_FAIL，实际=" + decision.reviewReasons());
     }
 
     @Test

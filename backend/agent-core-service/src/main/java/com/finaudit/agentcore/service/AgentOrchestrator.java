@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.finaudit.agentcore.config.AgentExecutionProperties;
 import com.finaudit.agentcore.domain.AuditConclusion;
 import com.finaudit.agentcore.domain.FlowDecision;
+import com.finaudit.agentcore.domain.ReviewFinding;
 import com.finaudit.agentcore.domain.RiskAssessment;
 import com.finaudit.agentcore.domain.TaskPlanStep;
 import com.finaudit.agentcore.enums.AgentRole;
@@ -496,10 +497,13 @@ public class AgentOrchestrator {
             FlowDecision decision = reviewFlowDecider.decide(steps);
             result.put("flowBranch", decision.flowBranch());
             result.put("reviewReasons", decision.reviewReasons());
+            // P3.8 R4：结构化问题项一并落任务结果，供前端展示「待修正项清单」
+            result.put("reviewFindings", decision.findings());
             // 需要人工审核
             if (FlowDecision.NEED_REVIEW.equals(decision.flowBranch())) {
                 // 流水线判定 NEED_REVIEW 时进入审批态（命中触发条件（大额/超标/风控存疑）或 LLM 结论非通过 → 生成审批工单进入审批态，终审权在人）
-                auditTicketService.enterApproval(task, result, steps.size(), decision.reviewReasons());
+                auditTicketService.enterApproval(task, result, steps.size(),
+                        decision.reviewReasons(), decision.findings());
                 log.info("任务 {} 命中人工复核分支，原因: {}", task.getTaskNo(), decision.reviewReasons());
                 return;
             }
@@ -512,11 +516,16 @@ public class AgentOrchestrator {
             // MySQL 尚可，PostgreSQL 下事务已被标记 aborted，后续语句全部报 25P02，
             // 且依赖 Spring 的回滚异常判定过脆。故把「预算不足」变成一次只读试算（不写库、不抛异常）。
             if (!budgetOccupancyService.canOccupy(task, result)) {
+                // 预算不足也产出结构化问题项（无明细定位，单据级）
+                List<ReviewFinding> findings = new ArrayList<>(decision.findings());
+                findings.add(ReviewFinding.ofDocument("BUDGET_INSUFFICIENT", ReviewFinding.LEVEL_RULE_FAIL,
+                        "部门预算不足，无法占用本次额度，请调整金额或联系部门负责人"));
                 List<String> reasons = new ArrayList<>(decision.reviewReasons());
                 reasons.add("BUDGET_INSUFFICIENT:部门预算不足，无法占用本次额度");
                 result.put("flowBranch", FlowDecision.NEED_REVIEW);
                 result.put("reviewReasons", reasons);
-                auditTicketService.enterApproval(task, result, steps.size(), reasons);
+                result.put("reviewFindings", findings);
+                auditTicketService.enterApproval(task, result, steps.size(), reasons, findings);
                 log.info("任务 {} 预算不足，AUTO_PASS 转人工复核", task.getTaskNo());
                 return;
             }

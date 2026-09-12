@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
+import com.finaudit.agentcore.domain.ReviewFinding;
 import com.finaudit.agentcore.enums.AuditTicketStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Getter;
@@ -67,8 +68,18 @@ public class AuditTicket {
     private Integer rerunCount;
 
     @TableField(typeHandler = JacksonTypeHandler.class)
-    @Schema(description = "复核原因列表（JSON）")
+    @Schema(description = "复核原因列表（JSON；由 findings 派生，兼容保留）")
     private List<String> reviewReasons;
+
+    /**
+     * 结构化审核问题项（P3.8 R4-3）。
+     * <p>{@code risk_desc} 只给人读的一句话，提交人看不出该改哪一行、改成多少（B-7）。
+     * 本列承载 {@code ReviewFinding} 列表，前端据此在编辑页标红对应明细行并预填建议值。
+     * 与 {@code review_reasons} 并存：后者为字符串摘要（兼容既有消费方），前者为权威结构。</p>
+     */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    @Schema(description = "结构化审核问题项（JSON：定位明细行 + 期望/实际/差额/建议）")
+    private List<ReviewFinding> reviewFindings;
 
     @Schema(description = "最近处理人用户ID")
     private Long auditorId;
@@ -91,10 +102,13 @@ public class AuditTicket {
 
     /**
      * 由流水线 NEED_REVIEW 判定构造工单（初始状态 PENDING，auditLevel=1，rerunCount=0）。
+     *
+     * @param reviewFindings 结构化审核问题项（P3.8 R4；可为空列表）
      */
     public static AuditTicket from(Long tenantId, Long taskId, String ticketNo, String title,
                                    String triggerType, String riskDesc, BigDecimal originAmount,
-                                   List<String> reviewReasons, Long createdBy) {
+                                   List<String> reviewReasons, List<ReviewFinding> reviewFindings,
+                                   Long createdBy) {
         AuditTicket ticket = new AuditTicket();
         ticket.setTenantId(tenantId);
         ticket.setTaskId(taskId);
@@ -107,6 +121,7 @@ public class AuditTicket {
         ticket.setAuditLevel(1);
         ticket.setRerunCount(0);
         ticket.setReviewReasons(reviewReasons);
+        ticket.setReviewFindings(reviewFindings);
         ticket.setCreatedBy(createdBy);
         return ticket;
     }
@@ -158,11 +173,13 @@ public class AuditTicket {
      * 重跑再次命中 NEED_REVIEW：工单复位 PENDING，并刷新复核原因/触发类型/风险描述
      * （上次与本次命中原因可能不同，如 OVER_LIMIT → RISK_HIT，必须覆盖而非保留旧值）。
      */
-    public void applyRerunResetWith(List<String> reviewReasons, String triggerType, String riskDesc) {
+    public void applyRerunResetWith(List<String> reviewReasons, String triggerType, String riskDesc,
+                                    List<ReviewFinding> reviewFindings) {
         this.status = AuditTicketStatus.PENDING.name();
         this.reviewReasons = reviewReasons;
         this.triggerType = triggerType;
         this.riskDesc = riskDesc;
+        this.reviewFindings = reviewFindings;
     }
 
     /**

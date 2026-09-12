@@ -2,6 +2,7 @@ package com.finaudit.agentcore.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.finaudit.agentcore.domain.ReviewFinding;
 import com.finaudit.agentcore.domain.TaskPlanStep;
 import com.finaudit.agentcore.enums.AuditAction;
 import com.finaudit.agentcore.enums.AuditTicketStatus;
@@ -79,6 +80,11 @@ public class AuditTicketService {
 
     // ===================== 编排器回调入口（由AgentOrchestrator调用） =====================
 
+    /** 是否带结构化问题项（决定 triggerType 走结构化解析还是回落原因串前缀解析）。 */
+    private static boolean findingsPresent(List<ReviewFinding> findings) {
+        return findings != null && !findings.isEmpty();
+    }
+
     /**
      * 流水线判定 NEED_REVIEW 时进入审批态。
      * <p>
@@ -94,11 +100,13 @@ public class AuditTicketService {
      * </p>
      * @param task 当前Agent任务
      * @param result 任务执行结果map
-     * @param finishedSteps 已经完成的步骤计数
-     * @param reasons 触发人工复核的风险原因列表
+     * @param finishedSteps 已经完成的步骤数
+     * @param reasons 触发人工复核的风险原因列表（字符串摘要，由 findings 派生）
+     * @param findings 结构化审核问题项（P3.8 R4；为空时 triggerType 仍按 reasons 前缀解析）
      */
     @Transactional
-    public void enterApproval(AgentTask task, Map<String, Object> result, int finishedSteps, List<String> reasons) {
+    public void enterApproval(AgentTask task, Map<String, Object> result, int finishedSteps,
+                              List<String> reasons, List<ReviewFinding> findings) {
         // 1. CAS 任务置为待审批：竞争失败说明任务已被并发迁移（如已作废），放弃进入审批态
         if (!taskService.markApprovalPending(task, result, finishedSteps)) {
             log.warn("任务 {} 进入审批态竞争失败（状态已被并发迁移），跳过建单", task.getId());
@@ -119,11 +127,16 @@ public class AuditTicketService {
             // 3. 首次命中复核：创建工单 + SUBMIT审计快照
 
             // 根据【触发人工复核的风险原因列表】解析除命中的规则类型（取优先级最高）
-            String triggerType = TriggerTypeResolver.resolve(reasons);
+            // P3.8 R4：优先按结构化 findings 的 level 解析（无需解析文本前缀），无 findings 时回落原因串
+            String triggerType = TriggerTypeResolver.resolveByFindings(findings);
+            if (!findingsPresent(findings)) {
+                triggerType = TriggerTypeResolver.resolve(reasons);
+            }
             // 数据转换
             AuditTicket ticket = AuditTicket.from(task.getTenantId(), task.getId(),
                     "AT-" + task.getTaskNo(), task.getTitle(), triggerType,
-                    TriggerTypeResolver.buildRiskDesc(reasons), claimedTotal(task), reasons, task.getCreatedBy());
+                    TriggerTypeResolver.buildRiskDesc(reasons), claimedTotal(task), reasons, findings,
+                    task.getCreatedBy());
             // 创建工单
             ticketMapper.insert(ticket);
             // 创建审计留痕（快照）
@@ -139,9 +152,11 @@ public class AuditTicketService {
             // 4. 修改重跑后，再次命中风险规则：工单复位PENDING，刷新风险描述，追加RERUN留痕
 
             // 根据【触发人工复核的风险原因列表】解析除命中的规则类型（取优先级最高）
-            String triggerType = TriggerTypeResolver.resolve(reasons);
-            // 复位PENDING，刷新风险描述
-            existing.applyRerunResetWith(reasons, triggerType, TriggerTypeResolver.buildRiskDesc(reasons));
+            String triggerType = findingsPresent(findings)
+                    ? TriggerTypeResolver.resolveByFindings(findings)
+                    : TriggerTypeResolver.resolve(reasons);
+            // 复位PENDING，刷新风险描述与结构化问题项
+            existing.applyRerunResetWith(reasons, triggerType, TriggerTypeResolver.buildRiskDesc(reasons), findings);
             // 更新工单
             ticketMapper.updateById(existing);
             // 获取当前金额

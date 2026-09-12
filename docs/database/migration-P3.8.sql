@@ -1,34 +1,30 @@
 -- =====================================================================
--- P3.8 增量迁移（R1：预算占用 / R2：发票标识符入链 / R3：按票查重与票据核验）
+-- P3.8 增量迁移（累计脚本：R1 / R2 / R3 / R4 全部 DDL 与种子）
 -- 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
 -- 执行: mysql -uroot -p < docs/database/migration-P3.8.sql
 --
--- 背景（业务走查 B-1/B-2）：
---   budget.used_amount 此前**全仓无写入点**——注释写着"审核通过后累加（P3 审批流）"但从未实现，
---   系统只做只读预检、从不扣减。后果：同一部门同月多笔报销全部报"预算充足"、
---   全部可 AUTO_PASS/审批通过，系统一次都不拦，"预算管控"是空话。
+-- 本脚本已累计 R1~R4 的增量，**每节都幂等**，可整份重复执行（已实测重复执行无副作用）。
+-- 节次一览：
+--   1  新增 budget_occupancy 占用记账表（R1）
+--   2  核对现有预算行（R1）
+--   3  新增 invoice_record 发票标识符投影表（R2）
+--   4  历史数据回填：从 ocr_result JSON 抽票号投影（R2）
+--   5  回填报告：命中数 + 明细（R2）
+--   6  新增 invoice_reimb_link 发票—报销单关联表 + 历史归属回填（R3 架构修复）
+--   7  注册 invoice_match 工具（R3）
+--   8  核对工具注册表（R3）
+--   9  audit_ticket 增 review_findings 结构化问题项列（R4）
+--   10 核对工单表新列（R4）
 --
--- 背景（业务走查 B-3）：
---   发票代码/号码此前在 BaiduOcrService → VatInvoiceOcr 链路里**已解析出来却被丢弃**
---   （OcrExtractTool.normalize 未纳入输出），下游查重只能靠「同申请人 + 金额完全相等 +
---   日期±30天」的启发式，产生大量误报。R2 把票号补入归一化结果并投影出可索引的
---   invoice_record 表（ocr_result 是 JSON，MySQL 5.7 无法对其内部字段建索引）。
+-- 背景（业务走查 B-1/B-2）：budget.used_amount 此前全仓无写入点，只做只读预检，
+--   同一部门同月多笔报销全部报「预算充足」，系统一次都不拦。
+-- 背景（B-3）：发票代码/号码在 OCR 链路里已解析却被丢弃，下游查重只能靠金额+日期启发式。
+-- 背景（B-4/B-5）：查重只看「同额同商户」，票据与明细从未对上；
+--   R3 用 invoice_record 做按票号硬命中，并新增 invoice_match 做票据-明细交叉核验。
+-- 背景（B-7）：驳回只给一句 risk_desc 文字，提交人不知道该改哪一行、改成多少；
+--   R4 把复核原因升级为结构化问题项（定位明细行 + 期望/实际/差额/建议）。
 --
--- 背景（业务走查 B-4/B-5）：
---   R3 用 invoice_record 做「按票号硬命中」查重（一级），把金额+商户近似降级为二级仅展示；
---   并新增 invoice_match 工具做票据-明细交叉核验，补上 amount_verify（只校验明细与总额自洽）
---   与 rule_check（只校验限额标准）都覆盖不到的「明细与票面对不上」缺口。
---
--- 内容:
---   ① 新增 budget_occupancy 占用记账表（R1）
---   ② budget.used_amount 语义变更：由「只读种子值」变为「真实累加值」（R1，无需 DDL）
---   ③ 新增 invoice_record 发票标识符投影表（R2）
---   ④ 历史数据回填：从 expense_attachment.ocr_result JSON 抽票号投影（R2）
---   ⑤ 注册 invoice_match 工具（R3，未注册则流水线到该步报「工具未注册或已禁用」）
---
--- 幂等: CREATE TABLE IF NOT EXISTS + INSERT IGNORE + WHERE NOT EXISTS；可重复执行
---
--- ⚠️ 执行顺序：①③ 必须先于 ④（回填依赖表已建出）
+-- ⚠️ 执行顺序：①③ 必须先于 ④（回填依赖表已建出）；⑥ 必须先于 ⑦ 之后的核对
 -- =====================================================================
 
 USE finaudit;
@@ -219,4 +215,29 @@ SELECT id, tool_code, tool_name, enabled, scenario, cacheable
 FROM tool_registry
 WHERE deleted = 0
 ORDER BY id;
+
+-- ---------------------------------------------------------------------
+-- 9. 审批工单增结构化问题项列（R4-3）
+--    背景（业务走查 B-7）：现状驳回只给一句 risk_desc 文字，提交人不知道该改哪一行、改成多少。
+--    新增 review_findings 承载 ReviewFinding 列表（定位明细行 + 期望/实际/差额/建议），
+--    前端据此在编辑页标红对应行并预填建议值，直接支撑「驳回重提引导」。
+--    review_reasons 继续保留（字符串摘要，兼容既有消费方）。
+--    幂等：MySQL 5.7 无 ADD COLUMN IF NOT EXISTS，用 information_schema 判定后动态执行。
+-- ---------------------------------------------------------------------
+SET @col_exists = (SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_schema = DATABASE() AND table_name = 'audit_ticket'
+                      AND column_name = 'review_findings');
+SET @ddl = IF(@col_exists = 0,
+    'ALTER TABLE audit_ticket ADD COLUMN review_findings JSON DEFAULT NULL COMMENT ''结构化审核问题项（P3.8 R4-3：定位明细行 + 期望/实际/差额/建议，支撑驳回重提引导）'' AFTER review_reasons',
+    'SELECT ''review_findings 已存在，跳过'' AS skip_msg');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ---------------------------------------------------------------------
+-- 10. 核对：工单表新列已就位
+-- ---------------------------------------------------------------------
+SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+FROM information_schema.columns
+WHERE table_schema = DATABASE() AND table_name = 'audit_ticket' AND COLUMN_NAME = 'review_findings';
 

@@ -327,12 +327,12 @@ public class FinanceRuleService {
         if (threshold == null || request.totalAmount() == null) {
             return Optional.empty();
         }
-        // 申报总额 > 阈值，判定大额超标
+        // 申报总额 > 阈值，判定大额超标（P3.8 R4：带上标准值与实际值，供结构化 findings）
         if (request.totalAmount().compareTo(threshold) > 0) {
-            return Optional.of(new RuleHitVO(rule.getRuleCode(), rule.getRuleName(), rule.getRuleType(),
+            return Optional.of(RuleHitVO.ofDocument(rule.getRuleCode(), rule.getRuleName(), rule.getRuleType(),
                     "申报总额 " + request.totalAmount().stripTrailingZeros().toPlainString()
                             + " 超过大额限额 " + threshold.stripTrailingZeros().toPlainString() + "，需人工复核",
-                    true));
+                    true, threshold, request.totalAmount()));
         }
         return Optional.empty();
     }
@@ -353,14 +353,17 @@ public class FinanceRuleService {
         }
         // 计算报销最晚有效日期
         LocalDate cutoff = base.minusDays(maxDays.longValue());
-        // 遍历明细，只要一条超期直接返回命中
-        for (RuleCheckItem item : request.items()) {
+        // 遍历明细，只要一条超期直接返回命中（P3.8 R4：带明细行定位供前端标红）
+        List<RuleCheckItem> items = request.items();
+        for (int idx = 0; idx < items.size(); idx++) {
+            RuleCheckItem item = items.get(idx);
             LocalDate itemDate = parseDate(item.date());
             if (itemDate != null && itemDate.isBefore(cutoff)) {
-                return Optional.of(new RuleHitVO(rule.getRuleCode(), rule.getRuleName(), rule.getRuleType(),
-                        "明细[" + (item.name() == null ? item.date() : item.name()) + "]发生日期 " + itemDate
+                String itemLabel = item.name() == null ? String.valueOf(item.date()) : item.name();
+                return Optional.of(RuleHitVO.ofItem(rule.getRuleCode(), rule.getRuleName(), rule.getRuleType(),
+                        "明细[" + itemLabel + "]发生日期 " + itemDate
                                 + " 早于报销日 " + base + " 前 " + maxDays.stripTrailingZeros().toPlainString() + " 天，疑似超时效",
-                        true));
+                        true, idx, itemLabel, null, null));
             }
         }
         return Optional.empty();
@@ -394,9 +397,16 @@ public class FinanceRuleService {
 
         // 存储所有超标违规描述
         List<String> violations = new ArrayList<>();
+        // P3.8 R4：记录首条违规的行定位与数值，供结构化 findings 定位到具体明细行
+        Integer firstItemIndex = null;
+        String firstItemName = null;
+        BigDecimal firstExpected = null;
+        BigDecimal firstActual = null;
 
         // 遍历每一条报销明细
-        for (RuleCheckItem item : request.items()) {
+        List<RuleCheckItem> items = request.items();
+        for (int idx = 0; idx < items.size(); idx++) {
+            RuleCheckItem item = items.get(idx);
             String city = item.city();
             // 明细未填写城市，跳过本条明细校验
             if (city == null || city.isBlank()) {
@@ -417,11 +427,20 @@ public class FinanceRuleService {
 
             // ========== 住宿超标校验 ==========
             // 住宿总金额 > 单日标准 × 住宿天数 → 超标
-            if (hotelDaily != null && item.hotelAmount() != null && item.hotelDays() != null && item.hotelDays() > 0
-                    && item.hotelAmount().compareTo(hotelDaily.multiply(BigDecimal.valueOf(item.hotelDays()))) > 0) {
-                violations.add("[" + itemName + "]城市" + city + "住宿 "
-                        + item.hotelAmount().stripTrailingZeros().toPlainString()
-                        + "元/" + item.hotelDays() + "晚，超过标准 " + hotelDaily.stripTrailingZeros().toPlainString() + "元/晚");
+            // 标准值取「单日标准 × 晚数」，与住宿总金额才是同一口径（可比）
+            if (hotelDaily != null && item.hotelAmount() != null && item.hotelDays() != null && item.hotelDays() > 0) {
+                BigDecimal hotelLimit = hotelDaily.multiply(BigDecimal.valueOf(item.hotelDays()));
+                if (item.hotelAmount().compareTo(hotelLimit) > 0) {
+                    violations.add("[" + itemName + "]城市" + city + "住宿 "
+                            + item.hotelAmount().stripTrailingZeros().toPlainString()
+                            + "元/" + item.hotelDays() + "晚，超过标准 " + hotelDaily.stripTrailingZeros().toPlainString() + "元/晚");
+                    if (firstItemIndex == null) {
+                        firstItemIndex = idx;
+                        firstItemName = itemName;
+                        firstExpected = hotelLimit;
+                        firstActual = item.hotelAmount();
+                    }
+                }
             }
 
             // ========== 交通总额超标校验 ==========
@@ -431,15 +450,22 @@ public class FinanceRuleService {
                 violations.add("[" + itemName + "]城市" + city + "交通 "
                         + item.transportAmount().stripTrailingZeros().toPlainString()
                         + "元，超过标准 " + transportTotal.stripTrailingZeros().toPlainString() + "元");
+                if (firstItemIndex == null) {
+                    firstItemIndex = idx;
+                    firstItemName = itemName;
+                    firstExpected = transportTotal;
+                    firstActual = item.transportAmount();
+                }
             }
         }
         // 无任何违规，返回空
         if (violations.isEmpty()) {
             return Optional.empty();
         }
-        // 拼接全部违规信息，返回规则命中结果
-        return Optional.of(new RuleHitVO(rule.getRuleCode(), rule.getRuleName(), rule.getRuleType(),
-                "差旅标准命中：" + String.join("；", violations), true));
+        // 拼接全部违规信息，返回规则命中结果（附首条违规的结构化定位与数值）
+        return Optional.of(RuleHitVO.ofItem(rule.getRuleCode(), rule.getRuleName(), rule.getRuleType(),
+                "差旅标准命中：" + String.join("；", violations), true,
+                firstItemIndex, firstItemName, firstExpected, firstActual));
     }
 
     /**
@@ -461,8 +487,10 @@ public class FinanceRuleService {
         if (dailyAmount == null || request.items() == null || request.items().isEmpty()) {
             return Optional.empty();
         }
-        // 遍历明细校验补贴
-        for (RuleCheckItem item : request.items()) {
+        // 遍历明细校验补贴（P3.8 R4：带行定位与「日均补贴 vs 上限」数值）
+        List<RuleCheckItem> items = request.items();
+        for (int idx = 0; idx < items.size(); idx++) {
+            RuleCheckItem item = items.get(idx);
             // 明细无补贴金额，跳过
             if (item.subsidyAmount() == null) {
                 continue;
@@ -474,10 +502,10 @@ public class FinanceRuleService {
             // 日均补贴超出上限，直接返回违规结果
             if (perDay.compareTo(dailyAmount) > 0) {
                 String itemName = item.name() == null ? item.subsidyAmount().toPlainString() : item.name();
-                return Optional.of(new RuleHitVO(rule.getRuleCode(), rule.getRuleName(), rule.getRuleType(),
+                return Optional.of(RuleHitVO.ofItem(rule.getRuleCode(), rule.getRuleName(), rule.getRuleType(),
                         "明细[" + itemName + "]补贴 " + perDay.stripTrailingZeros().toPlainString()
                                 + "元/日，超过上限 " + dailyAmount.stripTrailingZeros().toPlainString() + "元/日",
-                        true));
+                        true, idx, itemName, dailyAmount, perDay));
             }
         }
         // 所有明细补贴均合规

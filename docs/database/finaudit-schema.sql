@@ -430,6 +430,7 @@ CREATE TABLE audit_ticket (
     audit_level    TINYINT       NOT NULL DEFAULT 1 COMMENT '审批级数（预留多级审批 TODO P5+，P3 恒 1）',
     rerun_count    INT           NOT NULL DEFAULT 0 COMMENT '提交人 resubmit 重跑次数（P3b 起财务不再 amend），上限 3',
     review_reasons JSON          DEFAULT NULL COMMENT '复核原因列表（JacksonTypeHandler 映射；重跑命中复位时刷新）',
+    review_findings JSON         DEFAULT NULL COMMENT '结构化审核问题项（P3.8 R4-3：定位明细行 + 期望/实际/差额/建议，支撑驳回重提引导）',
     auditor_id     BIGINT        DEFAULT NULL COMMENT '最近处理人用户ID（提交人 resubmit/撤回/撤销申请动作不改此字段）',
     audit_comment  VARCHAR(512)  DEFAULT NULL COMMENT '最近处理意见',
     created_by     BIGINT        DEFAULT NULL COMMENT '申请人用户ID（任务提交人，工单动作权限归属）',
