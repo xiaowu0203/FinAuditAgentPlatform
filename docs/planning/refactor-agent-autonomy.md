@@ -642,7 +642,91 @@ agent-core 192 例（含新增 `AgentTaskVisibilityTest` 5 例）、tool-service
 | R8-3 | 进度百分比与预计等待时间（进度查询体验） |
 | R8-4 | `reimbursement/list.vue` 补轮询 |
 
-### R9 · P4 前置（只做数据源，不建大盘）
+### R9 · P4 前置（只做数据源，不建大盘）—— ✅ 运行时复验通过（**待提交**）
+
+| 序 | 动作 | 落地 | 验收 |
+|---|---|---|---|
+| R9-1 | **Token 用量落库 + `usageSnapshot()` 接出口** | 新增 `model_call_log` 表（迁移 §16，幂等 `CREATE TABLE IF NOT EXISTS`）；`common-model-starter` 新增 `ModelCallRecord` / `ModelCallRecorder`（SPI）/ `ModelCallContext`（线程内调用上下文）/ `ModelUsageSnapshot`（快照出参），`DefaultChatClientFactory` 每次调用测量耗时并回调 recorder + 打结构化日志（`[model-call] key=value`），`ChatClientFactory#usageSnapshot()` 成为接口默认方法（不统计的实现返回空快照而非 null）；agent-core 实现 `ModelCallLogService`（实现 SPI 落库，全程兜底不抛）+ `ModelCallLogMapper`；编排器 `executeLlmStep` 与 `TaskPlanner.plan` 分别以 `scene=llm_step` / `task_plan` 绑定上下文；**接出口**：新增内部端点 `GET /internal/metrics/model-usage`（snapshot + 台账 window 聚合，不经网关暴露） | 单测 13 例（starter 12 + agent-core 6 中的台账 6 例，含上下文清理/嵌套、成功/失败/切换三条记账路径、租户兜底、落库失败不阻断、快照失败率）；表已建于真实库（22 张表） |
+| R9-2 | **任务/步骤耗时落库** | `agent_task.duration_ms`（本次执行 `started_at`→终态；进入 `APPROVAL_PENDING` 即定格，**人工等待不计入**）、`agent_task_step.duration_ms`（LLM=模型调用耗时含切换；TOOL=分发置 RUNNING→`tool.result` 回调，含 MQ 往返）；`markSuccess`/`markApprovalPending`/`markFailed` 三处终态统一落耗时，`TaskVO`/`StepVO` 透出 | 迁移 §17 已执行（两列就位）；指标 SQL 实测可跑（含 `COUNT(duration_ms)` 而非 `COUNT(*)` 的分母口径） |
+| R9-3 | **指标口径文档** | 新增 `docs/architecture/metrics.md`：成本（§1）、效率（§2）、风控（§3）三类 + 四项财务专属指标（自动通过率、重复报销拦截率、预算超支预警次数、票据识别成功率）的字段映射与**可直接执行的 SQL**；含三个前提（成本指标从 R9-1 上线起才有数据、耗时需 `COUNT(duration_ms)`、人工等待不计入效率）与**尚未采集指标的诚实清单** | SQL 逐条在真实库执行验证（`invoice_reimb_link` 无票号列 → 已改为 join `invoice_record`）；与 `ProjectRequirements.md` §七 的对照表 |
+
+**设计取舍（重要）**
+- **为什么建 `model_call_log` 表而不是给 `agent_task_step` 加列**：一次步骤可能多次调用模型（结构化输出解析失败会重试一次、
+  故障会切备用模型），加列只能存最后一条，成本与失败率都会算不准。台账是「一次调用一行」的事实表。
+- **为什么 Starter 只定义 SPI 不直接落库**：`common-model-starter` 是纯能力 Starter（无 MyBatis/数据源依赖），
+  记账属于业务台账。谁关心成本谁实现 SPI（当前 agent-core 实现）；不实现的服务的 `ObjectProvider` 取不到 bean，
+  工厂走 `recorder == null` 分支，不被迫引入数据源。
+- **为什么用 ThreadLocal 传上下文而不是改 `AiClient` 签名**：`chatWithUsage(system, user)` 是全链路通用抽象，
+  为记账加 4 个参数会污染所有实现与调用方；调用是同步的，且与本仓 `TenantContextHolder` 风格一致。
+  已单测覆盖「异常路径也清理」与「内层结束恢复外层」两个易错点。
+
+**⚠️ 执行顺序（已由 AI 在真实库执行）**：迁移 §16~18 → 重启 **agent-core-service**（仅它改了）；
+`model_call_log` 无历史数据可回填（内存计数已随进程重启丢失），故**成本指标的起始时间即本阶段上线时刻**。
+
+**R9 实施中发现并修复的框架级缺陷（R2-10 遗留关闭）**
+
+实现 TOOL 步骤耗时时发现：`AgentTaskStep.updatedAt` **没有** `@TableField(fill = FieldFill.INSERT_UPDATE)`——
+这正是 R2-10 登记但只修了 `invoice_record`/`invoice_reimb_link` 的遗留。后果有两层：
+
+1. **耗时口径失真**：`markRunning` 走实体更新，实体里从库里读出的**旧** `updated_at` 会被写回 SET，
+   抑制 MySQL 的 `ON UPDATE CURRENT_TIMESTAMP`（列一旦被显式赋值就不再自动更新）。
+   于是 `onToolResult` 里的「现在 − step.updated_at」根本不是工具耗时，而是**从该行上次被更新算起的全部时间**（严重虚高）。
+2. **`updated_at` 长期不动**：全仓 16 个带 `updatedAt` 的实体只有 2 个标了 fill；
+   其余（`agent_task`/`agent_task_step`/`audit_ticket`/`budget_occupancy`/`file_record`/`sys_*` 等）
+   更新时都不会刷新该列——DDL 声明的 `ON UPDATE CURRENT_TIMESTAMP` 形同虚设。
+
+**修复**：为 15 个实体类（`RuleVO` 非实体，跳过）统一补 `@TableField(fill = FieldFill.INSERT_UPDATE)`。
+`AuditTimestampMetaObjectHandler.updateFill` 已按 `FieldFill` 守卫并用 `setFieldValByName` 覆盖旧值，故补标注即生效。
+
+**顺带加固（防同类问题再次静默污染指标）**：新增 `resolveToolDurationMs` 护栏——墙钟耗时远大于
+工具自报 `tool_execution_log.cost_time_ms`（`> 5× + 60s`）时判定基准不可信，改用工具自报值并打 WARN。
+指标列被悄悄写错比抛异常更难发现，宁可变保守值也要留痕。已补 2 条单测（正常基准走墙钟 / 陈旧基准走退化）。
+
+**运行时复验证据（2026-09-22 02:17，agent-core 重启后；`r9-metrics-datasource-check.ps1` 15/15 PASS）**
+
+| 判据 | 结果 |
+|---|---|
+| A 结构就绪 | `model_call_log` 表（15 列）+ `agent_task`/`agent_task_step` 两个 `duration_ms` 列 ✓ |
+| B 台账有数（taskId=430692） | **4 行**、全部 `scene=llm_step`、tokens 合计 **12480**、4 行均带 `step_id` ✓ |
+| C 耗时落库 | 任务 `duration_ms=14081ms`；LLM 步骤 2619/1796ms；TOOL 步骤 3894（OCR，最慢）/63/470/74/70/201ms —— 数值合理，**证明确认修复后的墙钟基准不再虚高** |
+| D 指标 SQL | `metrics.md` 的 6 条 SQL 全部可执行 ✓ |
+| E 接出口 | `GET /internal/metrics/model-usage` 返回 snapshot（calls=4, totalTokens=12480）+ window（同口径）✓ |
+
+**台账「一次步骤多行」语义实测确认**：step_id 643（第 7 步风控）/644（第 8 步汇总）各出现 **2 次** ——
+首跑 2 次 + **自校验命中矛盾后重跑 2 次**（该任务 `correction_count=1`，`self_check_result.coherent=false`）。
+这正是"不做成 step 扩展列"的理由，也让**纠错重跑的成本可被单独量化**（P4 可直接按 `step_id` 计数 >1 聚合）。
+
+**回归（本轮改了 15 个实体的 `updated_at` 填充，影响面较宽，故逐项验证）**
+
+| 脚本 | 结果 |
+|---|---|
+| `r2-audit-timestamp-check.ps1`（最相关：直接断言 `updated_at` 跳变） | **2/2 PASS**：`seen_count 35→36`、`updated_at 02:17:58 → 02:18:03` |
+| R2-10 关闭的直接证据（真实数据） | `agent_task.updated_at` 比 `created_at` 晚 **15s**（修复前恒等）；步骤 1/7 分别晚 4s/13s |
+| `r5-amend-rerun-e2e.ps1`（写 `agent_task`/`audit_ticket`，两个新标注实体） | **19/19 PASS / 0 SKIP** |
+| `budget-occupancy-concurrency.ps1` | 7/7 全部通过 |
+| `bizno-collision-retry.ps1` | 4/4 PASS |
+| 台账累计（多次运行后） | 16 行 / 43493 tokens；LLM 步骤 8 样本 avg 1877ms、TOOL 24 样本 avg 1312ms（数值合理） |
+
+**待办**
+- [ ] P4 建看板时按 `docs/architecture/metrics.md` 取值；票据识别**准确率**需先建人工标注对照集（模板见 `docs/test/README.md`）
+
+**R9 实施中用「真实库最小复现」提前拆掉的风险（未重启即发现）**
+
+新增 `docs/test/repro/ModelCallLogInsertRepro.java`：用真实 Mapper + 真实库把台账写入路径跑一遍
+（mock 单测只能验证"传了什么"，验证不了列名映射 / NOT NULL / 长度）。覆盖 5 种记录形态
+（成功 / 失败 / 走备用模型 / 超长错误信息 / 空可选字段）：**5/5 写入成功、回读一致、清理干净**。
+
+过程中抓到 1 个真实缺陷 + 1 个流程陷阱：
+
+1. **缺陷（已修）**：900 字符的 `error_msg` → `Data too long for column 'error_msg'`。
+   Starter 侧虽有 480 字符截断，但只覆盖「经模型工厂回调」这一条路径；而调用方的兜底 catch
+   会让整行台账**被静默丢弃**——失败调用的台账恰恰最需要留痕。
+   已在 `ModelCallLog.from(...)`（知道列长的实体边界）补第二道截断（`ERROR_MSG_MAX_LEN = 500`）并补单测。
+2. **流程陷阱（已写入复现程序用法注释）**：**必须先 `clean compile`**。增量编译会因「class 比 source 新」
+   而跳过重编，于是跑的是旧字节码——现象是"改好的截断逻辑不生效"，**极易误判为产品缺陷**（本轮差点如此）。
+
+
+
 
 | 序 | 动作 |
 |---|---|
@@ -780,11 +864,13 @@ agent-core 192 例（含新增 `AgentTaskVisibilityTest` 5 例）、tool-service
 | R6-1 前端「智能分析」页 | ⏸ 延后（§7 后端先行） | — | 后端已就绪：`POST /api/v1/tasks` + GENERIC 收尾/自校验/建单 |
 | R4-6 提交幂等 | ⏸ 移出 R4 | — | 幂等键由前端生成，与前端阶段一起做才可验证 |
 | R5-5 AUTO_PASS 基线实测 | ⬜ 未做 | — | 依赖真实 LLM 与 OCR 配额，留待配额稳定时执行 |
-| R6 ~ R9 | R6 ✅ / R7 🔶（代码完成） / R8~R9 ⬜ | — | 见 §5 |
+| **R9** P4 前置数据源 | ✅ 运行时复验通过（**未提交**） | — | `model_call_log` 台账 + 任务/步骤耗时 + 指标口径文档 |
+| R6 / R7 | ✅ 完成并推送 | `610f634` / `c8ae23a` | 结构与契约 / 一致性与文档收口 |
+| R8 可选增强 | ⬜ 未开始（R8-1 待商务决策、R8-2/3/4 多为前端项） | — | 见 §5 |
 
-**当前验证基线**：`mvn -o clean install` 19 模块 BUILD SUCCESS；agent-core **187 例**、tool-service **45 例**、
-common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudit` 共 **21 张表**
-（迁移脚本 `migration-P3.8.sql` 共 15 节，全部幂等可重复执行）。
+**当前验证基线**：`mvn -o clean install` 19 模块 BUILD SUCCESS；agent-core **201 例**、tool-service **45 例**、
+common-model-starter **15 例**、common-code 27 例、tenant-service 25 例、common-mybatisplus-starter 5 例全绿。
+数据库 `finaudit` 共 **22 张表**（迁移脚本 `migration-P3.8.sql` 共 18 节，全部幂等可重复执行）。
 
 **八个端到端/专项验收脚本**（`docs/test/`，均带 UTF-8 BOM）：
 
@@ -868,6 +954,17 @@ common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudi
     `SKIP（前置条件不满足，非产品缺陷）` 结束并说明如何正确重跑。
     脚本随机取样本 / 随机取单据的地方，都要问一句：这个随机性会不会让断言失去意义？
 
+19. **`finaudit-schema.sql` 是"全量重建"脚本，内含 `USE finaudit` + `DROP TABLE`**（P3.8 R9 实测踩过，
+    一次误操作把本地库清空、且本机 `log_bin=OFF` 无从恢复）：
+    ① 命令行 `-D 其他库` **保护不了数据**（脚本内的 `USE` 会覆盖它）；
+    ② 只想"验证全量脚本能否在空库跑通"时，必须**复制脚本并删掉 `USE`/`DROP` 段**，不要直接对生产/开发库执行；
+    ③ **新增表必须同步加进该脚本的 DROP 列表**——漏加会让重跑在中间某张表报 `Table 'xxx' already exists` 并中断，
+    留下「结构新、种子空」的半成品库（`sys_user` 为空 → 无法登录）。R9 加 `model_call_log` 时漏了，已修复，
+    并在脚本头部与 `docs/database/README.md`、`docs/deploy/README.md` 三处加了同款警示。
+    **纪律**：任何"看起来幂等"的重建脚本，执行前都要先问「它会 DROP 什么、指向哪个库、有没有备份」。
+    **配套产物**：`docs/deploy/db-backup.ps1`（一条命令备份 + 打印前后关键表行数，输出到已 gitignore 的 `backups/`）；
+    `docs/database/README.md` §2.2 记录"安全试验 SQL 脚本"的正确姿势（复制脚本改 `USE` 行，且必须显式按 UTF-8 读写）。
+
 验证方法类：
 
 17. **「某值应被更新」的断言必须对比前后跳变**，绝不能与 0 或某个绝对值比较 ——
@@ -921,7 +1018,7 @@ common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudi
 - [ ] **下一步：提交 R5**（一阶段一提交，双仓推送）
 - [ ] **重启 agent-core 联调 R5**：验证自校验命中 → 重跑风控步骤 → `correction_count`/`self_check_result` 落库
 - [ ] R5-5 AUTO_PASS 基线实测（依赖真实 LLM 与 OCR 配额，见 R5 待办）
-- [ ] R6 / R7 中需补的历史欠账：**R2-10 审计时间戳填充对其余实体仍未生效**
+- [x] ~~R6 / R7 中需补的历史欠账：R2-10 审计时间戳填充对其余实体仍未生效~~ → **已于 R9 关闭**（15 个实体补齐 `@TableField(fill = FieldFill.INSERT_UPDATE)`，见 §11 R9 记录）
       （`agent_task` / `audit_ticket` / `budget_occupancy` 等仍走 `updateById` 且未标注 `FieldFill`，
       `updated_at` 依然从不刷新）——需逐个实体评估后补标注
 
@@ -1373,7 +1470,7 @@ AFTER : seen_count=5 attachment_id=46 reimb_id=48 updated_at=01:37:22   ← 三�
 - [x] 联调验收：判据 ①② 均 PASS，幂等累加 PASS（见上）
 - [x] **`updated_at` 自动填充运行时复验通过**（重启后实测 `01:49:10 → 01:49:15` 跳变）
 - [ ] **R3 依赖本阶段产出**：`queryDuplicates` 改按 `(invoice_code, invoice_num)` 硬命中
-- [ ] R6/R7：为其余实体补 `@TableField(fill=...)` 标注（R2-10 缺陷对它们仍未修复）
+- [x] R6/R7：为其余实体补 `@TableField(fill=...)` 标注（R2-10 缺陷对它们仍未修复）→ **已于 R9 关闭**（15 个实体，详见 §11 R9）
 
 ---
 

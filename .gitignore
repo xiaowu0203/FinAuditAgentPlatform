@@ -48,3 +48,6 @@ CLAUDE.md
 
 # ===== Maven Wrapper jar =====
 .mvn/wrapper/maven-wrapper.jar
+
+# ===== 数据库备份（docs/deploy/db-backup.ps1 的输出；含业务数据，禁止入库）=====
+backups/

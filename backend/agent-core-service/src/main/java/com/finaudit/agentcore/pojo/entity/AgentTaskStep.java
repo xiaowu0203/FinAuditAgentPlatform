@@ -1,5 +1,6 @@
 package com.finaudit.agentcore.pojo.entity;
 
+import com.baomidou.mybatisplus.annotation.FieldFill;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -70,10 +71,21 @@ public class AgentTaskStep {
     @Schema(description = "重试次数")
     private Integer retryCount;
 
+    /**
+     * 步骤耗时（毫秒，P3.8 R9-2）。
+     * <p>口径：LLM 步骤 = 模型调用耗时（含故障切换）；TOOL 步骤 = 从分发置 RUNNING 到收到
+     * {@code tool.result} 的墙钟耗时（含 MQ 往返，工具自身耗时另见 {@code tool_execution_log.cost_time_ms}）。</p>
+     */
+    @Schema(description = "步骤耗时（毫秒）")
+    private Long durationMs;
+
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
 
     @Schema(description = "更新时间")
+    /** 更新时间（P3.8 R9-2 修复 R2-10 遗留）：标 fill=INSERT_UPDATE，使 updateById/实体更新能刷新该列，
+     * 否则实体里读出的旧值会被写回 SET、抑制 MySQL 的 ON UPDATE CURRENT_TIMESTAMP。 */
+    @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updatedAt;
 
     @TableLogic

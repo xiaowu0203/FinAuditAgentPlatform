@@ -7,6 +7,7 @@
 | [工程约定（conventions）](./conventions.md) | **贡献者入口**：分层与依赖 / 数据访问三大坑（JSON 列写入、关联表建模、XML 自定义 SQL）/ 多租户权威来源 / 兜底可观测性 / 验收纪律 / 提交与分支 / 「多 Agent」表述口径（P3.8 R6-7） |
 | [任务事件驱动编排](./task-orchestration.md) | MQ 拓扑 / 消息契约 / 任务状态机 / **§0「多 Agent」口径澄清（单进程角色化，非 A2A）** / P3.8 声明式流水线（`FlowDefinition`）+ 收尾闸口自校验 / **P3b 审批工单状态机（mermaid+整页图+ASCII）+ 按角色完整执行路径** / 失败重试 / 断点续跑 |
 | [租户鉴权与多租户隔离](./tenant-auth.md) | JWT 认证 / 网关转发头注入 / 租户上下文传播（HTTP+MQ）/ `TenantLineInnerInterceptor`（P1.4） |
+| [指标口径（metrics）](./metrics.md) | **P4 量化评估的数据源口径**：成本（`model_call_log`）/ 效率（`duration_ms`）/ 风控（自动通过率、重复报销拦截率、预算超支预警、票据识别成功率）三类的字段映射 + 可直接执行的 SQL + **尚未采集的指标诚实清单**（P3.8 R9-3） |
 
 ## 待补充
 

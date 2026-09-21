@@ -314,11 +314,72 @@ SET output_schema = '{"type":"object","properties":{"total":{"type":"number"},"c
 WHERE deleted = 0 AND tool_code = 'amount_verify';
 
 -- ---------------------------------------------------------------------
--- 15. 核对：出参 Schema 列与两条契约更新已就位
+-- 16. 模型调用台账表（R9-1）
+--     目的：Token 用量此前只在内存累加（usageSnapshot 无消费方），进程重启即归零 = 成本指标不存在。
+--     台账为「一次模型调用一行」的事实表：带 租户/任务/步骤/场景，构成本与效率指标的数据源。
+--     ⚠️ 为什么不做成 agent_task_step 的扩展列：一次步骤可能多次调用模型
+--        （结构化输出解析失败会重试、故障会切备用模型），加列只能存最后一条，成本与失败率都算不准。
+--     幂等：CREATE TABLE IF NOT EXISTS
 -- ---------------------------------------------------------------------
-SELECT tool_code, JSON_LENGTH(input_schema) AS in_schema_len,
-       IFNULL(JSON_LENGTH(output_schema), 0) AS out_schema_len
-FROM tool_registry
-WHERE deleted = 0
-ORDER BY id;
+CREATE TABLE IF NOT EXISTS model_call_log (
+    id                BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id         BIGINT       NOT NULL DEFAULT 1 COMMENT '租户ID',
+    model_type        VARCHAR(32)  NOT NULL COMMENT '模型类型（DEEPSEEK 等）',
+    model_name        VARCHAR(64)  DEFAULT NULL COMMENT '模型名（如 deepseek-chat）',
+    scene             VARCHAR(32)  DEFAULT NULL COMMENT '调用场景（llm_step/task_plan 等）',
+    task_id           BIGINT       DEFAULT NULL COMMENT '任务ID',
+    step_id           BIGINT       DEFAULT NULL COMMENT '步骤ID',
+    prompt_tokens     INT          NOT NULL DEFAULT 0 COMMENT '输入 tokens',
+    completion_tokens INT          NOT NULL DEFAULT 0 COMMENT '输出 tokens',
+    total_tokens      INT          NOT NULL DEFAULT 0 COMMENT '总 tokens（冗余列，便于直接聚合）',
+    latency_ms        BIGINT       NOT NULL DEFAULT 0 COMMENT '调用耗时（毫秒，含故障切换）',
+    success           TINYINT      NOT NULL DEFAULT 1 COMMENT '是否成功: 1成功 0失败',
+    fallback_used     TINYINT      NOT NULL DEFAULT 0 COMMENT '是否走备用模型: 1是 0否',
+    error_msg         VARCHAR(500) DEFAULT NULL COMMENT '失败原因（截断保存）',
+    created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_tenant_time (tenant_id, created_at),
+    KEY idx_task (task_id),
+    KEY idx_step (step_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '模型调用台账（P3.8 R9-1：成本与效率指标数据源）';
+
+-- 回填说明：本表为新增观测表，历史调用无数据源可回填（内存计数已随进程重启丢失），
+-- 故只从上线时刻开始记录；指标文档中需注明「成本指标的起始时间」。
+
+-- ---------------------------------------------------------------------
+-- 17. 任务/步骤耗时列（R9-2）
+--     agent_task.duration_ms：本次执行（started_at → 终态）耗时
+--     agent_task_step.duration_ms：LLM 步骤 = 模型调用耗时；TOOL 步骤 = 分发 → tool.result 回调
+--     幂等：information_schema 判定后动态 DDL（MySQL 5.7 无 ADD COLUMN IF NOT EXISTS）
+-- ---------------------------------------------------------------------
+SET @col_task_dur = (SELECT COUNT(*) FROM information_schema.columns
+                      WHERE table_schema = DATABASE() AND table_name = 'agent_task' AND column_name = 'duration_ms');
+SET @ddl_task_dur = IF(@col_task_dur = 0,
+    'ALTER TABLE agent_task ADD COLUMN duration_ms BIGINT DEFAULT NULL COMMENT ''任务耗时毫秒（P3.8 R9-2：本次执行 started_at→终态；人工等待不计入）'' AFTER error_msg',
+    'SELECT ''agent_task.duration_ms 已存在，跳过'' AS skip_msg');
+PREPARE stmt_task_dur FROM @ddl_task_dur;
+EXECUTE stmt_task_dur;
+DEALLOCATE PREPARE stmt_task_dur;
+
+SET @col_step_dur = (SELECT COUNT(*) FROM information_schema.columns
+                      WHERE table_schema = DATABASE() AND table_name = 'agent_task_step' AND column_name = 'duration_ms');
+SET @ddl_step_dur = IF(@col_step_dur = 0,
+    'ALTER TABLE agent_task_step ADD COLUMN duration_ms BIGINT DEFAULT NULL COMMENT ''步骤耗时毫秒（P3.8 R9-2：LLM=模型调用；TOOL=分发→回调）'' AFTER retry_count',
+    'SELECT ''agent_task_step.duration_ms 已存在，跳过'' AS skip_msg');
+PREPARE stmt_step_dur FROM @ddl_step_dur;
+EXECUTE stmt_step_dur;
+DEALLOCATE PREPARE stmt_step_dur;
+
+-- ---------------------------------------------------------------------
+-- 18. 核对：R9 的表与列已就位
+-- ---------------------------------------------------------------------
+SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.tables
+WHERE table_schema = DATABASE() AND TABLE_NAME = 'model_call_log';
+
+SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+FROM information_schema.columns
+WHERE table_schema = DATABASE()
+  AND ((TABLE_NAME = 'agent_task' AND COLUMN_NAME = 'duration_ms')
+    OR (TABLE_NAME = 'agent_task_step' AND COLUMN_NAME = 'duration_ms'))
+ORDER BY TABLE_NAME;
 

@@ -1,5 +1,6 @@
 package com.finaudit.agentcore.pojo.entity;
 
+import com.baomidou.mybatisplus.annotation.FieldFill;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -67,6 +68,13 @@ public class AgentTask {
     private String errorMsg;
 
     /**
+     * 任务总耗时（毫秒，P3.8 R9-2）：从 {@code started_at}（本次执行起点，续跑/重跑会刷新）到终态的墙钟耗时。
+     * <p>取"本次执行"而非"创建至今"：重跑任务的创建时间可能早已过去，混在一起会让效率指标失真。</p>
+     */
+    @Schema(description = "任务耗时（毫秒，本次执行）")
+    private Long durationMs;
+
+    /**
      * 自校验纠错次数（P3.8 R5-4）。语义自校验命中矛盾后重跑风控语义步骤时累加，上限见
      * {@code AgentOrchestrator}（默认 1 次）。同时是 P4「工具纠错次数」指标的来源。
      */
@@ -88,6 +96,9 @@ public class AgentTask {
     private LocalDateTime createdAt;
 
     @Schema(description = "更新时间")
+    /** 更新时间（P3.8 R9-2 修复 R2-10 遗留）：标 fill=INSERT_UPDATE，使 updateById/实体更新能刷新该列，
+     * 否则实体里读出的旧值会被写回 SET、抑制 MySQL 的 ON UPDATE CURRENT_TIMESTAMP。 */
+    @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updatedAt;
 
     @TableLogic

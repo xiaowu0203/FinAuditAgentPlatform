@@ -19,20 +19,42 @@ mysql -uroot -p < docs/database/finaudit-schema.sql
 ```
 全量脚本已含各阶段迁移的最终形态与全部种子，**不要**再逐个跑 `migration-*.sql`。
 
+> ### 🚨 三条硬性警示（P3.8 R9 实测踩过，代价是清空了一次本地库）
+>
+> 1. **只能用于全新库**：脚本会 `DROP TABLE IF EXISTS` 全部 22 张表再重建（含种子）。对已有数据的库执行 = **清空数据，且本机 `log_bin=OFF` 无 binlog、无法按时间点恢复**。
+> 2. **`-D 其他库` 保护不了你**：脚本第 10 行是 `USE finaudit;`，命令行指定的库会被静默覆盖。想在别处验证全量脚本？**复制一份并删掉 `USE`/`DROP` 段**，不要指望 `-D`。
+> 3. **新增表必须同步加进 DROP 列表**：本脚本沿用「先 DROP 后 CREATE」的幂等写法，漏加会让重跑在第 N 张表处报
+>    `Table 'xxx' already exists` **并中途中断** —— 留下一套「结构是新的、种子没灌进去」的半成品库
+>    （`sys_user` 为空 → 直接无法登录）。R9 加 `model_call_log` 时就漏了，已修复，并在脚本头部加了同款提示。
+>
+> 要动数据前先备份：`powershell -File docs\deploy\db-backup.ps1`（仓库自带，输出到 `backups/`，该目录已 gitignore；
+> 会打印前后关键表行数便于比对完整性）。手动等价命令：`mysqldump -uroot -p finaudit > backup.sql`。
+
 ### 2.2 已有库：按阶段先后逐个执行
 ```
 migration-P2b.sql → migration-P2c.sql → migration-P3a.sql → migration-P3b.sql
   → migration-P3.5a.sql → migration-P3.5b.sql → migration-P3.5c.sql → migration-P3.5d.sql
-  → migration-P3.8.sql        ← 最新（P3.8 全部增量，共 15 节）
+  → migration-P3.8.sql        ← 最新（P3.8 全部增量，共 18 节）
 ```
 建议显式指定库名逐个执行，便于定位失败节：
 ```bash
 mysql -uroot -p --default-character-set=utf8mb4 -D finaudit -e "source F:/path/to/migration-P3.8.sql"
 ```
 
+> 🚨 **所有 10 个 SQL 脚本（含每个 migration）头部都有 `USE finaudit;`**——命令行 `-D 其他库` **一律会被覆盖**，
+> 无法用它把脚本"试验"到别的库上（实测代价：清空过一次本地库，见 §2.1 警示）。
+> **想安全试验的唯一正确姿势**：把脚本复制到临时目录、改掉 `USE` 行指向目标库，再对该库执行：
+> ```powershell
+> $t = [IO.File]::ReadAllText($src, [Text.Encoding]::UTF8) -replace 'USE finaudit;', 'USE finaudit_scratch;'
+> [IO.File]::WriteAllText($dst, $t, (New-Object Text.UTF8Encoding($false)))
+> ```
+> ⚠️ 必须**显式按 UTF-8 读写**：用 `Get-Content -Raw` 读会按 ANSI 解码中文注释，写回后脚本全是乱码（实测踩过）。
+> 本轮的"迁移幂等性实测"正是用这套姿势在临时库上完成的。
+
 ### 2.3 ⚠️ 幂等性并不一致，别当成「可以随便重跑」
 
-下表按**脚本内标注 + 是否用 `information_schema` 守卫动态 DDL + 实测**给出（不是"看起来应该幂等"）：
+下表按**脚本内标注 + 是否用 `information_schema` 守卫动态 DDL + 实测**给出（不是"看起来应该幂等"）。
+**2026-09-22 已在临时库上逐脚本实测复跑，结果与下表完全一致**（P2b/P2c/P3a/P3b 报 1060/1061，P3.5a~P3.8 无错误）：
 
 | 脚本 | 幂等 | 依据 |
 |---|---|---|

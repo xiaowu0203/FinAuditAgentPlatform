@@ -55,6 +55,9 @@ public class TaskVO {
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
 
+    @Schema(description = "任务耗时（毫秒，本次执行；P3.8 R9-2）")
+    private Long durationMs;
+
     public static TaskVO from(AgentTask task) {
         TaskVO vo = new TaskVO();
         vo.setId(task.getId());
@@ -72,6 +75,8 @@ public class TaskVO {
         vo.setCorrectionCount(task.getCorrectionCount());
         vo.setSelfCheckResult(task.getSelfCheckResult());
         vo.setCreatedAt(task.getCreatedAt());
+        // P3.8 R9-2：耗时透出，前端任务详情可展示「本次执行 X 秒」
+        vo.setDurationMs(task.getDurationMs());
         return vo;
     }
 }

@@ -1,9 +1,17 @@
 -- =====================================================================
 -- FinAuditAgentPlatform 数据库初始化脚本
--- 版本: P3.5d（RBAC 权限体系 + 部门实体 + 安全可靠性加固） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
--- 说明: 可直接整体执行；DROP TABLE IF EXISTS 保证幂等（会清空重灌）。
+-- 版本: P3.8 R9（含模型调用台账 + 任务/步骤耗时） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
+-- 说明: 可直接整体执行；DROP TABLE IF EXISTS 保证幂等（**会清空重灌**）。
 --       本机执行: mysql -uroot -p < docs/database/finaudit-schema.sql
---       已有数据的环境只跑增量: mysql -uroot -p < docs/database/migration-P3a.sql（再跑 migration-P3b.sql）
+--       已有数据的环境只跑增量: mysql -uroot -p < docs/database/migration-P3a.sql（再跑 migration-P3b.sql ... 直至 migration-P3.8.sql）
+--
+-- ⚠️⚠️ 危险操作警示（P3.8 R9 实测踩过，代价是清空了一次本地库）：
+--   1) 本脚本**内含 `USE finaudit;`**，命令行用 `-D 其他库` 指定的库会被它覆盖 ——
+--      想在别处验证请复制脚本并自行删掉 `USE`/`DROP` 段，**不要**指望 -D 能保护数据。
+--   2) 本脚本会 DROP 全部表再重建，**只能用于全新库**；对已有数据的库执行 = 清空。
+--   3) **维护纪律**：新增表时必须同时把表名加进下面的 DROP 列表。
+--      漏加的表现是"重跑全量脚本时报 Table 'xxx' already exists 并在中途中断"，
+--      留下一个"表结构是新的、种子数据没灌进去"的半成品库（`sys_user` 为空 → 无法登录）。
 -- =====================================================================
 
 CREATE DATABASE IF NOT EXISTS finaudit DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -22,6 +30,7 @@ DROP TABLE IF EXISTS audit_record;
 DROP TABLE IF EXISTS audit_ticket;
 DROP TABLE IF EXISTS tool_execution_log;
 DROP TABLE IF EXISTS tool_registry;
+DROP TABLE IF EXISTS model_call_log;
 DROP TABLE IF EXISTS agent_task_step;
 DROP TABLE IF EXISTS agent_task;
 DROP TABLE IF EXISTS sys_role_permission;
@@ -137,6 +146,7 @@ CREATE TABLE agent_task (
     error_msg     VARCHAR(1024) DEFAULT NULL COMMENT '失败原因',
     correction_count INT        NOT NULL DEFAULT 0 COMMENT '自校验纠错次数（P3.8 R5：命中矛盾重跑风控语义步骤时累加）',
     self_check_result JSON      DEFAULT NULL COMMENT '语义自校验结果（P3.8 R5：是否通过 + 矛盾/幻觉清单 + 断言条数）',
+    duration_ms   BIGINT        DEFAULT NULL COMMENT '任务耗时毫秒（P3.8 R9-2：本次执行 started_at→终态；人工等待不计入）',
     created_by    BIGINT        DEFAULT NULL COMMENT '提交人用户ID',
     created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -165,6 +175,7 @@ CREATE TABLE agent_task_step (
     status      VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '步骤状态',
     error_msg   VARCHAR(1024) DEFAULT NULL COMMENT '失败原因',
     retry_count INT           NOT NULL DEFAULT 0 COMMENT '重试次数',
+    duration_ms BIGINT        DEFAULT NULL COMMENT '步骤耗时毫秒（P3.8 R9-2：LLM=模型调用；TOOL=分发→回调）',
     created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted     BIGINT        NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0 未删 / 主键id 已删（配合 uk_task_step）',
@@ -502,6 +513,34 @@ CREATE TABLE sys_role_permission (
     KEY idx_role (role_id),
     KEY idx_tenant (tenant_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '角色权限映射表';
+
+-- ---------------------------------------------------------------------
+-- 18. 模型调用台账表（P3.8 R9-1）
+--     一次模型调用一行：带 租户/任务/步骤/场景，是成本与效率指标的数据源。
+--     不做成 agent_task_step 的扩展列——一次步骤可能多次调用（结构化解析重试、故障切备用模型），
+--     加列只能存最后一条，成本与失败率都会算不准。
+-- ---------------------------------------------------------------------
+CREATE TABLE model_call_log (
+    id                BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id         BIGINT       NOT NULL DEFAULT 1 COMMENT '租户ID',
+    model_type        VARCHAR(32)  NOT NULL COMMENT '模型类型（DEEPSEEK 等）',
+    model_name        VARCHAR(64)  DEFAULT NULL COMMENT '模型名（如 deepseek-chat）',
+    scene             VARCHAR(32)  DEFAULT NULL COMMENT '调用场景（llm_step/task_plan 等）',
+    task_id           BIGINT       DEFAULT NULL COMMENT '任务ID',
+    step_id           BIGINT       DEFAULT NULL COMMENT '步骤ID',
+    prompt_tokens     INT          NOT NULL DEFAULT 0 COMMENT '输入 tokens',
+    completion_tokens INT          NOT NULL DEFAULT 0 COMMENT '输出 tokens',
+    total_tokens      INT          NOT NULL DEFAULT 0 COMMENT '总 tokens（冗余列，便于直接聚合）',
+    latency_ms        BIGINT       NOT NULL DEFAULT 0 COMMENT '调用耗时（毫秒，含故障切换）',
+    success           TINYINT      NOT NULL DEFAULT 1 COMMENT '是否成功: 1成功 0失败',
+    fallback_used     TINYINT      NOT NULL DEFAULT 0 COMMENT '是否走备用模型: 1是 0否',
+    error_msg         VARCHAR(500) DEFAULT NULL COMMENT '失败原因（截断保存）',
+    created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_tenant_time (tenant_id, created_at),
+    KEY idx_task (task_id),
+    KEY idx_step (step_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '模型调用台账（P3.8 R9-1：成本与效率指标数据源）';
 
 -- =====================================================================
 -- Seed 数据（默认租户 + 管理员 + 角色 + 内置工具 + 预算 + 财务规则）

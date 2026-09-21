@@ -14,6 +14,7 @@ import com.finaudit.agentcore.enums.ReimbursementStatus;
 import com.finaudit.agentcore.enums.StepStatus;
 import com.finaudit.agentcore.enums.TaskStatus;
 import com.finaudit.agentcore.enums.TaskType;
+import com.finaudit.starter.model.metrics.ModelCallContext;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
 import com.finaudit.agentcore.pojo.entity.AgentTaskStep;
 import com.finaudit.agentcore.mq.TaskEventPublisher;
@@ -555,14 +556,23 @@ public class AgentOrchestrator {
 
             // 未触发Prompt注入风险
             Object data;
-            // 若为风控Agent，则返回RiskAssessment结构体（包含置信度等）
-            if (role == AgentRole.RISK_AUDITOR) {
-                data = modelClient.chatStructured(system, user, RiskAssessment.class).data();
-            }
-            // 若为统筹调度Agent，则返回AuditConclusion
-            else {
-                data = modelClient.chatStructured(system, user, AuditConclusion.class).data();
-            }
+            // P3.8 R9-1：把「这次调用属于哪个租户/任务/步骤」放进模型调用上下文，
+            // 模型工厂据此把 Token 用量与场景落进 model_call_log 台账（runWith 在 finally 清理，
+            // 防线程池复用把上一个任务的上下文带给下一次调用）
+            long llmStart = System.currentTimeMillis();
+            data = ModelCallContext.runWith(task.getTenantId(), task.getId(), step.getId(),
+                    ModelCallContext.SCENE_LLM_STEP, () -> {
+                        // 若为风控Agent，则返回RiskAssessment结构体（包含置信度等）
+                        if (role == AgentRole.RISK_AUDITOR) {
+                            return modelClient.chatStructured(system, user, RiskAssessment.class).data();
+                        }
+                        // 若为统筹调度Agent，则返回AuditConclusion
+                        return modelClient.chatStructured(system, user, AuditConclusion.class).data();
+                    });
+            long llmCost = System.currentTimeMillis() - llmStart;
+            // P3.8 R9-2：LLM 步骤耗时落库（此前步骤只有状态没有耗时，
+            // 「哪一步慢」只能靠日志手工推算；耗时是指标文档中"效率"一类的基础列）
+            stepService.updateDuration(step.getId(), llmCost);
             // 将data转为Map<String, Object> 入库，状态置SUCCESS（CAS 同上，竞争失败丢弃）
             if (!stepService.markSuccess(step,
                     OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}))) {
@@ -628,11 +638,18 @@ public class AgentOrchestrator {
 
         // 若工具执行成功
         if (msg.success()) {
+            // P3.8 R9-2：TOOL 步骤耗时 = 从分发置 RUNNING 到本次回调。
+            // 口径说明：用 step.updatedAt 作为起点——它由 markRunning 的实体更新刷新
+            // （R2-10 的 fill=INSERT_UPDATE 已补到 AgentTaskStep，见该类字段注释），
+            // 而此刻读取的 step 还是 RUNNING 态，故差值即"工具端执行 + MQ 往返"的墙钟耗时；
+            // 工具自身耗时另有 tool_execution_log.cost_time_ms 可对照（两者之差即 MQ/调度开销）。
+            long toolCost = resolveToolDurationMs(step, msg.costTimeMs());
             // CAS 更新步骤为成功：失败说明步骤已被并发迁移（重复投递/迟到结果），丢弃本次结果
             if (!stepService.markSuccess(step, msg.result())) {
                 log.warn("步骤 {} 结果写入竞争失败（状态已被并发迁移），丢弃 tool.result", msg.stepId());
                 return;
             }
+            stepService.updateDuration(step.getId(), toolCost);
             // 刷新任务已完成步骤数量
             refreshFinishedSteps(task.getId());
             log.info("工具 {} 步骤成功: stepId={}", msg.toolCode(), msg.stepId());
@@ -819,6 +836,34 @@ public class AgentOrchestrator {
         // 报销单状态回写：按 LLM 汇总决策细化（REJECT→FAILED、NEED_INFO→MANUAL_REVIEW，其余→SUCCESS）
         // 注：GENERIC 任务无关联报销单，syncReimbStatus 内部按 taskType 短路
         syncReimbStatus(task, resolveSuccessStatus(extractDecision(steps)));
+    }
+
+    /**
+     * TOOL 步骤耗时解析（P3.8 R9-2）：墙钟耗时（`updated_at` → 现在），并带一道**陈旧时间戳护栏**。
+     *
+     * <p><b>为什么需要护栏</b>：本仓曾在 `updated_at` 上栽过（R2-10：实体无 `fill=INSERT_UPDATE` 时，
+     * 实体里读出的旧时间戳会被写回 SET、抑制 MySQL 的 `ON UPDATE`，于是该列长期不动）。
+     * 若哪天同类问题复发，墙钟差值会**虚高到整条流水线的时长**并静默写进指标列——
+     * 指标数据被污染比报错更难发现。故：当墙钟耗时远大于工具自报耗时（`tool_execution_log.cost_time_ms`）时，
+     * 判定为基准不可信，改用工具自报值（偏保守、不会把"慢步骤"归因错）并打 WARN 留痕。</p>
+     *
+     * @param step        工具结果回调时的步骤（仍是 RUNNING 态）
+     * @param toolReportedMs 工具服务自报执行耗时（可能为 null/0）
+     * @return 落库用的耗时（毫秒）
+     */
+    private long resolveToolDurationMs(AgentTaskStep step, Long toolReportedMs) {
+        long wall = step.getUpdatedAt() == null ? 0L
+                : Duration.between(step.getUpdatedAt(), LocalDateTime.now()).toMillis();
+        long reported = toolReportedMs == null ? 0L : toolReportedMs;
+        // 正常关系：墙钟 >= 工具耗时（墙钟还含 MQ 往返与调度）。
+        // 留出 60s + 5 倍余量：超过即认为 updated_at 未按预期刷新（陈旧基准），而不是真的等了这么久。
+        if (reported > 0 && wall > reported * 5 + 60_000L) {
+            log.warn("步骤 {} 耗时基准可疑（墙钟 {}ms 远大于工具自报 {}ms），改用工具自报耗时；"
+                            + "请检查 agent_task_step.updated_at 是否在 markRunning 时正常刷新",
+                    step.getId(), wall, reported);
+            return reported;
+        }
+        return wall > 0 ? wall : reported;
     }
 
     /**

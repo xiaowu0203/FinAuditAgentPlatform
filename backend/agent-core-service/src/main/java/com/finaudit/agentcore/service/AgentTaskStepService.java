@@ -7,6 +7,8 @@ import com.finaudit.agentcore.enums.StepStatus;
 import com.finaudit.agentcore.mapper.AgentTaskStepMapper;
 import com.finaudit.agentcore.pojo.entity.AgentTaskStep;
 import com.finaudit.agentcore.pojo.vo.StepVO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -20,10 +22,36 @@ import java.util.Map;
 @Service
 public class AgentTaskStepService {
 
+    private static final Logger log = LoggerFactory.getLogger(AgentTaskStepService.class);
+
     private final AgentTaskStepMapper stepMapper;
 
     public AgentTaskStepService(AgentTaskStepMapper stepMapper) {
         this.stepMapper = stepMapper;
+    }
+
+    /**
+     * 写入步骤耗时（P3.8 R9-2）。
+     *
+     * <p><b>为什么耗时单独一次更新而不是塞进 markSuccess</b>：{@code markSuccess} 是状态迁移 CAS，
+     * 语义上只负责状态与输出；耗时是观测列，且 LLM 步骤的耗时在调用结束后、写结果之前就已确定。
+     * 两者分开也让"状态迁移"这条关键路径不受观测字段影响（观测失败不该影响状态）。
+     * 更新失败只告警，不抛异常。</p>
+     *
+     * @param stepId     步骤 ID
+     * @param durationMs 耗时（毫秒）
+     */
+    public void updateDuration(Long stepId, long durationMs) {
+        if (stepId == null || durationMs < 0) {
+            return;
+        }
+        try {
+            stepMapper.update(null, new LambdaUpdateWrapper<AgentTaskStep>()
+                    .eq(AgentTaskStep::getId, stepId)
+                    .set(AgentTaskStep::getDurationMs, durationMs));
+        } catch (Exception e) {
+            log.warn("步骤耗时写入失败（不影响流程）: stepId={}, durationMs={}: {}", stepId, durationMs, e.getMessage());
+        }
     }
 
     /**

@@ -15,17 +15,22 @@ import com.finaudit.starter.mq.message.ToolResultMessage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -89,6 +94,14 @@ class AgentOrchestratorFinalizeIsolationTest {
     }
 
     private void drive(String taskType) {
+        drive(taskType, LocalDateTime.now().minusSeconds(1), 1L);
+    }
+
+    /**
+     * @param stepUpdatedAt 步骤当前 updated_at（TOOL 耗时基准：正常应≈置 RUNNING 的时刻）
+     * @param costTimeMs    工具服务自报执行耗时
+     */
+    private void drive(String taskType, LocalDateTime stepUpdatedAt, Long costTimeMs) {
         AgentTask task = new AgentTask();
         task.setId(100L);
         task.setTenantId(1L);
@@ -106,6 +119,7 @@ class AgentOrchestratorFinalizeIsolationTest {
         s2.setToolName("rule_check");
         s2.setStatus("SUCCESS");
         s2.setOutput(Map.of("overLimit", false, "hits", List.of()));
+        s2.setUpdatedAt(stepUpdatedAt);
 
         AgentTaskStep s1 = new AgentTaskStep();
         s1.setId(8L);
@@ -122,7 +136,7 @@ class AgentOrchestratorFinalizeIsolationTest {
         when(stepService.listByTask(100L)).thenReturn(steps);
 
         orchestrator.onToolResult(new ToolResultMessage(100L, 9L, 1L, "RULE_CHECK",
-                Map.of("overLimit", false), true, null, 1L));
+                Map.of("overLimit", false), true, null, costTimeMs));
     }
 
     @Test
@@ -195,7 +209,7 @@ class AgentOrchestratorFinalizeIsolationTest {
         verify(taskService, never()).markSuccess(any(), any(), anyInt());
     }
 
-    /** GENERIC 结论通过（AUTO_PASS）→ 收尾成功，不建工单 */
+    /** R9-1 接出口：GENERIC 结论通过（AUTO_PASS）→ 收尾成功，不建工单 */
     @Test
     void genericTaskAutoPassesWhenDecisionApprove() {
         when(selfConsistencyChecker.check(any())).thenReturn(SelfCheckResult.pass(5));
@@ -205,5 +219,36 @@ class AgentOrchestratorFinalizeIsolationTest {
 
         verify(taskService).markSuccess(any(), any(), anyInt());
         verify(auditTicketService, never()).enterApproval(any(), any(), anyInt(), any(), any());
+    }
+
+    // ---------------- R9-2：TOOL 步骤耗时口径与陈旧基准护栏 ----------------
+
+    /** 正常基准：updated_at ≈ 置 RUNNING 时刻 → 耗时取墙钟（约 1s），不是工具自报值 */
+    @Test
+    void toolStepDurationUsesWallClockWhenBaselineIsFresh() {
+        when(selfConsistencyChecker.check(any())).thenReturn(SelfCheckResult.pass(5));
+
+        drive("REIMBURSEMENT", LocalDateTime.now().minusSeconds(2), 500L);
+
+        ArgumentCaptor<Long> dur = ArgumentCaptor.forClass(Long.class);
+        verify(stepService).updateDuration(eq(9L), dur.capture());
+        // 墙钟 ≥ 2s（含 MQ 往返），远大于工具自报 500ms → 说明用的是墙钟口径
+        assertTrue(dur.getValue() >= 1500L, "应使用墙钟耗时，实际=" + dur.getValue());
+    }
+
+    /**
+     * 护栏：`updated_at` 未按预期刷新（陈旧基准）时，墙钟会虚高到整条流水线时长，
+     * 此时必须退化为工具自报耗时并告警——否则指标列会被静默污染（R2-10 同类故障的防御）。
+     */
+    @Test
+    void toolStepDurationFallsBackWhenBaselineLooksStale() {
+        when(selfConsistencyChecker.check(any())).thenReturn(SelfCheckResult.pass(5));
+
+        // 基准是 10 分钟前（陈旧），工具自报 300ms：正常绝不可能是 10 分钟
+        drive("REIMBURSEMENT", LocalDateTime.now().minusMinutes(10), 300L);
+
+        ArgumentCaptor<Long> dur = ArgumentCaptor.forClass(Long.class);
+        verify(stepService).updateDuration(eq(9L), dur.capture());
+        assertEquals(300L, dur.getValue(), "陈旧基准时应退化为工具自报耗时，实际=" + dur.getValue());
     }
 }

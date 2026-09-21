@@ -120,7 +120,19 @@ mysql -uroot -p < docs/database/finaudit-schema.sql
 ```
 
 `finaudit-schema.sql` 是**全量快照**（建库表 + 全部种子数据 + `USE finaudit`），
-**只用于全新库**；它会 `DROP TABLE IF EXISTS`，**在已有数据的库上执行会清空数据**。
+**只用于全新库**；它会 `DROP TABLE IF EXISTS` 全部表，**在已有数据的库上执行会清空数据**。
+
+> 🚨 **执行前务必确认目标是空库**（P3.8 R9 实测踩过：一次误操作清空了本地库，而本机 `log_bin=OFF` 无从恢复）：
+> - 脚本内含 `USE finaudit;`，**命令行 `-D 其他库` 会被它覆盖**——想在别处验证请复制脚本并删掉 `USE`/`DROP` 段；
+> - 本机无 binlog，**误执行不可恢复**；**动数据前先备份**（仓库自带一条命令的备份脚本）：
+>   ```powershell
+>   powershell -ExecutionPolicy Bypass -File docs\deploy\db-backup.ps1 `
+>     -MySqlDumpExe "D:\mysql\mysql-5.7.10-winx64\mysql-5.7.10-winx64\bin\mysqldump.exe" -User root -Password root
+>   # → backups\finaudit-<时间戳>.sql（backups/ 已 gitignore），并打印前后关键表行数便于比对
+>   ```
+> - 漏把新表加进脚本的 DROP 列表，会让重跑在第 N 张表处报 `Table 'xxx' already exists` 并**中途中断**，
+>   留下「结构新、种子空」的半成品库（`sys_user` 为空 → 无法登录）。此时正确做法是**重新执行全量 schema**
+>   （已修复 DROP 列表），而不是补跑增量脚本。
 
 > 容器化环境无需手动执行：`docker-compose.yml` 已把该文件挂到
 > `/docker-entrypoint-initdb.d/01-schema.sql`，MySQL 容器**首启**时自动执行

@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -218,9 +219,20 @@ public class AgentTaskService {
         task.setResult(result);
         task.setStatus(TaskStatus.SUCCESS.name());
         task.setFinishedSteps(finishedSteps);
+        // P3.8 R9-2：终态时落任务耗时（本次执行：started_at → 现在）
+        task.setDurationMs(elapsedMs(task));
         return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
                 .eq(AgentTask::getId, task.getId())
                 .in(AgentTask::getStatus, TaskStatus.RUNNING.name(), TaskStatus.APPROVAL_PENDING.name())) > 0;
+    }
+
+    /**
+     * 本次执行耗时（毫秒，P3.8 R9-2）：{@code started_at}（启动/续跑/重跑刷新）→ 现在。
+     * <p>缺 {@code started_at} 的存量任务回退 {@code created_at}；两者都缺返回 null（不写该列）。</p>
+     */
+    private static Long elapsedMs(AgentTask task) {
+        LocalDateTime start = task.getStartedAt() != null ? task.getStartedAt() : task.getCreatedAt();
+        return start == null ? null : Duration.between(start, LocalDateTime.now()).toMillis();
     }
 
     /**
@@ -234,6 +246,8 @@ public class AgentTaskService {
         task.setResult(result);
         task.setStatus(TaskStatus.APPROVAL_PENDING.name());
         task.setFinishedSteps(finishedSteps);
+        // P3.8 R9-2：进入人工复核也算"流水线本次执行结束"，耗时到此为止（人工等待时间不计入效率指标）
+        task.setDurationMs(elapsedMs(task));
         return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
                 .eq(AgentTask::getId, task.getId())
                 .eq(AgentTask::getStatus, TaskStatus.RUNNING.name())) > 0;
@@ -286,6 +300,8 @@ public class AgentTaskService {
     public boolean markFailed(AgentTask task, String errorMsg) {
         task.setStatus(TaskStatus.FAILED.name());
         task.setErrorMsg(errorMsg);
+        // P3.8 R9-2：失败也要落耗时——"失败的慢单"恰恰是效率指标最需要暴露的部分
+        task.setDurationMs(elapsedMs(task));
         return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
                 .eq(AgentTask::getId, task.getId())
                 .eq(AgentTask::getStatus, TaskStatus.RUNNING.name())) > 0;

@@ -5,6 +5,7 @@ import com.finaudit.starter.model.client.AiClient;
 import com.finaudit.starter.model.client.ChatClientFactory;
 import com.finaudit.starter.model.client.DeepSeekAiClient;
 import com.finaudit.starter.model.client.DefaultChatClientFactory;
+import com.finaudit.starter.model.metrics.ModelCallRecorder;
 import com.finaudit.starter.model.properties.ModelProperties;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.beans.factory.ObjectProvider;
@@ -34,9 +35,13 @@ public class CommonModelAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(ChatClientFactory.class)
-    public ChatClientFactory chatClientFactory(ObjectProvider<AiClient> aiClients, ModelProperties properties) {
+    public ChatClientFactory chatClientFactory(ObjectProvider<AiClient> aiClients, ModelProperties properties,
+                                               ObjectProvider<ModelCallRecorder> recorders) {
         Map<ModelType, AiClient> clients = new HashMap<>();
         aiClients.orderedStream().forEach(c -> clients.putIfAbsent(c.getModelType(), c));
-        return new DefaultChatClientFactory(clients, properties.getType(), properties.getFallbackType());
+        // P3.8 R9-1：调用台账记录器为**可选**——未实现 SPI 的服务（如纯文件服务）不记账，
+        // 传 null 让工厂跳过落库分支，避免为了记账逼迫所有服务引入数据源。
+        return new DefaultChatClientFactory(clients, properties.getType(), properties.getFallbackType(),
+                properties.getModelName(), recorders.getIfAvailable());
     }
 }

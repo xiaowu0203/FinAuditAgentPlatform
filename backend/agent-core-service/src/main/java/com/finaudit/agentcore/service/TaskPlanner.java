@@ -8,6 +8,7 @@ import com.finaudit.starter.model.ModelType;
 import com.finaudit.starter.model.client.AiClient;
 import com.finaudit.starter.model.client.ChatClientFactory;
 import com.finaudit.starter.model.client.StructuredChatReply;
+import com.finaudit.starter.model.metrics.ModelCallContext;
 import com.finaudit.starter.web.feign.ToolServiceFeign;
 import com.finaudit.starter.web.feign.dto.ToolInfo;
 import org.slf4j.Logger;
@@ -89,9 +90,11 @@ public class TaskPlanner {
                     """.formatted(businessInstruction(taskType), toolBlock);
             String user = "任务标题：" + task.getTitle() + "\n任务入参：\n" + toJson(task.getInputParams());
             // 结构化输出：Schema 注入提示词，模型回复反序列化为 List<TaskPlanStep>
-            StructuredChatReply<List<TaskPlanStep>> reply = modelClient.chatStructured(
-                    system, user, new ParameterizedTypeReference<List<TaskPlanStep>>() {
-                    });
+            // P3.8 R9-1：规划调用同样计入模型台账（scene=task_plan），stepId 为空（此时尚无步骤）
+            StructuredChatReply<List<TaskPlanStep>> reply = ModelCallContext.runWith(
+                    task.getTenantId(), task.getId(), null, ModelCallContext.SCENE_TASK_PLAN,
+                    () -> modelClient.chatStructured(system, user, new ParameterizedTypeReference<List<TaskPlanStep>>() {
+                    }));
             List<TaskPlanStep> steps = reply.data();
             // 若结果为空，则走内置回退模板（回退结果同样过清洗）
             if (steps == null || steps.isEmpty()) {

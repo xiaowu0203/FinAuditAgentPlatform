@@ -20,7 +20,7 @@
 
 > ⚠️ 脚本会**真实写入数据**（提交报销单、上传附件、建工单、占预算），请在开发/测试库上跑。
 
-## 2. 脚本清单（共 10 个）
+## 2. 脚本清单（共 11 个）
 
 | # | 脚本 | 覆盖 | 判据（关键断言） | 退出码 |
 |---|---|---|---|---|
@@ -34,9 +34,10 @@
 | 8 | `r5-self-check-e2e.ps1` | R5 语义自校验落库 + 自纠错重跑 + 轨迹 | 三级判据：**A（弱，必成立）** 任务到收尾闸口时 `self_check_result` 必落库（含 `coherent`）；**B（强）** 自校验判定不一致时 `correction_count ≥ 1`；**C（强，R5-9/R5-11 护栏）** `selfCheckTrace` 必落库且**不含**「自校验执行失败 / 自纠错动作执行失败」。支持 `-TaskId` **复检既有任务**（不重新提交，不消耗 LLM/OCR 配额） | `fail>0 → 1` |
 | 9 | `r5-amend-rerun-e2e.ps1` | 「工单驳回 → 提交人改明细 → 同单重跑」链路（R5-9 顺带修复的专项验收） | [1] 财务驳回（`POST /audit/tickets/{id}/reject`，需 `audit:approve`；失败仅记 SKIP）[2] `POST /reimbursements/{id}/resubmit` **必须 `code=0`** [3] 立即校验落库：`input_params` 已换新金额（证明 `prepareRerun` 写 JSON 列成功）、工单转 `AMENDED` 且 `rerun_count=1`、步骤全量重规划、`audit_record` 有 `AMEND` 留痕 [4] 等重跑跑完：无 FAILED 步骤、自校验仍落库、报销单金额为新值、工单复位 `PENDING`/`APPROVED` | 汇总 SKIP 或 `fail>0 → 1` |
 | 10 | `r6-generic-task-e2e.ps1` | R6-1 `GENERIC` 通用分析走同一套收尾闸口 | A 任务到终态（`SUCCESS` 或 `APPROVAL_PENDING`）且无 FAILED 步骤；B `self_check_result` 非空；C 轨迹不含「自校验执行失败/自纠错动作执行失败」；D **结果分支与工单一致**：`NEED_REVIEW ⇒ 有工单`、`AUTO_PASS ⇒ 无工单`。两个场景 `-Scenario autoPass` / `needReview` | `fail>0 → 1` |
+| 11 | `r9-metrics-datasource-check.ps1` | R9 指标数据源真的在落数（R9-1 台账 / R9-2 耗时 / R9-3 SQL 口径） | A 结构就绪（`model_call_log` 表 + 两个 `duration_ms` 列）；B 台账有数（该任务 ≥1 行、`scene=llm_step` ≥1 行、累计 token > 0、带 `step_id`）；C 耗时落库（`agent_task.duration_ms > 0`、LLM 步骤 `duration_ms > 0`）；D `metrics.md` 的 6 条指标 SQL 均可执行。支持 `-TaskId` 复检、`-SkipSubmit` 只做结构+SQL（零配额消耗） | `fail>0 → 1` |
 
 > 最近一次结果基线（见 [`docs/planning/refactor-agent-autonomy.md`](../planning/refactor-agent-autonomy.md) §11）：
-> R1 19/19、并发 7/7、撞号 4/4、R2 6/6、时间戳 2/2、R3 5/5、R4 19/19、R5 9/9、amend 19/19、R6 9/9 ×2。
+> R1 19/19、并发 7/7、撞号 4/4、R2 6/6、时间戳 2/2、R3 5/5、R4 19/19、R5 9/9、amend 19/19、R6 9/9 ×2、R9 15/15（含台账/耗时/接出口，2026-09-22 复验）。
 
 ## 3. 参数与用法
 
