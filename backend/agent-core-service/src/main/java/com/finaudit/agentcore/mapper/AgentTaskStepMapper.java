@@ -34,4 +34,15 @@ public interface AgentTaskStepMapper extends BaseMapper<AgentTaskStep> {
      */
     @InterceptorIgnore(tenantLine = "true")
     int softDeleteByTaskId(@Param("taskId") Long taskId, @Param("tenantId") Long tenantId);
+
+    /**
+     * 步骤耗时基线（P3.8 R8-3）：按「步骤类型 + 工具编码」统计最近窗口内的平均耗时（毫秒）。
+     * <p>数据源是 R9-2 落库的 {@code duration_ms}（真实墙钟）：LLM 步骤 = 模型调用耗时，
+     * TOOL 步骤 = 分发→回调耗时。只统计 {@code SUCCESS} 且耗时非空的行——失败/重试行含等待间隔，会拉偏基线。</p>
+     * <p>返回列：{@code stepType / toolName / avgMs / samples}。租户条件由多租户拦截器注入（基线按租户隔离）。</p>
+     *
+     * @param since 统计窗口起点（只取该时刻之后创建的步骤）
+     * @return 每个 (stepType, toolName) 一行
+     */
+    List<java.util.Map<String, Object>> avgDurationByStepKey(@Param("since") java.time.LocalDateTime since);
 }

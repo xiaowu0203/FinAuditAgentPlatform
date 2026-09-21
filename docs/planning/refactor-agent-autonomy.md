@@ -633,16 +633,104 @@ agent-core 192 例（含新增 `AgentTaskVisibilityTest` 5 例）、tool-service
 | R7-9 | D-1 ~ D-16 全量文档同步（**与对应代码同 commit**），含 `tool-service.md` 三处形状级错误 |
 | R7-10 | 清理 `rag-service/target` 残留；`docs/deploy` 补增量迁移执行说明；`docs/test` 补评估用例模板 |
 
-### R8 · 可选增强
+### R8 · 可选增强 —— 🔶 R8-3 后端完成并运行时复验通过（**待提交**），R8-1 待商务决策、R8-2 未开始、R8-4 归前端
 
-| 序 | 动作 |
+**R8-3 进度百分比与预计等待时间（✅ 后端完成并运行时复验通过）**
+
+| 落点 | 要点 |
 |---|---|
-| R8-1 | 离线规则验真升级为外部查验服务商对接（**待商务决策**，见 §4.3 决策 2） |
-| R8-2 | 主动通知：站内信 / Webhook（B-8） |
-| R8-3 | 进度百分比与预计等待时间（进度查询体验） |
-| R8-4 | `reimbursement/list.vue` 补轮询 |
+| `AgentTaskStepMapper.xml` 新增 `avgDurationByStepKey` | 按「步骤类型 + 工具编码 + **执行角色**」统计最近 **30 天**内 `SUCCESS` 且 `duration_ms` 非空的步骤平均耗时；数据源即 R9-2 落库的真实墙钟耗时。⚠️ 角色参与分组是实测结论：同属 LLM 的风控判断(1600ms)与结论汇总(2076ms)差约 30%，只按 step_type 分组会给错基线 |
+| 新增 `TaskProgressService` | 进度百分比（`finished/total`）、当前步骤、已耗时、**预计剩余 = 未完成步骤逐项累加同类历史平均耗时**；无样本退化为缺省值（TOOL 1500ms / LLM 2500ms）并在 `estimateSource` 如实标注 `DEFAULT`；基线查询失败**不报错**、自动退化 |
+| 新增 `TaskProgressVO` | 轻量出参（不含 `result`/`selfCheckResult` 等重字段），适合 2~3 秒轮询；含 `correctionCount`（见下文"进度回退"发现） |
+| `GET /api/v1/tasks/{id}/progress` | `AgentTaskController` 单次委托 `AgentTaskService.progress`（可见性校验 + 计算合并，符合 §5.12） |
+| 契约文档 | `docs/api/agent-core.md` 新增该端点小节，含字段口径表与五条要点（基线来源、DEFAULT 需提示粗略估算、**终态人工等待不计入**、失败退化、**进度会回退及前端处置**） |
+| 验证脚本 | 新增 `docs/test/r8-progress-endpoint-check.ps1`：判据 A 契约字段 / B 运行中快照自洽 / **C ETA 与库内基线逐键同口径**（对每个 RUNNING 快照重算期望值比对，非抽查）/ D 终态定格与落库耗时一致；`-TaskId` 可复检不消耗配额 |
 
-### R9 · P4 前置（只做数据源，不建大盘）—— ✅ 运行时复验通过（**待提交**）
+**设计取舍**：ETA 刻意**不做花哨模型**（如按 token 回归）——流水线耗时主要由模型调用决定、抖动大，
+样本不足时复杂模型反而更不准；用统计均值 + 明示依据（HISTORY/DEFAULT/FIXED）是本阶段性价比最高、
+也最容易解释的做法。分桶键由**同一个函数**生成（统计与取用共用 `key(...)`），避免口径漂移导致
+"永远命中不到基线、静默退化为缺省值"这类难查的 bug。
+
+**本机验证**：`TaskProgressServiceTest` 8/8（有样本走 HISTORY 并给出 3300ms、无样本走 DEFAULT、
+终态不再估算且取实际 `duration_ms`、无步骤不除零、基线查询失败不报错、待审态视为流水线已结束、
+`correctionCount` 透出与 NULL 归 0）；全量 `mvn -o clean install` 19 模块 BUILD SUCCESS、
+**341 用例 0 失败**（agent-core 209 / tool 45 / tenant 25 / common-code 27 / 其余 starter 与 file-service）；
+新增 SQL 已在真实库执行验证（返回 `ocr_extract 4492ms`（最慢）、LLM 按角色 1600/2076ms 等真实基线）。
+
+> ⚠️ **验证边界（诚实标注）**：下述运行时证据覆盖的是**加 `correctionCount` 之前**的端点版本
+> （`taskId=30003/30004/30005` 三次实测）。`correctionCount` 字段本身已编译 + 单测通过，
+> 但**需用户重启 agent-core 后才能运行时复验**（验证脚本判据 A 会检查该字段，未重启将报缺字段）。
+
+**运行时验证（用户已重启 agent-core，端到端实测通过）**：提交一张新报销单（`taskId=30003`），
+以 400ms 间隔轮询 `/progress` 共 18 次、去重后 6 个状态快照，三条路径全部命中：
+
+| status | progressPct | finished/total | currentStepName | elapsedMs | estimatedRemainingMs | estimateSource | samples |
+|---|---|---|---|---|---|---|---|
+| PENDING | 0.0 | 0/0 | — | 374 | 0 | DEFAULT | 0 |
+| RUNNING | 0.0 | 0/8 | 票据解析 | 835 | 8697 | HISTORY | 16 |
+| RUNNING | 37.5 | 3/8 | 规则校验 | 3533 | 3883 | HISTORY | 10 |
+| RUNNING | 75.0 | 6/8 | 风控语义判断 | 3983 | 3675 | HISTORY | 4 |
+| RUNNING | 87.5 | 7/8 | 审核结论汇总 | 6221 | 2076 | HISTORY | 2 |
+| APPROVAL_PENDING | 100.0 | 8/8 | — | 7708 | 0 | FIXED | 0 |
+
+- **百分比与当前步骤随实际执行推进**：`3/8=37.5%`、`6/8=75%`、`7/8=87.5%`，`currentStepName` 取未完成步骤的首个并带序号文案。
+- **ETA 与历史基线逐项对齐（关键证据）**：`7/8` 时的 `estimatedRemainingMs=2076` **恰好等于本次运行前** `LLM + SCHEDULER` 分组的历史均值（该键当时 2 个样本，即 `samples=2`）；本次运行落库 1450ms 后该键均值被拉低到 1867ms（3 样本），说明端点取的是**本次运行之前**的基线，与统计 SQL 同口径、非巧合命中。`samples` 随未完成步骤数递减（16→10→4→2），符合"只统计剩余步骤涉及的键"设计。
+- **终态定格**：进入 `APPROVAL_PENDING` 后不再估算，`elapsedMs=7708` 与库内 `agent_task.duration_ms=7708` 完全一致（8 步 `duration_ms` 全部落库），`estimateSource=FIXED`、`estimatedRemainingMs=0`、文案「已完成（待人工复核）」。
+- **接口契约**：`Content-Type: application/json`，响应体 UTF-8 正常，出参为轻量 VO（不含 `result`/`selfCheckResult`）。
+
+**脚本化复验（`r8-progress-endpoint-check.ps1`，全量模式 `taskId=30004`）**：`PASS=104 FAIL=0 SKIP=0`，
+对 27 个 RUNNING 快照逐个核对 ETA：**每一档进度的 `estimatedRemainingMs` 与库内逐键合计差 0ms**、
+`samples` 逐个相等（`pct=0% 期望 8421ms/样本 24`、`50% 3800ms/12`、`75% 3639ms/6`、`87.5% 1867ms/3`）。
+
+### ⚠️ 运行时发现的真问题：`progressPct` 会回退（已修复为"可解释"）
+
+第二次脚本化全量复验（`taskId=30005`）捕获到 **`progressPct` 回退**：`87.5% → 62.5%` 后再爬回 `100%`，
+末次汇总 `PASS=112 FAIL=1`（该 FAIL 即"全程单调不减"断言）。**这不是脚本误判、也不是端点缺陷**，
+库内证据链如下：
+
+| 证据 | 事实 |
+|---|---|
+| 轮询序列 | `7/8`（当前=审核结论汇总）→ `5/8`（当前=重复报销检测）→ `6/8` → `7/8` → 终态 |
+| `agent_task_step`（含软删全查） | 仍是 **8 行、`deleted=0`、无 replan 新增行**（id 33~40），步骤 6/7/8 的 `duration_ms` 为最后一次执行值 |
+| `agent_task` | `correction_count=1`、`self_check_result.coherent=false` → 走了 R5 自校验纠错分支 |
+
+**机制**：自校验判定不一致 → 自主纠错重跑风险相关步骤（步骤 6~8）→ 这些步骤状态由 `SUCCESS` **复位**为
+`PENDING`/`RUNNING` → `finishedSteps` 真实减少 → 百分比回退。**端点如实反映真实状态是正确行为**
+（不能为了让进度条好看而谎报单调递增）。
+
+**处置（本阶段完成的部分）**：
+1. `TaskProgressVO` 新增 `correctionCount`（取 `agent_task.correction_count`，NULL 归 0）——
+   让「回退」有唯一合法解释，前端可显示「正在重新核验（第 N 次纠错）」；新增 2 张单测钉住。
+2. 验证脚本把"单调不减"改为**机制感知判据**：无回退 → PASS；有回退且 `correctionCount ≥ 1` → PASS（并打印每次回退的档位/步骤/耗时）；
+   有回退却 `correctionCount = 0` → FAIL（无机制可解释，须排查）；响应缺该字段 → SKIP（agent-core 未重启）。
+3. `docs/api/agent-core.md` 写入回退语义与**前端处置要求**（见下 R8-4）。
+
+**为什么这值得单独记账**：这类"回退"最容易被当成前端 bug 或端点 bug 反复排查；把它固化成
+「有机制解释 + 有字段可查 + 有脚本判据」三件套，是 R8-3 之外顺带拿到的可靠性收益。
+
+**顺带修复（同一阶段内联调暴露）**：`docs/test/*.ps1` 的中文断言曾因 `Content-Type: application/json`
+不带 charset 而被 PS 5.1 按 Latin-1 解码成乱码（R8-3 首轮出现假 FAIL「终态文案可读」）。
+产品侧无需改动（浏览器/Jackson/Feign 对 JSON 默认按 UTF-8）；已在 `r8-progress-endpoint-check.ps1` 与
+`bizno-collision-retry.ps1` 的 `Api()` 中改为**显式按 UTF-8 解码原始字节**（后者若不修，诊断分支的
+两个 `-match` 会都不命中，把"连续撞号后放弃重试"误报成"3 次造撞均未得到成功提交"）。
+
+**R8-1 需要业务方决策的 6 项**（决策前保持现状：离线规则验真，`invoice_match` 的 R3-5 段）：
+① 是否引入外部查验（唯一有真金白银成本的项）；② 走官方查验平台（免费但无开放 API、有人机校验、程序化调用有合规风险）
+还是商业服务商（有正式 API、按次计费，**具体厂商与价格需商务渠道确认，我无法核实**）；
+③ 预算与调用量（建议只对"离线规则存疑"的票联网查验）；④ 合规与数据外发（发票要素出网是否允许、是否需签数据处理协议）；
+⑤ 失败降级（建议：联网失败不阻断审核，仅并入 findings，离线规则仍为主判据）；⑥ 缓存与幂等（同票号只查一次）。
+决策后的实现量约与 R3-5 同级：新增查验工具 + **服务商适配器接口**（便于换厂商）+ 结果落库/缓存 + 工具注册与 Schema + 单测（mock 适配器）。
+
+
+
+| 序 | 动作 | 状态 |
+|---|---|---|
+| R8-1 | 离线规则验真升级为外部查验服务商对接（**待商务决策**，见 §4.3 决策 2） | ⏸ 待决策（6 项决策点见 §11 R8 记录；决策前保持离线规则验真） |
+| R8-2 | 主动通知：站内信 / Webhook（B-8） | ⬜ 未开始（后端可做） |
+| **R8-3** | **进度百分比与预计等待时间（进度查询体验）** | ✅ 后端完成 + 运行时复验通过（**待提交**，见 §11 R8 记录）。含运行时发现的「进度回退」处置与 `correctionCount` 透出 |
+| R8-4 | `reimbursement/list.vue` 补轮询 | ⏸ 归前端阶段（后端进度端点已就绪，见 R8-3）。**前端必须同时处理进度回退**：`correctionCount > 0` 且 `progressPct` 回退时显示「正在重新核验（第 N 次纠错）」；若产品要求进度条只增不减，须由前端对**展示值**取历史最大（`max(seen)`），后端仍返回真实值；`estimateSource=DEFAULT` 时要提示"粗略估算" |
+
+### R9 · P4 前置（只做数据源，不建大盘）—— ✅ 运行时复验通过（已提交 `ecd484c`，双仓已推送）
 
 | 序 | 动作 | 落地 | 验收 |
 |---|---|---|---|
@@ -978,6 +1066,25 @@ common-model-starter **15 例**、common-code 27 例、tenant-service 25 例、c
 21. **「落库成功」的表象可能来自另一个写入路径**：R5-9 里 `self_check_result` 有值并非因为
     `applySelfCheckResult` 成功，而是后续 `markApprovalPending` 用实体更新把内存字段顺带写了进去。
     判断某次写入是否成功，要看**该语句自己**的结果，而不是最终列里有没有值。
+22. **HTTP 响应的中文必须按 UTF-8 显式解码后再断言**（P3.8 R8-3 实测）：本仓 JSON 响应头是
+    `Content-Type: application/json`（**不带 charset**），按 HTTP 规范无 charset 等价于 ISO-8859-1，
+    于是 Windows PowerShell 5.1 的 `Invoke-WebRequest` 把中文解成 `å·²å®Œæˆ` 这类乱码 ——
+    **凡按字面比对中文的断言都会误判**（R8-3 首轮就出现假 FAIL「终态文案可读」）。
+    产品侧无需改动（浏览器/Jackson/Feign 对 `application/json` 默认按 UTF-8），修法在脚本：
+    ```powershell
+    [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())   # 成功路径
+    [System.Text.Encoding]::UTF8.GetString((Read-AllBytes $resp.GetResponseStream()))  # 异常路径
+    ```
+    ⚠️ **MySQL 那条路径不受影响**（`mysql.exe` 输出走 `--default-character-set=utf8mb4`），
+    故 r4/r5 等脚本里来自库的中文断言一直是好的 —— 排查时先问「这个中文是从 HTTP 来的还是从库来的」。
+    另：控制台中文乱码是**另一个**问题（`[Console]::OutputEncoding`），两者不要混为一谈。
+23. **「展示型指标回退」必须给出机制字段，不能靠改回退为单调来"修"**（P3.8 R8-3 实测）：
+    `progressPct` 实测从 87.5% 回退到 62.5%，根因是 R5 自校验纠错**重跑风险步骤**、把步骤状态从
+    `SUCCESS` 复位（同一步骤行，不是 replan 新增行，`correction_count + 1` 可查）。
+    端点的正确做法是**如实返回 + 透出 `correctionCount`**，让前端能显示「正在重新核验」；
+    若为了进度条好看而谎报单调递增，等于把「工作被重做」这件事从系统里抹掉。
+    顺带：验证脚本的单调性断言要写成**机制感知**的（回退 + `correctionCount ≥ 1` → PASS；
+    回退 + `correctionCount = 0` → FAIL），否则脚本会把一个正常现象报成缺陷，逼人去"修"对的东西。
 
 
 ---
@@ -1014,9 +1121,9 @@ common-model-starter **15 例**、common-code 27 例、tenant-service 25 例、c
 - [x] ~~按 AGENTS.md §6 提交 + 双仓推送（R0 为一个阶段）~~ **已完成**：提交 `3114b60`，双仓已推送
 - [x] ~~进入 R1（预算真实占用与释放）~~ **已完成**：见下文 R1 段落
 - [x] R1 / R2 / R3 / R4a 均已完成并推送
-- [x] R5 代码与单测完成（**待提交**）
-- [ ] **下一步：提交 R5**（一阶段一提交，双仓推送）
-- [ ] **重启 agent-core 联调 R5**：验证自校验命中 → 重跑风控步骤 → `correction_count`/`self_check_result` 落库
+- [x] R5 代码与单测完成 → **已提交并双仓推送**（`b59a265`）
+- [x] ~~**下一步：提交 R5**~~ **已完成**（一阶段一提交，双仓推送）
+- [x] ~~**重启 agent-core 联调 R5**~~ **已完成**：自校验命中 → 重跑风控步骤 → `correction_count`/`self_check_result` 落库（`r5-self-check-e2e.ps1` 9/9、`r5-amend-rerun-e2e.ps1` 19/19）
 - [ ] R5-5 AUTO_PASS 基线实测（依赖真实 LLM 与 OCR 配额，见 R5 待办）
 - [x] ~~R6 / R7 中需补的历史欠账：R2-10 审计时间戳填充对其余实体仍未生效~~ → **已于 R9 关闭**（15 个实体补齐 `@TableField(fill = FieldFill.INSERT_UPDATE)`，见 §11 R9 记录）
       （`agent_task` / `audit_ticket` / `budget_occupancy` 等仍走 `updateById` 且未标注 `FieldFill`，
@@ -1778,7 +1885,7 @@ R5 前后三次误判根因，共同的障碍是：**agent-core 的日志只在�
 
 ---
 
-### R6 · 结构与契约 —— ✅ 运行时复验通过（**待提交**）
+### R6 · 结构与契约 —— ✅ 运行时复验通过（已提交 `610f634`，双仓已推送）
 
 R6 是「结构与契约」阶段：不新增业务能力，而是把前六轮堆出来的结构问题收口，
 让后续（R7 文档、R9 P4 数据源、以及未来的 Nacos 化）有稳定地基。

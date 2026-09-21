@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.finaudit.agentcore.enums.TaskStatus;
 import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
 import com.finaudit.agentcore.pojo.vo.StepVO;
+import com.finaudit.agentcore.pojo.vo.TaskProgressVO;
 import com.finaudit.agentcore.pojo.vo.TaskVO;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
 import com.finaudit.agentcore.mapper.AgentTaskMapper;
@@ -34,12 +35,15 @@ public class AgentTaskService {
     private final AgentTaskMapper taskMapper;
     private final TaskEventPublisher eventPublisher;
     private final AgentTaskStepService stepService;
+    /** 进度与预计等待时间计算（R8-3；只依赖步骤服务，与本类不成环） */
+    private final TaskProgressService progressService;
 
     public AgentTaskService(AgentTaskMapper taskMapper, TaskEventPublisher eventPublisher,
-                            AgentTaskStepService stepService) {
+                            AgentTaskStepService stepService, TaskProgressService progressService) {
         this.taskMapper = taskMapper;
         this.eventPublisher = eventPublisher;
         this.stepService = stepService;
+        this.progressService = progressService;
     }
 
     /**
@@ -117,6 +121,23 @@ public class AgentTaskService {
         Page<TaskVO> voPage = new Page<>(page.getCurrent(), page.getSize(), page.getTotal());
         voPage.setRecords(page.getRecords().stream().map(TaskVO::from).toList());
         return voPage;
+    }
+
+    /**
+     * 任务进度与预计等待时间（P3.8 R8-3）。
+     *
+     * <p>可见性校验 + 进度计算合并为**一次委托**（Controller 只调本方法，不串联两个 Service，见 §5.12）。
+     * 进度计算委托给 {@link TaskProgressService}（它只依赖步骤服务，不与本类成环）。</p>
+     *
+     * @param taskId  任务 ID
+     * @param userId  当前用户 ID（可空）
+     * @param viewAll 是否有 task:viewAll 权限
+     * @return 进度 VO（进度百分比 / 当前步骤 / 已耗时 / 预计剩余）
+     */
+    public TaskProgressVO progress(Long taskId, Long userId, boolean viewAll) {
+        AgentTask task = getRequired(taskId);
+        requireVisible(task, userId, viewAll);
+        return progressService.progress(task);
     }
 
     /**

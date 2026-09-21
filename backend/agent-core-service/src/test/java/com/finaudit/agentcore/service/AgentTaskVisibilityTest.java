@@ -13,6 +13,7 @@ import org.mockito.quality.Strictness;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -35,7 +36,7 @@ class AgentTaskVisibilityTest {
     private AgentTaskStepService stepService;
 
     private AgentTaskService service() {
-        return new AgentTaskService(taskMapper, eventPublisher, stepService);
+        return new AgentTaskService(taskMapper, eventPublisher, stepService, mock(TaskProgressService.class));
     }
 
     private void givenTask(Long taskId, Long createdBy) {

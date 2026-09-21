@@ -51,7 +51,48 @@
 } ] }
 ```
 
-`GET /api/v1/tasks/{id}/steps` 返回的 `agentRole` 标识 P3a 角色：`DOCUMENT_PARSER` 绑定 `ocr_extract`、`BUDGET_CALCULATOR` 绑定 `budget_query`、`RULE_VALIDATOR` 绑定 `rule_check/amount_verify`、`RISK_AUDITOR` 绑定 `duplicate_check`，`SCHEDULER` 负责汇总。当前仅 REIMBURSEMENT 使用固定流水线，GENERIC 仍使用 TaskPlanner。风控结果可包含 `riskLevel`、`confidence`、`uncertain`、`riskPoints`；存疑会进入 `NEED_REVIEW`。
+`GET /api/v1/tasks/{id}/steps` 返回的 `agentRole` 标识 P3a 角色：`DOCUMENT_PARSER` 绑定 `ocr_extract`、`BUDGET_CALCULATOR` 绑定 `budget_query`、`RULE_VALIDATOR` 绑定 `rule_check/amount_verify`、`RISK_AUDITOR` 绑定 `duplicate_check`，`SCHEDULER` 负责汇总。当前仅 REIMBURSEMENT 使用固定流水线，GENERIC 仍使用 TaskPlanner。风控结果可包含 `riskLevel`、`confidence`、`uncertain`、`riskPoints`；存疑会进入 `NEED_REVIEW`。`durationMs` 为步骤耗时（P3.8 R9-2：LLM = 模型调用耗时含故障切换；TOOL = 分发→回调含 MQ 往返）。
+
+## GET /api/v1/tasks/{id}/progress — 任务进度与预计等待时间（P3.8 R8-3）
+
+```json
+{ "code": 0, "message": "ok", "data": {
+  "id": 12, "taskNo": "T202609220217155001", "status": "RUNNING", "statusText": "审核中",
+  "totalSteps": 8, "finishedSteps": 5, "progressPct": 62.5,
+  "currentStepName": "重复报销检测",
+  "elapsedMs": 7420, "estimatedRemainingMs": 3250, "estimatedTotalMs": 10670,
+  "estimateSource": "HISTORY", "samples": 12, "correctionCount": 0,
+  "message": "第 6/8 步：重复报销检测"
+} }
+```
+
+**口径（前端必须按此展示，勿自行计算）**：
+
+| 字段 | 含义 |
+|---|---|
+| `progressPct` | `finishedSteps / totalSteps × 100`，保留一位小数；步骤尚未生成时为 `0`。⚠️ **可能回退**，见下文要点 5 |
+| `elapsedMs` | 运行中 = `started_at` → 现在；**已终态 = 落库的实际 `duration_ms`** |
+| `estimatedRemainingMs` | 未完成步骤逐项累加其**同类历史平均耗时** |
+| `estimateSource` | `HISTORY` 有历史样本（`samples` 为样本数）；`DEFAULT` 无样本、用缺省单步耗时（TOOL 1500ms / LLM 2500ms）；`FIXED` 已终态不再估算 |
+| `correctionCount` | 自主纠错重跑次数（`correction_count`，`NULL` 归 `0`）。**>0 是 `progressPct` 回退的唯一合法解释** |
+| `message` | 可直接展示的一句话，如「第 6/8 步：重复报销检测」 |
+
+要点：
+1. **基线来自真实数据**：按「步骤类型 + 工具编码 + 执行角色」统计最近 **30 天**内 `SUCCESS` 且 `durationMs` 非空
+   的步骤平均耗时（数据源是 R9-2 的落库耗时，见 [`metrics.md`](../architecture/metrics.md) §2.2）。
+   同属 LLM 的风控判断与结论汇总实测差约 30%，故角色也参与分桶。
+2. **`estimateSource=DEFAULT` 时必须提示"粗略估算"**：首次上线/新工具尚无样本，缺省值只是量级参考。
+3. **终态语义**：进入 `APPROVAL_PENDING` 即视为「流水线本次执行结束」——**人工审批等待时间不计入**，
+   故此时 `estimatedRemainingMs = 0`，`estimatedTotalMs = 实际流水线耗时`。
+4. 该端点字段刻意保持轻量（不含 `result`/`selfCheckResult` 等重字段），适合 2~3 秒轮询；
+   若基线统计查询失败，接口**不报错**，自动退化为 `DEFAULT`。
+5. ⚠️ **`progressPct` 会回退，这是真实状态而非缺陷（R8-3 运行时实测）**：R5 的自校验闸口判定不一致时，
+   Agent 会**重跑风险相关步骤**（`correction_count + 1`），这些步骤的状态由 `SUCCESS` 复位为 `PENDING`，
+   于是 `finishedSteps` 真的减少。实测一次运行出现 `87.5% → 62.5%` 后再爬回 `100%`（同一步骤行被重跑，
+   不是 replan 新增行）。端点**不得**为了让进度条好看而谎报单调递增。
+   **前端处置要求（登记于 R8-4）**：`correctionCount > 0` 且进度回退时显示「正在重新核验（第 N 次纠错）」
+   而非让进度条莫名倒退；若产品要求进度条只增不减，须由前端对**展示值**取历史最大值（`max(seen)`），
+   后端仍返回真实值。`estimatedRemainingMs` 的取值口径不受回退影响（回退后未完成步骤变多，ETA 相应变大）。
 
 ## GET /api/v1/tasks — 分页查询`pageNum`（默认 1）、`pageSize`（默认 10）、`status`（可选，如 `SUCCESS`/`FAILED`）。可见性（P3b）：财务角色（`admin`/`auditor`）看本租户全部任务，普通用户仅见本人（`createdBy`）任务。
 

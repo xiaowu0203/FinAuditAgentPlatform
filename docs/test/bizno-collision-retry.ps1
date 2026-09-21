@@ -88,6 +88,15 @@ function Check($actual, $expected, [string]$label) {
     }
 }
 
+# ⚠️ 中文解码：本仓 JSON 响应头不带 charset，PS 5.1 的 Invoke-WebRequest 会把 UTF-8 中文按
+#    Latin-1 解码成乱码，导致下方「按 $r.message 比对中文」的分支两个 -match 都不命中，
+#    进而把「连续撞号后放弃重试」误判成「3 次造撞均未得到成功提交」。必须显式按 UTF-8 解码。
+function Read-AllBytes($stream) {
+    $ms = New-Object System.IO.MemoryStream
+    $stream.CopyTo($ms)
+    return $ms.ToArray()
+}
+
 function Api([string]$method, [string]$path, $body, [string]$token) {
     $headers = @{}
     if ($token) { $headers["Authorization"] = "Bearer $token" }
@@ -97,12 +106,12 @@ function Api([string]$method, [string]$path, $body, [string]$token) {
         $params["ContentType"] = "application/json; charset=utf-8"
     }
     try {
-        return ((Invoke-WebRequest @params).Content | ConvertFrom-Json)
+        $resp = Invoke-WebRequest @params
+        return ([System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray()) | ConvertFrom-Json)
     } catch {
         $resp = $_.Exception.Response
         if ($resp) {
-            $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-            return (($sr.ReadToEnd()) | ConvertFrom-Json)
+            return ([System.Text.Encoding]::UTF8.GetString((Read-AllBytes $resp.GetResponseStream())) | ConvertFrom-Json)
         }
         throw
     }

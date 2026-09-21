@@ -55,6 +55,24 @@ public class AgentTaskStepService {
     }
 
     /**
+     * 步骤耗时基线（P3.8 R8-3）：按「步骤类型 + 工具编码」统计窗口内的平均耗时，供进度接口估算剩余时间。
+     *
+     * <p>数据源是 R9-2 落库的 {@code duration_ms}。**异常不外抛**：基线只影响"预计还要多久"的展示，
+     * 统计查询失败时让调用方退化为缺省值即可，不该让进度接口跟着报错。</p>
+     *
+     * @param since 统计窗口起点
+     * @return 每行 {stepType, toolName, avgMs, samples}；查询失败返回空列表
+     */
+    public List<Map<String, Object>> avgDurationByStepKey(java.time.LocalDateTime since) {
+        try {
+            return stepMapper.avgDurationByStepKey(since);
+        } catch (Exception e) {
+            log.warn("步骤耗时基线查询失败（不影响进度展示，调用方将退化为缺省值）: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
      * 按步骤 ID 查询，不存在返回 null（供工具结果回调"步骤缺失仅告警"）。
      */
     public AgentTaskStep findById(Long stepId) {
