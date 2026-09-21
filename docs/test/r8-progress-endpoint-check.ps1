@@ -213,6 +213,36 @@ foreach ($s in $snapshots) {
         $s.estimatedRemainingMs, $s.estimateSource, $s.samples, $s.message) -ForegroundColor DarkGray
 }
 
+# ---------- 库内事实（判据 B/C 共用，必须先于判据 B 取得）----------
+Write-Host "[4.5] 库内事实：任务行 + 步骤定义 + 同口径历史基线" -ForegroundColor Yellow
+$row = Invoke-Sql "SELECT tenant_id, status, IFNULL(duration_ms,-1), finished_steps, total_steps FROM agent_task WHERE id = $taskId;"
+$tf = @($row -split "`t")
+$tenantId = $tf[0]
+
+# 本任务各步骤的分桶键（复用与 XML 完全相同的分组口径）
+$stepRows = Invoke-Sql "SELECT step_no, step_type, IFNULL(tool_name,''), IFNULL(agent_role,'') FROM agent_task_step WHERE task_id = $taskId AND deleted = 0 ORDER BY step_no;"
+$steps = @()
+foreach ($line in ($stepRows -split "`n")) {
+    $c = @($line -split "`t")
+    if ($c.Count -ge 4) {
+        $steps += [pscustomobject]@{ stepNo = [int]$c[0]; stepType = $c[1]; toolName = $c[2]; agentRole = $c[3] }
+    }
+}
+Check-True ($steps.Count -gt 0) ("取到本任务步骤定义 {0} 步" -f $steps.Count)
+
+# 历史基线：与 AgentTaskStepMapper.avgDurationByStepKey 同口径（30 天 / SUCCESS / duration_ms 非空 / 按租户），
+# 排除本任务自身（快照时刻本任务已完成的行不属于"当时的历史"）；FLOOR 对齐 Java 侧 avg.longValue() 的截断
+$baseRows = Invoke-Sql ("SELECT step_type, IFNULL(tool_name,''), IFNULL(agent_role,''), FLOOR(AVG(duration_ms)), COUNT(*) " +
+    "FROM agent_task_step WHERE tenant_id = $tenantId AND task_id <> $taskId AND deleted = 0 AND status = 'SUCCESS' " +
+    "AND duration_ms IS NOT NULL AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) " +
+    "GROUP BY step_type, IFNULL(tool_name,''), IFNULL(agent_role,'');")
+$baseline = @{}
+foreach ($line in ($baseRows -split "`n")) {
+    $c = @($line -split "`t")
+    if ($c.Count -ge 5) { $baseline[("{0}|{1}|{2}" -f $c[0], $c[1], $c[2])] = @{ avgMs = [long]$c[3]; samples = [int]$c[4] } }
+}
+Write-Host ("    库内基线分组数 = {0}" -f $baseline.Count) -ForegroundColor DarkGray
+
 # ---------- 判据 B：运行中快照自洽 ----------
 Write-Host "[5] 判据B：运行中快照自洽" -ForegroundColor Yellow
 $running = @($snapshots | Where-Object { $_.status -eq 'RUNNING' })
@@ -269,52 +299,55 @@ if ($running.Count -eq 0) {
     }
     Check-True $pctOk "progressPct 与 finished/total 一致（四舍五入 1 位小数）"
 
-    $curOk = @($running | Where-Object { [string]::IsNullOrWhiteSpace($_.currentStepName) }).Count -eq 0
-    Check-True $curOk "RUNNING 快照的 currentStepName 非空"
-    $msgOk = @($running | Where-Object { $_.message -notmatch '^第 \d+/\d+ 步：『?.+』?$' }).Count -eq 0
-    Check-True $msgOk "message 形如「第 N/M 步：步骤名」（前端可直接展示）"
+    # ⚠️ 不能断言「RUNNING ⇒ 一定有未完成步骤」：实测存在**收尾判定窗口**——8 步全部 SUCCESS、
+    #    任务仍在 RUNNING（终态迁移与自校验之间），此时 currentStepName 为空、剩余为确定的 0、
+    #    文案是「步骤已全部执行，正在收尾判定」，都是正确行为。首版脚本按「RUNNING 必非空/必为正」
+    #    断言，把该正常状态报成 3 条 FAIL（R8-3 复验实测）。故改为与**未完成步骤数等价**：
+    #      未完成步骤 > 0 → currentStepName 非空、message「第 N/M 步：…」、剩余 > 0
+    #      未完成步骤 = 0 → currentStepName 为空、剩余 = 0、message「步骤已全部执行，正在收尾判定」
+    $curOk = $true; $msgOk = $true; $posOk = $true; $transient = 0
+    foreach ($s in $running) {
+        if ([int]$s.totalSteps -le 0) { continue }   # 步骤尚未生成（提交后未调度），另行断言
+        $pend = @($steps | Where-Object { $_.stepNo -gt [int]$s.finishedSteps }).Count
+        if ($pend -gt 0) {
+            if ([string]::IsNullOrWhiteSpace($s.currentStepName)) { $curOk = $false }
+            if ($s.message -notmatch '^第 \d+/\d+ 步：.+$') { $msgOk = $false }
+            if ([long]$s.estimatedRemainingMs -le 0) { $posOk = $false }
+        } else {
+            $transient++
+            if (-not [string]::IsNullOrWhiteSpace($s.currentStepName)) { $curOk = $false }
+            if ($s.message -ne '步骤已全部执行，正在收尾判定') { $msgOk = $false }
+            if ([long]$s.estimatedRemainingMs -ne 0) { $posOk = $false }
+        }
+    }
+    Check-True $curOk "currentStepName 与未完成步骤数一致（有剩余则非空；收尾窗口为空）"
+    Check-True $msgOk "message 与状态匹配（有剩余「第 N/M 步：步骤名」；收尾窗口「步骤已全部执行，正在收尾判定」）"
+    Check-True $posOk "estimatedRemainingMs 与未完成步骤数一致（有剩余则 > 0；收尾窗口为确定的 0）"
+    if ($transient -gt 0) {
+        Write-Host ("    观察到「全步完成但未终态」的收尾窗口快照 {0} 个（终态迁移/自校验之间，属正常；此时 estimateSource=DEFAULT 表示'无待估算项'）" -f $transient) -ForegroundColor DarkYellow
+    }
+
+    $noStep = @($running | Where-Object { [int]$_.totalSteps -le 0 })
+    if ($noStep.Count -gt 0) {
+        $noStepOk = $true
+        foreach ($s in $noStep) {
+            if ([long]$s.estimatedRemainingMs -ne 0 -or $s.message -ne $s.statusText -or
+                -not [string]::IsNullOrWhiteSpace($s.currentStepName) -or [double]$s.progressPct -ne 0.0) { $noStepOk = $false }
+        }
+        Check-True $noStepOk ("步骤尚未生成时（{0} 个快照）进度 0、剩余 0、无当前步骤、message 即状态文案" -f $noStep.Count)
+    }
 
     $sumOk = $true
     foreach ($s in $running) {
         if ([long]$s.estimatedTotalMs -ne ([long]$s.elapsedMs + [long]$s.estimatedRemainingMs)) { $sumOk = $false }
     }
     Check-True $sumOk "estimatedTotalMs = elapsedMs + estimatedRemainingMs"
-    $posOk = @($running | Where-Object { [long]$_.estimatedRemainingMs -le 0 }).Count -eq 0
-    Check-True $posOk "RUNNING 快照的 estimatedRemainingMs > 0"
     $srcOk = @($running | Where-Object { $_.estimateSource -notin @('HISTORY', 'DEFAULT') }).Count -eq 0
     Check-True $srcOk "estimateSource 只会是 HISTORY / DEFAULT（终态才是 FIXED）"
 }
 
 # ---------- 判据 C：ETA 与库内基线同口径 ----------
 Write-Host "[6] 判据C：ETA 与库内历史基线同口径（关键判据）" -ForegroundColor Yellow
-$row = Invoke-Sql "SELECT tenant_id, status, IFNULL(duration_ms,-1), finished_steps, total_steps FROM agent_task WHERE id = $taskId;"
-$tf = @($row -split "`t")
-$tenantId = $tf[0]
-
-# 本任务各步骤的分桶键（复用与 XML 完全相同的分组口径）
-$stepRows = Invoke-Sql "SELECT step_no, step_type, IFNULL(tool_name,''), IFNULL(agent_role,'') FROM agent_task_step WHERE task_id = $taskId AND deleted = 0 ORDER BY step_no;"
-$steps = @()
-foreach ($line in ($stepRows -split "`n")) {
-    $c = @($line -split "`t")
-    if ($c.Count -ge 4) {
-        $steps += [pscustomobject]@{ stepNo = [int]$c[0]; stepType = $c[1]; toolName = $c[2]; agentRole = $c[3] }
-    }
-}
-Check-True ($steps.Count -gt 0) ("取到本任务步骤定义 {0} 步" -f $steps.Count)
-
-# 历史基线：与 AgentTaskStepMapper.avgDurationByStepKey 同口径（30 天 / SUCCESS / duration_ms 非空 / 按租户），
-# 排除本任务自身（快照时刻本任务已完成的行不属于"当时的历史"）；FLOOR 对齐 Java 侧 avg.longValue() 的截断
-$baseRows = Invoke-Sql ("SELECT step_type, IFNULL(tool_name,''), IFNULL(agent_role,''), FLOOR(AVG(duration_ms)), COUNT(*) " +
-    "FROM agent_task_step WHERE tenant_id = $tenantId AND task_id <> $taskId AND deleted = 0 AND status = 'SUCCESS' " +
-    "AND duration_ms IS NOT NULL AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) " +
-    "GROUP BY step_type, IFNULL(tool_name,''), IFNULL(agent_role,'');")
-$baseline = @{}
-foreach ($line in ($baseRows -split "`n")) {
-    $c = @($line -split "`t")
-    if ($c.Count -ge 5) { $baseline[("{0}|{1}|{2}" -f $c[0], $c[1], $c[2])] = @{ avgMs = [long]$c[3]; samples = [int]$c[4] } }
-}
-Write-Host ("    库内基线分组数 = {0}" -f $baseline.Count) -ForegroundColor DarkGray
-
 $histSnaps = @($running | Where-Object { $_.estimateSource -eq 'HISTORY' })
 if ($histSnaps.Count -eq 0) {
     Note-Skip "无 estimateSource=HISTORY 的快照（库内该租户缺同类历史样本时属预期退化，非产品缺陷）"

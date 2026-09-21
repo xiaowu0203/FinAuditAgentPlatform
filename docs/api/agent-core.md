@@ -73,17 +73,21 @@
 | `progressPct` | `finishedSteps / totalSteps × 100`，保留一位小数；步骤尚未生成时为 `0`。⚠️ **可能回退**，见下文要点 5 |
 | `elapsedMs` | 运行中 = `started_at` → 现在；**已终态 = 落库的实际 `duration_ms`** |
 | `estimatedRemainingMs` | 未完成步骤逐项累加其**同类历史平均耗时** |
-| `estimateSource` | `HISTORY` 有历史样本（`samples` 为样本数）；`DEFAULT` 无样本、用缺省单步耗时（TOOL 1500ms / LLM 2500ms）；`FIXED` 已终态不再估算 |
+| `estimateSource` | `HISTORY` 有历史样本（`samples` 为样本数）；`DEFAULT` 无样本、用缺省单步耗时（TOOL 1500ms / LLM 2500ms）**或已无待执行步骤**（见要点 2）；`FIXED` 已终态不再估算 |
 | `correctionCount` | 自主纠错重跑次数（`correction_count`，`NULL` 归 `0`）。**>0 是 `progressPct` 回退的唯一合法解释** |
-| `message` | 可直接展示的一句话，如「第 6/8 步：重复报销检测」 |
+| `message` | 可直接展示的一句话，如「第 6/8 步：重复报销检测」；全部步骤执行完但尚未终态时为「步骤已全部执行，正在收尾判定」 |
 
 要点：
 1. **基线来自真实数据**：按「步骤类型 + 工具编码 + 执行角色」统计最近 **30 天**内 `SUCCESS` 且 `durationMs` 非空
    的步骤平均耗时（数据源是 R9-2 的落库耗时，见 [`metrics.md`](../architecture/metrics.md) §2.2）。
    同属 LLM 的风控判断与结论汇总实测差约 30%，故角色也参与分桶。
-2. **`estimateSource=DEFAULT` 时必须提示"粗略估算"**：首次上线/新工具尚无样本，缺省值只是量级参考。
+2. **`estimateSource=DEFAULT` 有两种情形，提示语也不同**：① 无历史样本（用缺省单步耗时推算，只是量级参考）；
+   ② **已无待执行步骤**（收尾判定窗口，剩余是**确定的 0**，不是估算）。前端应仅在
+   `estimateSource === 'DEFAULT' && estimatedRemainingMs > 0` 时提示"粗略估算"。
 3. **终态语义**：进入 `APPROVAL_PENDING` 即视为「流水线本次执行结束」——**人工审批等待时间不计入**，
    故此时 `estimatedRemainingMs = 0`，`estimatedTotalMs = 实际流水线耗时`。
+   ⚠️ **判断"是否结束"只看 `status`，不要用 `estimateSource`**：收尾判定窗口（见要点 6）时
+   `status` 仍是 `RUNNING`，而 `progressPct` 已 100%。
 4. 该端点字段刻意保持轻量（不含 `result`/`selfCheckResult` 等重字段），适合 2~3 秒轮询；
    若基线统计查询失败，接口**不报错**，自动退化为 `DEFAULT`。
 5. ⚠️ **`progressPct` 会回退，这是真实状态而非缺陷（R8-3 运行时实测）**：R5 的自校验闸口判定不一致时，
@@ -93,6 +97,11 @@
    **前端处置要求（登记于 R8-4）**：`correctionCount > 0` 且进度回退时显示「正在重新核验（第 N 次纠错）」
    而非让进度条莫名倒退；若产品要求进度条只增不减，须由前端对**展示值**取历史最大值（`max(seen)`），
    后端仍返回真实值。`estimatedRemainingMs` 的取值口径不受回退影响（回退后未完成步骤变多，ETA 相应变大）。
+6. **「全部步骤已执行完但任务仍未终态」是一个真实状态（收尾判定窗口）**：8 步全部 `SUCCESS`、`status` 仍为
+   `RUNNING`（终态迁移与自校验收尾之间，实测持续约 1~2 秒）。此时字段表现为
+   `progressPct=100`、`finishedSteps=totalSteps`、`currentStepName=null`、`estimatedRemainingMs=0`、
+   `estimateSource=DEFAULT`、`message="步骤已全部执行，正在收尾判定"`。**这不是卡死也不是缺陷**，
+   前端按 `message` 展示即可；`TaskProgressServiceTest` 已用单测钉住该状态，避免被误"修"。
 
 ## GET /api/v1/tasks — 分页查询`pageNum`（默认 1）、`pageSize`（默认 10）、`status`（可选，如 `SUCCESS`/`FAILED`）。可见性（P3b）：财务角色（`admin`/`auditor`）看本租户全部任务，普通用户仅见本人（`createdBy`）任务。
 

@@ -651,15 +651,43 @@ agent-core 192 例（含新增 `AgentTaskVisibilityTest` 5 例）、tool-service
 也最容易解释的做法。分桶键由**同一个函数**生成（统计与取用共用 `key(...)`），避免口径漂移导致
 "永远命中不到基线、静默退化为缺省值"这类难查的 bug。
 
-**本机验证**：`TaskProgressServiceTest` 8/8（有样本走 HISTORY 并给出 3300ms、无样本走 DEFAULT、
+**本机验证**：`TaskProgressServiceTest` 9/9（有样本走 HISTORY 并给出 3300ms、无样本走 DEFAULT、
 终态不再估算且取实际 `duration_ms`、无步骤不除零、基线查询失败不报错、待审态视为流水线已结束、
-`correctionCount` 透出与 NULL 归 0）；全量 `mvn -o clean install` 19 模块 BUILD SUCCESS、
-**341 用例 0 失败**（agent-core 209 / tool 45 / tenant 25 / common-code 27 / 其余 starter 与 file-service）；
+`correctionCount` 透出与 NULL 归 0、**收尾判定窗口**）；全量 `mvn -o clean install` 19 模块 BUILD SUCCESS、
+**342 用例 0 失败**（agent-core 210 / tool 45 / tenant 25 / common-code 27 / 其余 starter 与 file-service）；
 新增 SQL 已在真实库执行验证（返回 `ocr_extract 4492ms`（最慢）、LLM 按角色 1600/2076ms 等真实基线）。
 
-> ⚠️ **验证边界（诚实标注）**：下述运行时证据覆盖的是**加 `correctionCount` 之前**的端点版本
-> （`taskId=30003/30004/30005` 三次实测）。`correctionCount` 字段本身已编译 + 单测通过，
-> 但**需用户重启 agent-core 后才能运行时复验**（验证脚本判据 A 会检查该字段，未重启将报缺字段）。
+> ✅ **验证边界已闭环**：上述运行时证据覆盖的是**加 `correctionCount` 之前**的端点版本；
+> 用户重启 agent-core 后已完成复验（见下「第二轮运行时复验」），不再是待办项。
+
+**第二轮运行时复验（用户重启 agent-core 后，`correctionCount` 上线）**
+
+| 检查 | 结果 |
+|---|---|
+| 字段上线且**值与库内一致** | `30003`(库 0→端点 0)、`30004`(0→0)、`30005`(**1→1**，即发生回退的那单) |
+| 终态复检（`-TaskId 30005/30003/30006`，零配额） | 三次均 **PASS=14 FAIL=0 SKIP=2**，`elapsedMs` 与库内 `duration_ms` 逐单一致（16977/7708/11207） |
+| 全量模式（`taskId=30006`） | 采集 27 次；**「回退 + `correctionCount=1`」判据分支首次真跑并 PASS**；库内 `correction_count=1`、`coherent=false` 印证回退确由自主纠错重跑触发 |
+| 库内事实 | `30006` 8 步全 SUCCESS、`duration_ms=11207` 与端点一致 |
+
+**第二轮暴露的新状态：收尾判定窗口（8 步全成功但任务仍 RUNNING）**
+
+同一轮全量跑出现 3 条 FAIL，全部来自同一个快照：
+
+```
+RUNNING pct=100.0 步=8/8 当前=(空) 已耗时=7471ms 剩余=0ms 依据=DEFAULT 样本=0 步骤已全部执行，正在收尾判定
+```
+
+这是「全部步骤 SUCCESS、任务尚未迁到终态」的**收尾判定窗口**（终态迁移与自校验之间，实测约 1~2 秒），
+端点行为正确（`currentStepName` 为空、剩余是确定的 0、文案自带解释），**是首版脚本的断言过严**——
+它默认「RUNNING ⇒ 必有未完成步骤」。处置（避免把正常状态报成缺陷，与踩坑清单第 18/23 条同源）：
+
+1. 脚本判据改为**与「未完成步骤数」等价**：有剩余 → `currentStepName` 非空 / `message` 形如「第 N/M 步：…」/ 剩余 > 0；
+   无剩余 → 三者反向，且 `message` 恰为「步骤已全部执行，正在收尾判定」；并单独断言「步骤尚未生成」的 PENDING 期
+   （进度 0、剩余 0、无当前步骤、`message` 即状态文案）。观察到收尾窗口时打印说明而非只报数。
+2. `TaskProgressServiceTest` 补第 9 例 `allStepsDoneButStillRunningIsFinalizingWindow` 钉住该状态，防止被误"修"。
+3. `docs/api/agent-core.md` 补要点 6 描述该状态；并把要点 2 写清 **`estimateSource=DEFAULT` 的两种情形**
+   （无样本推算 / 无待估算项），要求前端仅在 `DEFAULT && estimatedRemainingMs > 0` 时提示"粗略估算"；
+   同时明确**判断是否结束只看 `status`，不要用 `estimateSource`**。
 
 **运行时验证（用户已重启 agent-core，端到端实测通过）**：提交一张新报销单（`taskId=30003`），
 以 400ms 间隔轮询 `/progress` 共 18 次、去重后 6 个状态快照，三条路径全部命中：
@@ -1066,6 +1094,13 @@ common-model-starter **15 例**、common-code 27 例、tenant-service 25 例、c
 21. **「落库成功」的表象可能来自另一个写入路径**：R5-9 里 `self_check_result` 有值并非因为
     `applySelfCheckResult` 成功，而是后续 `markApprovalPending` 用实体更新把内存字段顺带写了进去。
     判断某次写入是否成功，要看**该语句自己**的结果，而不是最终列里有没有值。
+22. **状态机断言必须写成「等价关系」，不能写成「某状态下必然如何」**（P3.8 R8-3 复验实测）：
+    首版进度脚本断言「`status=RUNNING` ⇒ `currentStepName` 非空、`estimatedRemainingMs > 0`」，
+    结果把「8 步全 SUCCESS 但尚未迁终态」的**收尾判定窗口**（真实存在约 1~2 秒）
+    报成 3 条 FAIL。正确写法是把断言与**可查的驱动量**绑定：
+    「未完成步骤数 > 0 ⇔ 有当前步骤 ⇔ 剩余 > 0」、「未完成步骤数 = 0 ⇔ `message` = 收尾文案」。
+    **排查口诀**：一条断言挂掉时，先问「这个状态组合在真实运行时是否合法」，再问「产品是否有缺陷」——
+    否则会把正常状态当成 bug 去"修"，甚至改坏正确的实现。
 22. **HTTP 响应的中文必须按 UTF-8 显式解码后再断言**（P3.8 R8-3 实测）：本仓 JSON 响应头是
     `Content-Type: application/json`（**不带 charset**），按 HTTP 规范无 charset 等价于 ISO-8859-1，
     于是 Windows PowerShell 5.1 的 `Invoke-WebRequest` 把中文解成 `å·²å®Œæˆ` 这类乱码 ——

@@ -18,6 +18,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
@@ -202,5 +203,29 @@ class TaskProgressServiceTest {
         TaskProgressVO vo = service().progress(task(TaskStatus.RUNNING.name()));
 
         assertEquals(0, vo.getCorrectionCount());
+    }
+
+    /**
+     * 收尾判定窗口：全部步骤已 SUCCESS、任务仍是 RUNNING（终态迁移与自校验之间）。
+     *
+     * <p>R8-3 运行时实测到的真实状态（首版验证脚本按「RUNNING 必有未完成步骤」断言，
+     * 把该正常状态误报成 3 条 FAIL）。此处用单测钉住：进度 100%、无当前步骤、剩余为**确定的 0**、
+     * message 为「步骤已全部执行，正在收尾判定」——`estimateSource=DEFAULT` 表示"无待估算项"。</p>
+     */
+    @Test
+    void allStepsDoneButStillRunningIsFinalizingWindow() {
+        givenSteps(List.of(
+                step(1, "TOOL", "ocr_extract", null, "SUCCESS"),
+                step(2, "LLM", null, "SCHEDULER", "SUCCESS")));
+        when(stepService.avgDurationByStepKey(any())).thenReturn(List.of());
+
+        TaskProgressVO vo = service().progress(task(TaskStatus.RUNNING.name()));
+
+        assertEquals(100.0d, vo.getProgressPct(), "步骤全部成功 → 100%");
+        assertEquals(2, vo.getFinishedSteps());
+        assertNull(vo.getCurrentStepName(), "无未完成步骤 ⇒ 无当前步骤");
+        assertEquals(0L, vo.getEstimatedRemainingMs(), "剩余为确定的 0，不是估算值");
+        assertEquals("DEFAULT", vo.getEstimateSource(), "无待估算项（语义见 docs/api/agent-core.md 要点 2）");
+        assertTrue(vo.getMessage().contains("正在收尾判定"), "实际=" + vo.getMessage());
     }
 }
