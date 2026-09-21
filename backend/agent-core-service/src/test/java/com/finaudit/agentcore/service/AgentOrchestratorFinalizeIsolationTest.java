@@ -2,6 +2,7 @@ package com.finaudit.agentcore.service;
 
 import com.finaudit.agentcore.config.AgentExecutionProperties;
 import com.finaudit.agentcore.domain.FlowDecision;
+import com.finaudit.agentcore.domain.ReviewFinding;
 import com.finaudit.agentcore.domain.SelfCheckResult;
 import com.finaudit.agentcore.enums.TaskStatus;
 import com.finaudit.agentcore.mq.TaskEventPublisher;
@@ -26,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -82,12 +85,16 @@ class AgentOrchestratorFinalizeIsolationTest {
     }
 
     private void drive() {
+        drive("REIMBURSEMENT");
+    }
+
+    private void drive(String taskType) {
         AgentTask task = new AgentTask();
         task.setId(100L);
         task.setTenantId(1L);
         task.setTaskNo("T202601010000000001");
         task.setTitle("测试");
-        task.setTaskType("REIMBURSEMENT");
+        task.setTaskType(taskType);
         task.setStatus(TaskStatus.RUNNING.name());
         task.setTotalSteps(2);
 
@@ -154,5 +161,49 @@ class AgentOrchestratorFinalizeIsolationTest {
         assertDoesNotThrow(() -> fail.toResultMap(), "含矛盾的 toResultMap 不应抛异常");
         assertDoesNotThrow(() -> fail.toFindings(), "toFindings 不应抛异常");
         assertDoesNotThrow(() -> fail.toPromptHint(), "toPromptHint 不应抛异常");
+    }
+
+    // ---------------- P3.8 R6-1：GENERIC 通用分析任务的产品化收尾 ----------------
+
+    /**
+     * GENERIC 任务同样过自校验闸口。
+     *
+     * <p>改造前 GENERIC 是「遗留调试通道」：收尾直接 {@code markSuccess}，
+     * 既不过自校验也不建工单——LLM 给出 REJECT/存疑结论时任务照样"成功"，风险无人接手。</p>
+     */
+    @Test
+    void genericTaskRunsSelfCheckBeforeFinalize() {
+        when(selfConsistencyChecker.check(any())).thenReturn(SelfCheckResult.pass(5));
+
+        drive("GENERIC");
+
+        verify(selfConsistencyChecker).check(any());
+        verify(taskService).applySelfCheckResult(any(), any());
+    }
+
+    /** GENERIC 结论非通过（NEED_REVIEW）→ 建审批工单，且不得标记任务成功 */
+    @Test
+    void genericTaskEntersApprovalWhenDecisionNotApprove() {
+        when(selfConsistencyChecker.check(any())).thenReturn(SelfCheckResult.pass(5));
+        when(reviewFlowDecider.decide(any())).thenReturn(FlowDecision.needReview(List.of(
+                new ReviewFinding("LLM_DECISION", ReviewFinding.LEVEL_RISK_HIT, null, null, null, null, null,
+                        "分析结论为 REJECT，需人工确认"))));
+
+        drive("GENERIC");
+
+        verify(auditTicketService).enterApproval(any(), any(), anyInt(), any(), any());
+        verify(taskService, never()).markSuccess(any(), any(), anyInt());
+    }
+
+    /** GENERIC 结论通过（AUTO_PASS）→ 收尾成功，不建工单 */
+    @Test
+    void genericTaskAutoPassesWhenDecisionApprove() {
+        when(selfConsistencyChecker.check(any())).thenReturn(SelfCheckResult.pass(5));
+        when(reviewFlowDecider.decide(any())).thenReturn(FlowDecision.autoPass());
+
+        drive("GENERIC");
+
+        verify(taskService).markSuccess(any(), any(), anyInt());
+        verify(auditTicketService, never()).enterApproval(any(), any(), anyInt(), any(), any());
     }
 }

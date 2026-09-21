@@ -94,10 +94,10 @@ function Api([string]$method, [string]$path, $body, [string]$token) {
 }
 
 # 提交一张报销单并等待 OCR 回写，返回 @{ reimbId; attachmentId; fileRecordId; invoiceNum }
-# 指定 SampleFile 时两次调用都用同一张图 —— 本脚本必须如此，否则第二张可能是别的发票，
-# 走不到「命中既有票 → updateById 累加 seen_count」这条被验证的路径。
-function Submit-And-Wait($token, $samples, $curl, [decimal]$amount, [string]$title) {
-    $src = if ($SampleFile) { Get-Item $SampleFile } else { $samples[(Get-Random -Maximum $samples.Count)] }
+# ⚠️ 两次调用必须用【同一张图】：本脚本验证的是「命中既有票 → updateById 累加 seen_count + 刷新 updated_at」，
+#    若第二次换成别的发票，走的根本不是这条路径，却会以「updated_at 未跳变」的形式误报产品缺陷（实测踩过）。
+#    故 sample 由调用方解析一次后传入，脚本内部不再各自随机。
+function Submit-And-Wait($token, $src, $curl, [decimal]$amount, [string]$title) {
     $tmp = Join-Path $env:TEMP ("audit-{0}{1}" -f ([guid]::NewGuid().ToString('N').Substring(0, 8)), $src.Extension)
     Copy-Item $src.FullName $tmp -Force
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
@@ -146,8 +146,12 @@ if ($samples.Count -eq 0) { throw "未找到 OCR 样本" }
 
 $maxAmt = [decimal](Invoke-Sql "SELECT COALESCE(MAX(total_amount), 0) + 1 FROM $Database.expense_reimbursement WHERE deleted = 0;")
 
+# ⚠️ 只解析一次样本，两次提交复用同一张图（见 Submit-And-Wait 注释：路径依赖「同一张票」）
+$sample = if ($SampleFile) { Get-Item $SampleFile } else { $samples[(Get-Random -Maximum $samples.Count)] }
+Write-Host ("样本: {0}" -f $sample.Name) -ForegroundColor DarkGray
+
 Write-Host "[1] 第一次提交（建立/命中投影行）" -ForegroundColor Yellow
-$r1 = Submit-And-Wait $token $samples $curl $maxAmt "审计时间戳验证1"
+$r1 = Submit-And-Wait $token $sample $curl $maxAmt "审计时间戳验证1"
 Write-Host ("    reimbId={0} invoiceNum='{1}'" -f $r1.reimbId, $r1.invoiceNum) -ForegroundColor DarkGray
 if (-not $r1.invoiceNum) { throw "OCR 未识别出票号，无法验证投影行的 updated_at（属样本/配额限制）" }
 
@@ -158,8 +162,19 @@ $tsBefore = [datetime]::Parse($bp[1].Trim())
 $seenBefore = [int]$bp[2].Trim()
 
 Write-Host "[2] 第二次提交（同一张票 → 走 updateById 累加 seen_count）" -ForegroundColor Yellow
-$r2 = Submit-And-Wait $token $samples $curl ($maxAmt + 1) "审计时间戳验证2"
+$r2 = Submit-And-Wait $token $sample $curl ($maxAmt + 1) "审计时间戳验证2"
 Write-Host ("    reimbId={0} invoiceNum='{1}'" -f $r2.reimbId, $r2.invoiceNum) -ForegroundColor DarkGray
+
+# ⚠️ 前置断言：两次必须命中同一张票，否则本次运行压根没走被验证的路径。
+#    这里必须显式区分「脚本前置条件不满足」与「产品缺陷」——早期版本缺这道闸，
+#    会让「换了张发票」表现为「updated_at 未跳变 ⇒ 填充未生效」的产品级误报。
+if ("$($r2.invoiceNum)" -ne "$($r1.invoiceNum)") {
+    Write-Host ("  [SKIP] 两次提交命中的票号不同（{0} ≠ {1}）：本次未走到「同一票累加 seen_count」路径。" -f `
+        $r1.invoiceNum, $r2.invoiceNum) -ForegroundColor DarkYellow
+    Write-Host "         请用 -SampleFile 指定同一张样本重跑，勿据此判产品缺陷" -ForegroundColor DarkYellow
+    Write-Host ("=== 汇总: PASS=0 FAIL=0 SKIP=1（前置条件不满足，非产品缺陷）===") -ForegroundColor DarkYellow
+    exit 0
+}
 
 # ⚠️ 断言口径（踩过坑）：必须比对「两次提交之间 updated_at 是否跳变」，
 #    而不是简单地与 created_at 比（diff>0）——后者会把**几十分钟前的历史偏差**

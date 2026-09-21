@@ -46,6 +46,16 @@ public class ToolRegistry {
     @Schema(description = "入参 JSON Schema")
     private Map<String, Object> inputSchema;
 
+    /**
+     * 出参 JSON Schema（P3.8 R6-4，可空）。
+     * <p>存在时 {@code ToolRegistryService} 会在执行器返回后校验出参形状，让「工具给错数据」
+     * 在工具边界就暴露，而不是一路流到 LLM 上下文里（R4-7 手工装配丢字段即此类故障）。
+     * 为空表示不校验，兼容存量工具。</p>
+     */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    @Schema(description = "出参 JSON Schema（可空；存在则执行后校验出参形状）")
+    private Map<String, Object> outputSchema;
+
     @Schema(description = "是否启用（0 禁用 / 1 启用）")
     private ToolEnabledStatus enabled;
 
@@ -78,6 +88,7 @@ public class ToolRegistry {
         reg.setToolName(request.toolName());
         reg.setDescription(request.description());
         reg.setInputSchema(request.inputSchema());
+        reg.setOutputSchema(request.outputSchema());
         reg.setEnabled(ToolEnabledStatus.of(request.enabled()));
         reg.setVersion(request.version() == null ? DEFAULT_VERSION : request.version());
         // scenario/cacheable 空值不覆盖，走 DB 默认列值（FINANCE / 1）
@@ -93,6 +104,10 @@ public class ToolRegistry {
         this.toolName = request.toolName();
         this.description = request.description();
         this.inputSchema = request.inputSchema();
+        // 出参 Schema：仅在请求显式给定时覆盖（与 enabled/version 同口径），避免误清空既有契约
+        if (request.outputSchema() != null) {
+            this.outputSchema = request.outputSchema();
+        }
         if (request.enabled() != null) {
             this.enabled = ToolEnabledStatus.of(request.enabled());
         }

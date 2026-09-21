@@ -4,9 +4,16 @@ import java.util.Set;
 
 /**
  * 财务 Agent 角色（P3a 多 Agent 角色化，分派身份唯一真相）。
+ *
+ * <p><b>⚠️ 诚实表述（P3.8 R6-6）：这是「进程内角色化」，不是跨服务 A2A 多智能体。</b>
+ * 四个角色全部运行在 agent-core 的<b>同一个进程</b>内，由
+ * {@link com.finaudit.agentcore.domain.FlowDefinition} 声明的流水线按步骤号依次激活；
+ * 角色之间的「协作」是<b>共享同一任务上下文（前序步骤落库输出）</b>，不存在独立的 Agent 进程、
+ * 消息协议或自主协商。对外宣传/文档一律按此口径，不要写成「多智能体协同系统」。</p>
+ *
  * <p>角色定义收敛在本枚举：中文名 + 绑定工具编码集 + LLM 步骤 system prompt 片段。
  * 纯 TOOL 角色（DOCUMENT_PARSER / BUDGET_CALCULATOR / RULE_VALIDATOR）的"职责"体现在
- * {@code RuleBasedFlowEngine} 的流水线编排里，不参与 LLM 调用，故 systemPrompt 为空；
+ * {@code FlowDefinition} 的流水线声明里，不参与 LLM 调用，故 systemPrompt 为空；
  * 只有 RISK_AUDITOR（风控语义判断）与 SCHEDULER（结论汇总）是真实 LLM 角色。</p>
  * <p>工具编码用字符串（不依赖 tool-service 的 {@code ToolCode} 枚举，避免跨模块依赖；
  * 编码值由工具目录持久化约束）。{@link #of(String)} 宽容解析：未知/空返回 null，

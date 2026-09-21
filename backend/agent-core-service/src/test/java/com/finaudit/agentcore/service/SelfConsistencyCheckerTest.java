@@ -50,6 +50,19 @@ class SelfConsistencyCheckerTest {
         return s;
     }
 
+    /**
+     * 无角色的 LLM 步骤（GENERIC 通用任务由 TaskPlanner 规划，agentRole 为 null）。
+     * <p>P3.8 R6-1：自校验的结论采集必须与角色解耦，否则通用任务的自校验会整体空转。</p>
+     */
+    private static AgentTaskStep rolelessLlm(int stepNo, Map<String, Object> output) {
+        AgentTaskStep s = new AgentTaskStep();
+        s.setStepNo(stepNo);
+        s.setStepType("LLM");
+        s.setAgentRole(null);
+        s.setOutput(output);
+        return s;
+    }
+
     private static Map<String, Object> riskOutput(String level, String confidence) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("riskLevel", level);
@@ -233,5 +246,60 @@ class SelfConsistencyCheckerTest {
         assertEquals(SelfCheckResult.TYPE_CONTRADICTION, r.contradictions().get(0).type());
         assertTrue(findings.get(0).code().startsWith("SELF_CHECK_"));
         assertTrue(r.toPromptHint().contains("自校验发现矛盾"), "应生成给 LLM 的矛盾提示");
+    }
+
+    // ---------------- R6-1：结论采集与角色解耦（GENERIC 通用任务） ----------------
+
+    /**
+     * 无 SCHEDULER 角色时，结论取 stepNo 最大的 LLM 步骤。
+     * <p>GENERIC 任务的 LLM 步骤由 TaskPlanner 规划、agentRole 为 null；不做这层退化，
+     * 断言 ①③ 会因拿不到结论而恒不命中（自校验形同不存在）。</p>
+     */
+    @Test
+    void conclusionFallsBackToLastLlmStepWhenNoSchedulerRole() {
+        // 金额核验不一致 + 结论 APPROVE（无角色）→ 断言 ① 命中
+        SelfCheckResult r = checker.check(List.of(
+                tool("amount_verify", Map.of("match", false)),
+                rolelessLlm(2, Map.of("decision", "APPROVE", "summary", "分析结论"))));
+
+        assertFalse(r.coherent(), "无角色任务的结论也应参与断言 ①，实际=" + r.contradictions());
+        assertEquals("AMOUNT_VERIFY_VS_APPROVE", r.contradictions().get(0).assertion());
+    }
+
+    /** 多个无角色 LLM 步骤时取 stepNo 最大者（不依赖入参顺序） */
+    @Test
+    void conclusionPrefersHighestStepNoAmongRolelessLlmSteps() {
+        SelfCheckResult r = checker.check(List.of(
+                rolelessLlm(3, Map.of("decision", "APPROVE")),
+                tool("amount_verify", Map.of("match", false)),
+                // 顺序刻意打乱：stepNo=5 才是最后的汇总结论
+                rolelessLlm(5, Map.of("decision", "APPROVE")),
+                rolelessLlm(4, Map.of("decision", "APPROVE"))));
+
+        assertFalse(r.coherent());
+        assertEquals("AMOUNT_VERIFY_VS_APPROVE", r.contradictions().get(0).assertion());
+    }
+
+    /** 有 SCHEDULER 角色时仍优先取它（报销流水线行为不因 R6-1 改动而漂移） */
+    @Test
+    void schedulerRoleStillTakesPrecedenceOverRolelessLlm() {
+        SelfCheckResult r = checker.check(List.of(
+                tool("amount_verify", Map.of("match", false)),
+                rolelessLlm(9, Map.of("decision", "REJECT")),
+                conclusion("APPROVE")));
+
+        // SCHEDULER 的 APPROVE 才是结论 → 断言 ① 命中（若误取 REJECT 则不会命中）
+        assertFalse(r.coherent(), "应以 SCHEDULER 角色步骤为结论，实际=" + r.contradictions());
+        assertEquals("AMOUNT_VERIFY_VS_APPROVE", r.contradictions().get(0).assertion());
+    }
+
+    /** 无角色 LLM 步骤的自由文本同样纳入幻觉核验 */
+    @Test
+    void rolelessLlmFreeTextIsScannedForHallucination() {
+        SelfCheckResult r = checker.check(List.of(
+                tool("ocr_extract", Map.of("receipts", List.of(Map.of("fields", Map.of("invoiceNum", "07632553"))))),
+                rolelessLlm(2, Map.of("summary", "发票 12345678 与票面不一致"))));
+
+        assertTrue(r.hasHallucination(), "无角色 LLM 引用的不存在票号应判为幻觉，实际=" + r.contradictions());
     }
 }

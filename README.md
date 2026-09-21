@@ -133,6 +133,10 @@ cd frontend && npm install && npm run dev   # http://localhost:5173
 种子账号：`admin / admin123`（租户 `default`，角色 `admin`）。
 
 > 详细环境说明见 `docs/deploy/`，接口文档见 `docs/api/`，架构见 `docs/architecture/`，分期规划见 `docs/planning/`。
+>
+> **贡献者先读**：工程硬性约定见 [`AGENTS.md`](./AGENTS.md)（强制规范正文）与
+> [`docs/architecture/conventions.md`](./docs/architecture/conventions.md)（约定入口 + 每条约定的由来与代价，含
+> 「JSON 列写法」「多租户权威租户来源」「兜底必须落库」「验收纪律」四类必须记住的坑）。
 
 ## 目录结构
 

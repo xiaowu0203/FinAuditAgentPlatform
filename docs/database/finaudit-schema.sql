@@ -184,6 +184,7 @@ CREATE TABLE tool_registry (
     tool_name    VARCHAR(64)  NOT NULL COMMENT '工具名称',
     description  VARCHAR(256) DEFAULT NULL COMMENT '工具描述',
     input_schema JSON         NOT NULL COMMENT '入参 JSON Schema（强校验）',
+    output_schema JSON        DEFAULT NULL COMMENT '出参 JSON Schema（P3.8 R6-4；非空则执行后校验出参形状）',
     enabled      TINYINT      NOT NULL DEFAULT 1 COMMENT '是否启用: 1启用 0禁用',
     version      VARCHAR(16)  NOT NULL DEFAULT '1.0' COMMENT '工具版本',
     scenario     VARCHAR(16)  NOT NULL DEFAULT 'FINANCE' COMMENT '业务场景: FINANCE/GENERIC（P2b TaskPlanner 按此收敛工具目录）',
@@ -565,11 +566,12 @@ INSERT INTO sys_role_permission (tenant_id, role_id, perm_id) VALUES
     (1, 1, 16), (1, 1, 17),
     (1, 2, 20), (1, 2, 21), (1, 2, 22), (1, 2, 23), (1, 2, 24);
 
--- 内置金额核验工具（P1 首个落地工具，金额一律 Decimal）
-INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, input_schema, enabled, version) VALUES
+-- 内置金额核验工具（P1 首个落地工具，金额一律 Decimal；P3.8 R6-4 补出参 Schema）
+INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, input_schema, output_schema, enabled, version) VALUES
     (1, 1, 'amount_verify', '金额核验工具',
      '加总明细金额并与申报总额比对，返回是否一致及差额。入参 items:[{name,amount}] + claimedTotal；items 元素可含 amountType/quantity/unitPrice/date 等辅助字段（仅核验 amount）。',
      '{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"amount":{"type":"number"},"amountType":{"type":["string","null"]},"quantity":{"type":["number","null"]},"unitPrice":{"type":["number","null"]},"date":{"type":["string","null"]}},"required":["name","amount"]}},"claimedTotal":{"type":"number"}},"required":["items","claimedTotal"]}',
+     '{"type":"object","properties":{"total":{"type":"number"},"claimedTotal":{"type":"number"},"match":{"type":"boolean"},"diff":{"type":"number"},"message":{"type":"string"}},"required":["total","claimedTotal","match"]}',
      1, '1.0');
 
 -- P2b 四个审核工具（scenario=FINANCE 供 TaskPlanner 收敛；cacheable=0 有状态查询不缓存）
@@ -579,8 +581,8 @@ INSERT INTO tool_registry (id, tenant_id, tool_code, tool_name, description, inp
      '{"type":"object","properties":{"reimbId":{"type":"integer"},"attachmentIds":{"type":"array","items":{"type":"integer"}}},"required":["reimbId","attachmentIds"]}',
      1, '1.0', 'FINANCE', 0),
     (3, 1, 'budget_query', '预算核算',
-     '查部门当月剩余预算，返回预算占用与是否超支。入参 deptName（部门）+ claimDate（报销日期 YYYY-MM-DD，据此推导预算周期）+ amount（申报金额）。',
-     '{"type":"object","properties":{"deptName":{"type":"string"},"claimDate":{"type":"string"},"amount":{"type":"number"}},"required":["deptName","claimDate","amount"]}',
+     '查部门当月剩余预算，返回预算占用与是否超支。入参 deptName 或 deptId（二者任一即可定位部门）+ claimDate（报销日期 YYYY-MM-DD，据此推导预算周期）+ amount（申报金额）。',
+     '{"type":"object","properties":{"deptName":{"type":"string"},"deptId":{"type":"integer"},"reimbId":{"type":"integer"},"claimDate":{"type":"string"},"amount":{"type":"number"}},"required":["claimDate","amount"],"anyOf":[{"required":["deptName"]},{"required":["deptId"]}]}',
      1, '1.0', 'FINANCE', 0),
     (4, 1, 'rule_check', '财务规则校验',
      '按财务规则（大额限额/报销时效/差旅标准/补贴限额）校验报销单，返回命中规则与超标标记。入参 expenseType + claimDate + items + totalAmount。',

@@ -1,6 +1,21 @@
-# 任务事件驱动编排（P1.3 / P3a / P3b）
+# 任务事件驱动编排（P1.3 / P3a / P3b / P3.8）
 
-> agent-core-service 与 tool-service 之间通过 RabbitMQ 事件驱动协作，任务/步骤全程落库（持久化驱动），支持失败重试与断点续跑。P3a 在此基础上为报销任务增加角色化固定流水线；P3b 增加审批工单闭环（`audit_ticket`/`audit_record` + 三类审批动作 + 提交人 resubmit 修改重跑 + 撤回/撤销 + 快照留痕 + 可见性统一）。
+> agent-core-service 与 tool-service 之间通过 RabbitMQ 事件驱动协作，任务/步骤全程落库（持久化驱动），支持失败重试与断点续跑。P3a 在此基础上为报销任务增加角色化固定流水线；P3b 增加审批工单闭环（`audit_ticket`/`audit_record` + 三类审批动作 + 提交人 resubmit 修改重跑 + 撤回/撤销 + 快照留痕 + 可见性统一）；P3.8 增加语义自校验与自主纠错、GENERIC 通用分析（与报销同规格收尾）。
+
+## 0. 先说清楚「多 Agent」到底指什么（P3.8 R6-6）
+
+**本项目的「多 Agent」= 单进程内的角色化，不是跨服务的 A2A 多智能体。**
+
+- 四个 `AgentRole`（DOCUMENT_PARSER / BUDGET_CALCULATOR / RULE_VALIDATOR / RISK_AUDITOR / SCHEDULER）
+  全部运行在 **agent-core 进程内**，由 `FlowDefinition` 声明的流水线按步骤号依次激活；
+- 角色之间**没有**独立进程、独立记忆、消息协议或自主协商，所谓「协作」是
+  **共享同一个任务的上下文**（前序步骤输出落库 → 后续步骤与 LLM prompt 读它）；
+- 真正跨进程的只有一件事：TOOL 步骤经 RabbitMQ 交给 tool-service 执行（这是「工具调用」而非「Agent 通信」）。
+
+这样取舍的理由：当前业务（报销审核）的正确性来自**确定性规则 + 交叉核验**，
+把主链路交给多进程 Agent 协商只会引入不确定性；A2A / spring-ai-alibaba 已登记在
+`docs/planning/future-roadmap.md`，等真有跨服务 Agent 需求时再引入。
+文档与对外表述一律按此口径，**不要写成「多智能体协同系统」**。
 
 ## 1. MQ 拓扑
 
@@ -36,11 +51,17 @@
 
 ## 4. 事件流时序
 
-通用 `GENERIC` 任务仍由 `TaskPlanner` 进行 LLM JSON 规划；`REIMBURSEMENT` 任务由 `RuleBasedFlowEngine` 生成确定性流水线：
+通用 `GENERIC` 任务由 `TaskPlanner` 进行 LLM JSON 规划；`REIMBURSEMENT` 任务由 `RuleBasedFlowEngine` 按
+`FlowDefinition`（P3.8 R6-5 声明化）物化确定性流水线：
 
-`DOCUMENT_PARSER(ocr_extract)` → `BUDGET_CALCULATOR(budget_query)` → `RULE_VALIDATOR(rule_check/amount_verify)` → `RISK_AUDITOR(duplicate_check + 风控语义判断)` → `SCHEDULER(结论汇总)`。
+`DOCUMENT_PARSER(ocr_extract)` → `BUDGET_CALCULATOR(budget_query)` → `RULE_VALIDATOR(amount_verify/rule_check)` → `RULE_VALIDATOR(invoice_match)` → `RISK_AUDITOR(duplicate_check + 风控语义判断)` → `SCHEDULER(结论汇总)`。
 
-其中 OCR、预算步骤按入参条件生成，工具步骤通过 RabbitMQ 执行，LLM 仅用于风控语义判断与汇总。步骤 `agent_role` 由规则流水线绑定，LLM 不能自由指派角色。执行完成后 `ReviewFlowDecider` 根据规则、风险等级及 `confidence/uncertain` 输出 `AUTO_PASS` 或 `NEED_REVIEW`；后者写入任务结果并置 `APPROVAL_PENDING`。
+其中 OCR、预算、票据核验步骤按入参条件生成，工具步骤通过 RabbitMQ 执行，LLM 仅用于风控语义判断与汇总。步骤 `agent_role` 由流水线声明绑定，LLM 不能自由指派角色。执行完成后 `ReviewFlowDecider` 根据规则、风险等级及 `confidence/uncertain` 输出 `AUTO_PASS` 或 `NEED_REVIEW`；后者写入任务结果并置 `APPROVAL_PENDING`。
+
+**收尾闸口（P3.8 R5/R6-1）**：`AUTO_PASS` 判定之前先跑语义自校验（`SelfConsistencyChecker`，5 条确定性断言）。
+命中矛盾则重跑风控语义步骤（上限 1 次，矛盾提示注入风控 LLM 步骤入参），超限转人工并附结构化问题项；
+自校验轨迹落 `agent_task.result.selfCheckTrace`。**`GENERIC` 任务走同一套闸口与结果分支**，
+结论非通过或自校验不一致时同样建审批工单（`trigger_type` 归 `RISK_HIT`）。
 
 ```
 用户 ──POST /api/v1/tasks──▶ agent-core：落库 PENDING → 发 task.submit

@@ -122,6 +122,22 @@ public interface AgentCoreServiceFeign {
                               @PathVariable("reimbId") Long reimbId);
 
     /**
+     * 查询任务归属租户（P3.8 R6-2 工具防越权：MQ 链路校验消息里的 taskId 是否真属声明租户）。
+     *
+     * <p>为什么需要它：{@code ToolAccessGuard} 早先比较的「请求上下文租户」与「声明租户」同源
+     * （MQ 消费者用消息里的租户设置上下文后用同一个值执行），校验恒等通过。
+     * 任务归属取自 agent-core 的库内记录，是**与消息声明相互独立**的事实来源，
+     * 消息被篡改（tenantId 改成别的租户）时这里会查不到 → 拒绝。</p>
+     *
+     * @param tenantId 当前声明租户ID（经 X-Tenant-Id 请求头传递）
+     * @param taskId   任务ID
+     * @return 该任务的 tenantId；不存在/不属于该租户返回 data=null（越权）
+     */
+    @GetMapping("/internal/audit/tasks/{taskId}/tenant")
+    R<Long> findTaskTenantId(@RequestHeader("X-Tenant-Id") Long tenantId,
+                             @PathVariable("taskId") Long taskId);
+
+    /**
      * 查询报销单的发票标识符投影（P3.8 R3，invoice_match 工具数据源）。
      *
      * @param tenantId 租户ID（经 X-Tenant-Id 请求头传递）

@@ -557,17 +557,17 @@
 | R5-10 | 联调缺陷：矛盾提示注入到了 TOOL 步骤（风控角色下 `findFirst` 命中 `duplicate_check`），从未到达 LLM，重跑等于白跑 | `AgentOrchestrator.injectSelfCheckHint` | ✅ 只注入 `stepType=LLM` 的风控步骤，退化到首个 LLM 步骤 |
 | R5-11 | 加固：自校验/自纠错轨迹落库（`result.selfCheckTrace`），摆脱「只能看 IDE 控制台日志」 | `AgentOrchestrator.trace`、`docs/test/r5-self-check-e2e.ps1` | ✅ 脚本新增判据 C：轨迹必须存在且不含「自校验执行失败/自纠错动作执行失败」 |
 
-### R6 · 结构与契约（A-2 / A-4 / A-5、P1-1 / P1-4 / P1-5 / P1-6）
+### R6 · 结构与契约（A-2 / A-4 / A-5、P1-1 / P1-4 / P1-5 / P1-6）—— 🔶 后端主体完成（R6-1 前端页登记延后）
 
-| 序 | 动作 |
-|---|---|
-| R6-1 | `GENERIC` 产品化：前端"智能分析"页 + 接入自校验 + 高风险建审批工单 |
-| R6-2 | `ToolAccessGuard` 租户基准改为网关/JWT 派生租户（与"声明租户"分离传入），使校验真正可触发 |
-| R6-3 | 工具缓存 Key 加租户前缀 `tool:exec:{tenantId}:{code}:{sha256}` + 读写 try/catch 降级 |
-| R6-4 | `tool_registry` 增 `output_schema` 列 + 注册时校验 Schema 合法性/强度；修正 `budget_query` 的 `deptName` 必填（改 `deptId` 或二者任一） |
-| R6-5 | `RuleBasedFlowEngine` 声明式化（`FlowDefinition` 抽离，Java 默认定义） |
-| R6-6 | 多 Agent 表述澄清：`AgentRole` 注释 + `task-orchestration.md` 明确"进程内角色化，非跨服务 A2A"（**诚实表述优先于夸大**） |
-| R6-7 | 补 `common-jwt-starter`/`common-mq-starter` README；建 `docs/architecture/conventions.md` + README 规范入口 |
+| 序 | 动作 | 涉及文件 | 验收断言 |
+|---|---|---|---|
+| R6-1 | `GENERIC` 产品化：**接入自校验 + 高风险建审批工单**（前端「智能分析」页按 §7 仅登记，前端阶段实施） | `AgentOrchestrator.finalizeSuccess`、`SelfConsistencyChecker` | 单测 3 例（GENERIC 过自校验 / NEED_REVIEW 建单 / AUTO_PASS 收尾）+ `docs/test/r6-generic-task-e2e.ps1` 端到端 |
+| R6-2 | `ToolAccessGuard` 租户基准改为**网关/JWT 派生租户**，与「声明租户」分离传入；MQ 链路改用任务归属反查 | `ToolTenantCredential`、`ToolAccessGuard`、`ToolRegistryService`、`ToolController`、`AgentCoreServiceFeign`、`InternalAuditDataController`、`AgentTaskService.findTenantIdByTask` | 单测 18 例：权威租户不一致拒绝、消息租户与任务归属不一致拒绝、无登录上下文的 HTTP 直调拒绝（fail-closed） |
+| R6-3 | 工具缓存 Key 加租户前缀 `tool:exec:{tenantId}:{code}:{sha256}` + 读写 try/catch 降级 | `ToolExecutionService` | 单测 4 例：跨租户不同 key、Redis 读失败降级直连、写失败不影响回吐、命中缓存不重复执行 |
+| R6-4 | `tool_registry` 增 `output_schema` 列 + 注册时校验 Schema 合法性/强度 + 出参校验 + 修正 `budget_query` 入参 Schema（deptName/deptId 二选一） | `ToolRegistry`、`ToolRegistryRegisterRequest`、`ToolRegistryService`、`migration-P3.8.sql` §13~15、`finaudit-schema.sql` | 单测 8 例：非法/无强度 Schema 注册被拒、出参不符拦截、无 Schema 兼容放行 |
+| R6-5 | `RuleBasedFlowEngine` 声明式化（`FlowDefinition` + `FlowStepDefinition` + `StepType` 枚举，Java 内默认定义） | `domain/FlowDefinition.java`、`domain/FlowStepDefinition.java`、`enums/StepType.java`、`RuleBasedFlowEngine.java` | 单测 5 例：8 步声明顺序、票据核验紧跟规则校验、条件步骤按入参跳过、LLM 步骤无入参、物化无副作用 |
+| R6-6 | 多 Agent 表述澄清：**「进程内角色化，非跨服务 A2A」** | `AgentRole.java` 注释、`docs/architecture/task-orchestration.md` §0 | 文档口径统一，避免夸大表述 |
+| R6-7 | 补 `common-jwt-starter` / `common-mq-starter` README；新增 `docs/architecture/conventions.md`；README 与架构索引补规范入口 | 两个 Starter README、`docs/architecture/conventions.md`、`README.md`、`docs/architecture/README.md` | 贡献者从 README 一步可达约定正文 |
 
 ### R7 · 一致性与文档收口（P1-7 ~ P1-14、全部 D 类）
 
@@ -644,7 +644,10 @@
 9. **自主纠错可演示**：构造 LLM 汇总结论与前序核验结果矛盾的场景 → 自校验命中 → 风控步骤自动重跑 1 次 → 仍矛盾则进审批工单且原因含结构化 findings；任务详情展示"纠错 1 次 + 自校验明细"
 10. **AUTO_PASS 基线**：输出 20~30 张小样本的自动通过率与 reviewReason 分布报告，作为阈值调整依据
 11. **GENERIC 产品化**：前端"智能分析"入口可提交自然语言任务，看到 LLM 自主拆解的步骤与结果
-12. **工具契约对称**：`budget_query` 传 `deptId` 不再被 Schema 拦；`output_schema` 存在时出参被校验；`ToolAccessGuard` 租户校验可被真实触发
+    —— 🔶 后端已就绪（`POST /api/v1/tasks` + GENERIC 自校验/结果分支/建单，`r6-generic-task-e2e.ps1` 待复验）；前端页登记在前端阶段
+12. **工具契约对称**：`budget_query` 传 `deptId` 不再被 Schema 拦（迁移 §14 已改 anyOf 二选一）；
+    `output_schema` 存在时出参被校验；`ToolAccessGuard` 租户校验可被真实触发
+    —— ✅ 代码与单测完成（`ToolSchemaContractTest` 8 例 / `ToolAccessGuardTest` 18 例），待迁移 §13 后运行时复验
 
 ### 主链路止血与质量（R0、R7~R9）
 
@@ -722,14 +725,16 @@
 | **R3** 按票查重 + 票据核验 | ✅ 完成并推送 | `a4df2e7` | 两级查重 + `invoice_match` 工具；含 R3-7 一票多单归属的**架构缺陷**修复 |
 | **R4a** 结构化 findings | ✅ 完成并推送 | `1a9375b` | `ReviewFinding` + `review_findings` 列；含 R4-7 传输层字段丢失 |
 | **R5** 语义自校验与自主纠错 | ✅ 运行时复验通过（**未提交**） | — | 5 条一致性断言 + 矛盾重跑风控；含 R5-6/R5-8/R5-9/R5-10/R5-11 五个联调缺陷（**R5-9 为真正根因：JSON 列写入方式错误**），端到端脚本 9/9 PASS |
+| **R6** 结构与契约 | ✅ 运行时复验通过（**未提交**） | — | GENERIC 产品化（自校验 + 高风险建单）/ 工具租户基准重做 / 缓存租户隔离 / 出参 Schema / 声明式流水线 / 多 Agent 口径澄清 / conventions.md + 两个 Starter README |
 | R4-4 / R4-5 前端展示 | ⏸ 延后（§7 后端先行） | — | 待修正项清单、编辑页标红预填 |
+| R6-1 前端「智能分析」页 | ⏸ 延后（§7 后端先行） | — | 后端已就绪：`POST /api/v1/tasks` + GENERIC 收尾/自校验/建单 |
 | R4-6 提交幂等 | ⏸ 移出 R4 | — | 幂等键由前端生成，与前端阶段一起做才可验证 |
 | R5-5 AUTO_PASS 基线实测 | ⬜ 未做 | — | 依赖真实 LLM 与 OCR 配额，留待配额稳定时执行 |
-| R6 ~ R9 | ⬜ 未开始 | — | 见 §5 |
+| R6 ~ R9 | R6 🔶 后端主体完成，R7~R9 ⬜ | — | 见 §5 |
 
-**当前验证基线**：`mvn -o clean install` 19 模块 BUILD SUCCESS；agent-core **175 例**、tool-service 25 例、
+**当前验证基线**：`mvn -o clean install` 19 模块 BUILD SUCCESS；agent-core **187 例**、tool-service **45 例**、
 common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudit` 共 **21 张表**
-（迁移脚本 `migration-P3.8.sql` 共 12 节，全部幂等可重复执行）。
+（迁移脚本 `migration-P3.8.sql` 共 15 节，全部幂等可重复执行）。
 
 **八个端到端/专项验收脚本**（`docs/test/`，均带 UTF-8 BOM）：
 
@@ -744,6 +749,7 @@ common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudi
 | `r4-review-findings-e2e.ps1` | R4a 结构化问题项 | 19/19 PASS |
 | `r5-self-check-e2e.ps1` | R5 自校验落库 + 自纠错重跑 + 轨迹无异常（判据 A/B/C） | **9/9 PASS**（taskId=400683） |
 | `r5-amend-rerun-e2e.ps1` | R5-9 顺带修复：驳回 → 修改明细 → 同单重跑全链路 | **19/19 PASS**（taskId=400683） |
+| `r6-generic-task-e2e.ps1` | R6-1：GENERIC 走同一套收尾闸口（自校验/轨迹/分支与工单一致，含 autoPass 与 needReview 两场景） | **9/9 PASS ×2**（taskId=400684 / 400685） |
 
 ### 跨阶段踩坑清单（按「下次一定还会踩」排序）
 
@@ -803,6 +809,14 @@ common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudi
     amend 脚本 16/16 PASS 却从未执行驳回。修法：非 R 响应统一返回
     `{ code = -1; message = "HTTP <status> <body>" }`。
     **推论**：验收脚本里的 `SKIP` 必须打印原始响应，禁止无痕降级。
+18. **脚本必须显式区分「前置条件不满足」与「产品缺陷」**（第 17 条的一般化）。两个实例：
+    ① `r2-audit-timestamp-check.ps1` 要求两次提交**用同一张样本图**（否则第二次 OCR 到别的发票，
+    压根没走「同一票累加 seen_count」这条被验证的路径），但脚本内部各自随机取样本，
+    于是「换了一张票」被报成产品级 FAIL「updated_at 未跳变 ⇒ 填充未生效」；
+    ② `r5-amend-rerun-e2e.ps1` 驳回失败会被当成 SKIP 静默带过（见第 17 条）。
+    **修法**：把「本次运行是否真的走到被验证路径」写成显式前置断言，不满足时以
+    `SKIP（前置条件不满足，非产品缺陷）` 结束并说明如何正确重跑。
+    脚本随机取样本 / 随机取单据的地方，都要问一句：这个随机性会不会让断言失去意义？
 
 验证方法类：
 
@@ -1610,9 +1624,75 @@ R5 前后三次误判根因，共同的障碍是：**agent-core 的日志只在�
 - [ ] **R5-5 AUTO_PASS 基线实测未做**：需构造 20~30 张小样本单据统计自动通过率与 reviewReason 分布。
       依赖**真实 LLM 调用与百度 OCR 配额**（免费版有 QPS 限制），且样本量会显著消耗配额，
       故留待有稳定配额时执行；届时据此决定是否放宽 `confidence<0.7`（决策 5）
-- [ ] R6 起：`GENERIC` 路径也接入自校验（计划已列在 R6-1）
+- [x] R6-1：`GENERIC` 路径已接入自校验与结果分支（见下 R6 记录）
 - [ ] R6/R7：把「JSON 列写入纪律」（禁止 wrapper `set` 写 JSON 列）补进 `AGENTS.md` §5 代码规范，
-      与既有的「批量新增统一 XML」同级（本轮护栏已在单测层面生效，规范层面待补）
+      与既有的「批量新增统一 XML」同级（单测护栏 `JsonColumnTypeHandlerGuardTest` 已生效，
+      对外约定已写入 `docs/architecture/conventions.md` §2.2，`AGENTS.md` 正文待补）
+
+---
+
+### R6 · 结构与契约 —— ✅ 运行时复验通过（**待提交**）
+
+R6 是「结构与契约」阶段：不新增业务能力，而是把前六轮堆出来的结构问题收口，
+让后续（R7 文档、R9 P4 数据源、以及未来的 Nacos 化）有稳定地基。
+
+| 序 | 改动 | 关键点 |
+|---|---|---|
+| R6-1 | **GENERIC 产品化** | `finalizeSuccess` 的 GENERIC 分支改为与报销同规格：先过 `passSelfCheckOrCorrect`，再按 `ReviewFlowDecider` 分支；`NEED_REVIEW` 时同样 `enterApproval` 建工单（`trigger_type` 归 `RISK_HIT`）。差异只保留两点：不做预算占用、报销单回写 no-op |
+| R6-1b | **自校验与角色解耦** | `SelfConsistencyChecker` 原先只在 `agentRole=SCHEDULER` 的步骤上取汇总结论、只扫 SCHEDULER/RISK_AUDITOR 的自由文本；GENERIC 任务的 LLM 步骤 `agentRole` 为 null → 自校验整体空转。现改为「优先 SCHEDULER，无则取 **stepNo 最大的 LLM 步骤**」，自由文本扫全部 LLM 步骤 |
+| R6-2 | **工具租户基准重做** | 新增 `ToolTenantCredential`（权威租户 / 声明租户 / taskId 分离）；HTTP 链路权威租户取网关-JWT 派生上下文（`ToolController.requireAuthTenant` 缺失即拒绝），MQ 链路改用**任务归属反查**（新增 `AgentCoreServiceFeign.findTaskTenantId` → `/internal/audit/tasks/{id}/tenant`，库内事实，与消息声明相互独立） |
+| R6-3 | **工具缓存租户隔离 + 降级** | key 由 `tool:exec:{code}:{hash}` 改为 `tool:exec:{tenantId}:{code}:{hash}`（原写法两个租户同入参会**命中同一条缓存**，属跨租户数据泄漏）；Redis 读/写改为 `cacheGetQuietly`/`cacheSetQuietly`（故障只告警，不阻断工具执行） |
+| R6-4 | **工具出参契约** | `tool_registry` 增 `output_schema`；执行器返回后校验（无 schema 跳过）；注册口新增 Schema 合法性与强度校验（必须 `type=object`，入参还必须有非空 `properties`）；`budget_query` 入参 Schema 由「必填 deptName」改为「deptName/deptId 二选一」（与工具实现、防越权守卫对齐） |
+| R6-5 | **流水线声明化** | 新增 `FlowDefinition` / `FlowStepDefinition` / `StepType`；`RuleBasedFlowEngine` 退化为「持有声明 + 物化」，8 步结构与两条排序约束（票据核验紧跟规则校验、两个 LLM 步骤在末尾）成为可读数据 |
+| R6-6 | **表述澄清** | `AgentRole` 注释与 `task-orchestration.md` 新增 §0：**多 Agent = 单进程内角色化，非跨服务 A2A**（无独立进程/记忆/协商协议；跨进程的只有 TOOL 步骤经 MQ 交 tool-service） |
+| R6-7 | **文档入口** | 补 `common-jwt-starter` / `common-mq-starter` README（此前 8 个 Starter 里唯独这两个缺失）；新增 `docs/architecture/conventions.md`（约定 + 每条的由来与代价）；README 与架构索引补规范入口 |
+
+**验证证据（本机）**
+
+- `mvn -o clean install` 19 模块 BUILD SUCCESS；agent-core **187 例**（+12）、tool-service **45 例**（+20）全绿
+- 新增单测：`FlowDefinitionTest` 5、`AgentOrchestratorFinalizeIsolationTest` 3（GENERIC 三态）、
+  `SelfConsistencyCheckerTest` +4（无角色结论采集）、`ToolAccessGuardTest` 21（重写，含真实可触发的两类不一致 +
+  部门定位二选一）、`ToolExecutionServiceCacheTest` 4、`ToolSchemaContractTest` 8
+
+**运行时复验证据（2026-09-22，迁移 §13~15 已执行 + 两服务重启后）**
+
+| 验证项 | 结果 |
+|---|---|
+| `r6-generic-task-e2e.ps1`（autoPass 场景，taskId=400684） | **9/9 PASS**：`flowBranch=AUTO_PASS`、无工单、任务 SUCCESS、轨迹「自校验执行完成 → 自校验通过，放行收尾」 |
+| `r6-generic-task-e2e.ps1`（needReview 场景，taskId=400685） | **9/9 PASS**：数据含同票号两次付款 → `flowBranch=**NEED_REVIEW**`、**工单 `RISK_HIT`/PENDING 已建**、任务 `APPROVAL_PENDING` ← R6-1 的核心新行为 |
+| `r5-self-check-e2e.ps1`（taskId=400686） | **9/9 PASS**（回归）：`correction_count=1`、重跑确实发生、工单含「自校验未通过」 |
+| `r5-amend-rerun-e2e.ps1`（taskId=400686） | **19/19 PASS / 0 SKIP**（回归）：驳回 → 改金额 → 同单重跑 → 工单复位 PENDING |
+| R6-2 探针：直连 9202 无租户头（带 `X-User-Id` + `tool:execute`） | `400 缺少登录上下文（权威租户不可信），请通过网关携带 JWT 访问` ✅ fail-closed |
+| R6-2 探针：直连 9202 身份头齐全 | `code=0` 正常执行 ✅（顺带证明 `amount_verify` 出参校验在真实路径放行合法出参） |
+| R6-4 探针：经网关只传 `deptId` 调 `budget_query` | **`code=0`**，返回 `deptName=研发部`（由 deptId 反查）——三层契约（工具实现 / 入参 Schema / 防越权守卫）口径一致 |
+| `budget-occupancy-concurrency.ps1` | 7/7 PASS（回归） |
+| `bizno-collision-retry.ps1` | 4/4 PASS（回归） |
+| `r2-audit-timestamp-check.ps1` | 2/2 PASS（回归）：`seen_count 32→33`、`updated_at 00:17:23→00:17:27` |
+
+**联调期发现并修复的第六处契约不一致（R6-4 收尾）**：`budget_query` 的部门定位方式在三个层次里写了两套口径——
+工具实现（`BudgetQueryTool` L53）与入参 Schema 都接受「deptName 或 deptId」，唯有 `ToolAccessGuard.checkDeptOwnership`
+硬性要求 deptName。表现为：调用方按 Schema 只传 deptId 时，报错是 `budget_query 部门不能为空`，
+**从报错里根本看不出自己违反了哪条契约**。已改为「两层都缺才拒绝」，与 Schema 必填口径一致，并补单测
+`budgetQueryAcceptsDeptIdOnly` / `budgetQueryRejectsWhenNeitherDeptNameNorDeptId`。
+
+**⚠️ 交付顺序（必须先迁移再重启）**
+
+`ToolRegistry` 实体新增 `outputSchema` 字段后，**tool_registry 的所有查询都会带上该列**——
+若 DB 里没有 `output_schema` 列，tool-service 会直接报 `Unknown column`。故执行顺序为：
+
+1. 执行 `docs/database/migration-P3.8.sql`（§13 加列、§14 更新 `budget_query` 入参 Schema 与 `amount_verify` 出参 Schema、§15 核对）；
+2. 重启 **tool-service**（9202）与 **agent-core-service**（9201）；
+3. 跑 `docs/test/r6-generic-task-e2e.ps1`（两个场景：默认 autoPass / `-Scenario needReview`）；
+4. 回归 `docs/test/r5-self-check-e2e.ps1`、`docs/test/r5-amend-rerun-e2e.ps1`、`r2-audit-timestamp-check.ps1`。
+
+**待办**
+
+- [x] 迁移 §13~15 已在真实库执行并核对（output_schema 列 / budget_query anyOf / amount_verify 出参 required）
+- [x] 两服务重启后完成 R6 端到端复验 + R5/R2/R1 回归（见上表）
+- [x] R6-4 收尾：`ToolAccessGuard` 部门定位改为「deptName 或 deptId 二者任一」，与工具实现和 Schema 对齐
+- [ ] R6-1 前端「智能分析」页（`views/analysis/create.vue`）：按 §7 后端先行，登记在前端阶段
+- [ ] 把 `ToolTenantCredential` 的租户口径补进 `docs/architecture/tenant-auth.md`（R7-9 文档收口时一并做）
+
 
 
 

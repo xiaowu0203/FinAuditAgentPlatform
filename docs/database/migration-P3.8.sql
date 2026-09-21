@@ -276,3 +276,49 @@ WHERE table_schema = DATABASE() AND table_name = 'agent_task'
   AND COLUMN_NAME IN ('correction_count', 'self_check_result')
 ORDER BY ORDINAL_POSITION;
 
+-- ---------------------------------------------------------------------
+-- 13. tool_registry 增出参 Schema 列（R6-4）
+--     目的：让「工具给错数据」在工具边界就暴露，而不是一路流到 LLM 上下文与结构化问题项里
+--     （R4-7 手工装配丢字段就是这类故障）。列为空表示不校验，兼容存量工具。
+--     ⚠️ 执行顺序：本步必须在【重启 tool-service】之前完成，
+--        否则实体新增字段会让所有 tool_registry 查询报 Unknown column。
+--     幂等：information_schema 判定后动态 DDL（MySQL 5.7 无 ADD COLUMN IF NOT EXISTS）
+-- ---------------------------------------------------------------------
+SET @col_os = (SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_schema = DATABASE() AND table_name = 'tool_registry'
+                  AND column_name = 'output_schema');
+SET @ddl_os = IF(@col_os = 0,
+    'ALTER TABLE tool_registry ADD COLUMN output_schema JSON DEFAULT NULL COMMENT ''出参 JSON Schema（P3.8 R6-4；非空则执行后校验出参形状）'' AFTER input_schema',
+    'SELECT ''output_schema 已存在，跳过'' AS skip_msg');
+PREPARE stmt_os FROM @ddl_os;
+EXECUTE stmt_os;
+DEALLOCATE PREPARE stmt_os;
+
+-- ---------------------------------------------------------------------
+-- 14. 工具契约对称化：budget_query 入参 Schema + amount_verify 出参 Schema（R6-4）
+--     ① budget_query 原先 required 写死 deptName，而工具与防越权守卫都支持 deptId 定位部门，
+--        导致「只传 deptId」的调用被 Schema 直接拦掉（契约与实现不对称）。
+--        改为 required 只保留 claimDate/amount，deptName 与 deptId 用 anyOf 二选一。
+--     ② amount_verify 出参形状由执行器保证（total/claimedTotal/match/diff/message），
+--        补 output_schema 作为可校验样板；未在 properties 里声明的额外字段不禁止
+--        （JSON Schema 默认 additionalProperties=true），避免过度约束后续演进。
+--     幂等：纯 UPDATE，可重复执行。
+-- ---------------------------------------------------------------------
+UPDATE tool_registry
+SET input_schema = '{"type":"object","properties":{"deptName":{"type":"string"},"deptId":{"type":"integer"},"reimbId":{"type":"integer"},"claimDate":{"type":"string"},"amount":{"type":"number"}},"required":["claimDate","amount"],"anyOf":[{"required":["deptName"]},{"required":["deptId"]}]}',
+    description  = '查部门当月剩余预算，返回预算占用与是否超支。入参 deptName 或 deptId（二者任一即可定位部门）+ claimDate（报销日期 YYYY-MM-DD，据此推导预算周期）+ amount（申报金额）。'
+WHERE deleted = 0 AND tool_code = 'budget_query';
+
+UPDATE tool_registry
+SET output_schema = '{"type":"object","properties":{"total":{"type":"number"},"claimedTotal":{"type":"number"},"match":{"type":"boolean"},"diff":{"type":"number"},"message":{"type":"string"}},"required":["total","claimedTotal","match"]}'
+WHERE deleted = 0 AND tool_code = 'amount_verify';
+
+-- ---------------------------------------------------------------------
+-- 15. 核对：出参 Schema 列与两条契约更新已就位
+-- ---------------------------------------------------------------------
+SELECT tool_code, JSON_LENGTH(input_schema) AS in_schema_len,
+       IFNULL(JSON_LENGTH(output_schema), 0) AS out_schema_len
+FROM tool_registry
+WHERE deleted = 0
+ORDER BY id;
+

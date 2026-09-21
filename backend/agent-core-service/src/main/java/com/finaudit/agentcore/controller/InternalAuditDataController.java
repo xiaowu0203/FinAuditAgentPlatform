@@ -1,6 +1,7 @@
 package com.finaudit.agentcore.controller;
 
 import com.finaudit.agentcore.pojo.entity.InvoiceRecord;
+import com.finaudit.agentcore.service.AgentTaskService;
 import com.finaudit.agentcore.service.AttachmentService;
 import com.finaudit.agentcore.service.BudgetService;
 import com.finaudit.agentcore.service.FinanceRuleService;
@@ -57,17 +58,21 @@ public class InternalAuditDataController {
     private final ReimbursementService reimbursementService;
     /** 发票标识符投影 + 票据-明细交叉核验（P3.8 R3） */
     private final InvoiceRecordService invoiceRecordService;
+    /** 任务归属租户查询（P3.8 R6-2 工具防越权） */
+    private final AgentTaskService taskService;
 
     public InternalAuditDataController(AttachmentService attachmentService,
                                        BudgetService budgetService,
                                        FinanceRuleService financeRuleService,
                                        ReimbursementService reimbursementService,
-                                       InvoiceRecordService invoiceRecordService) {
+                                       InvoiceRecordService invoiceRecordService,
+                                       AgentTaskService taskService) {
         this.attachmentService = attachmentService;
         this.budgetService = budgetService;
         this.financeRuleService = financeRuleService;
         this.reimbursementService = reimbursementService;
         this.invoiceRecordService = invoiceRecordService;
+        this.taskService = taskService;
     }
 
     @Operation(summary = "OCR 结果回写（内部）", description = "按 file_record_id 定位附件，回填 ocr_status/file_type/ocr_result")
@@ -124,6 +129,15 @@ public class InternalAuditDataController {
                                      @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
         requireTenant(tenantId);
         return R.success(reimbursementService.findTenantIdByReimb(reimbId));
+    }
+
+    @Operation(summary = "任务归属租户查询（内部）", description = "P3.8 R6-2 工具防越权：返回审核任务所属租户ID，供 tool-service 校验 MQ 消息里的 taskId 是否真属声明租户（独立于消息声明的事实来源）")
+    @GetMapping("/tasks/{taskId}/tenant")
+    public R<Long> findTaskTenantId(@PathVariable("taskId") Long taskId,
+                                    @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+        requireTenant(tenantId);
+        // 数据访问收敛：任务查询经 AgentTaskService，Controller 不触碰 Mapper
+        return R.success(taskService.findTenantIdByTask(taskId));
     }
 
     @Operation(summary = "发票标识符投影查询（内部）", description = "P3.8 R3：返回该报销单已投影的发票（发票代码/号码/税号/金额/开票日期），供 invoice_match 工具做票据-明细交叉核验")

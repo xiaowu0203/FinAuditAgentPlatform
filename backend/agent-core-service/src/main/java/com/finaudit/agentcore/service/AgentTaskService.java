@@ -149,6 +149,21 @@ public class AgentTaskService {
         return task;
     }
 
+    /**
+     * 查询任务归属租户（P3.8 R6-2，工具防越权内部端点）。
+     *
+     * <p>查询经多租户拦截器过滤：调用方携带的 {@code X-Tenant-Id} 即当前租户上下文，
+     * 若 taskId 不属于该租户则查不到 → 返回 null（越权）。这正是它作为
+     * <b>独立事实来源</b>的价值——tool-service 用它校验 MQ 消息里声明的租户是否可信。</p>
+     *
+     * @param taskId 任务 ID
+     * @return 任务租户 ID；任务不存在或不属于当前租户返回 null
+     */
+    public Long findTenantIdByTask(Long taskId) {
+        AgentTask task = taskId == null ? null : taskMapper.selectById(taskId);
+        return task == null ? null : task.getTenantId();
+    }
+
     // ---------- 状态迁移（编排器调用） ----------
     // P3.5d 起状态迁移统一 CAS 化：UPDATE ... WHERE id=? AND status IN (期望态)，
     // 返回 false 表示状态已被并发迁移（多实例部署 / MQ at-least-once 重复投递 / 迟到回调），

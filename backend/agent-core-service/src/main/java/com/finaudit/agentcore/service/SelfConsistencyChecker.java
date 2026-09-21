@@ -56,6 +56,9 @@ public class SelfConsistencyChecker {
     /** 断言总数（用于 SelfCheckResult.checkedCount 的可观测性口径） */
     private static final int ASSERTION_COUNT = 5;
 
+    /** LLM 步骤类型标识（结论与自由文本的采集口径） */
+    private static final String STEP_TYPE_LLM = "LLM";
+
     /**
      * 执行语义自校验。
      *
@@ -68,8 +71,14 @@ public class SelfConsistencyChecker {
         }
         Map<String, Map<String, Object>> toolOutputs = new LinkedHashMap<>();
         Map<String, Object> riskOutput = null;
-        String conclusion = null;
         String llmFreeText = "";
+        // 汇总结论步骤的选取（P3.8 R6-1 起与角色解耦）：
+        // ① 优先 SCHEDULER 角色（报销流水线的「审核结论汇总」步骤）；
+        // ② 若不存在（GENERIC 通用任务由 TaskPlanner 规划，LLM 步骤 agentRole 为 null），
+        //    退化为 stepNo 最大的 LLM 步骤——即流水线的最后一个 LLM 步骤。
+        // 不做这层退化，通用任务的自校验会因拿不到结论而整体空转（autoPassLike 恒真、自由文本为空）。
+        AgentTaskStep schedulerStep = null;
+        AgentTaskStep lastLlmStep = null;
 
         for (AgentTaskStep s : steps) {
             Map<String, Object> out = s.getOutput();
@@ -83,17 +92,23 @@ public class SelfConsistencyChecker {
             if (AgentRole.RISK_AUDITOR.name().equals(s.getAgentRole())) {
                 riskOutput = out;
             }
+            if (!STEP_TYPE_LLM.equalsIgnoreCase(s.getStepType())) {
+                continue;
+            }
+            // 所有 LLM 步骤的自由文本都纳入幻觉核验（summary / riskPoints / 结论都是 LLM 自己写的）
+            llmFreeText = llmFreeText + " " + flatten(out);
             if (AgentRole.SCHEDULER.name().equals(s.getAgentRole())) {
-                Object d = out.get("decision");
-                if (d != null) {
-                    conclusion = d.toString();
-                }
-                llmFreeText = llmFreeText + " " + flatten(out);
+                schedulerStep = s;
             }
-            // 风控步骤的自由文本也纳入幻觉核验（summary/riskPoints 是 LLM 自己写的）
-            if (AgentRole.RISK_AUDITOR.name().equals(s.getAgentRole())) {
-                llmFreeText = llmFreeText + " " + flatten(out);
+            if (lastLlmStep == null || stepNoOf(s) >= stepNoOf(lastLlmStep)) {
+                lastLlmStep = s;
             }
+        }
+        AgentTaskStep conclusionStep = schedulerStep != null ? schedulerStep : lastLlmStep;
+        String conclusion = null;
+        if (conclusionStep != null && conclusionStep.getOutput() != null) {
+            Object d = conclusionStep.getOutput().get("decision");
+            conclusion = d == null ? null : d.toString();
         }
 
         List<SelfCheckResult.Contradiction> hits = new ArrayList<>();
@@ -257,6 +272,11 @@ public class SelfConsistencyChecker {
 
     private static String str(Object v) {
         return v == null ? null : v.toString();
+    }
+
+    /** 步骤号（可空时按 -1 处理，用于选取「最后一个 LLM 步骤」而不依赖入参顺序） */
+    private static int stepNoOf(AgentTaskStep s) {
+        return s.getStepNo() == null ? -1 : s.getStepNo();
     }
 
     private static BigDecimal decimal(Object v) {

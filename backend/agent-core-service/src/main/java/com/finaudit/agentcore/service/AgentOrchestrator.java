@@ -789,6 +789,27 @@ public class AgentOrchestrator {
             return;
         }
 
+        // ---- P3.8 R6-1：GENERIC 产品化——通用分析任务同样走「自校验 → 结果分支」，
+        //      命中高风险（LLM 结论非通过 / 自校验矛盾）时同样建审批工单。
+        //      改造前 GENERIC 是「遗留调试通道」：收尾直接 markSuccess，既不过自校验也不建单，
+        //      于是 LLM 给出 REJECT/存疑结论时任务照样"成功"，风险无人接手。
+        //
+        //      与 REIMBURSEMENT 分支的差异只有两点：① 不做预算占用（通用任务无部门预算语义）；
+        //      ② 报销单状态回写是 no-op（syncReimbStatus 内部按 taskType 短路）。
+        if (!passSelfCheckOrCorrect(task, steps, result)) {
+            return;
+        }
+        FlowDecision genericDecision = reviewFlowDecider.decide(steps);
+        result.put("flowBranch", genericDecision.flowBranch());
+        result.put("reviewReasons", genericDecision.reviewReasons());
+        result.put("reviewFindings", genericDecision.findings());
+        if (FlowDecision.NEED_REVIEW.equals(genericDecision.flowBranch())) {
+            auditTicketService.enterApproval(task, result, steps.size(),
+                    genericDecision.reviewReasons(), genericDecision.findings());
+            log.info("通用任务 {} 命中人工复核分支，原因: {}", task.getTaskNo(), genericDecision.reviewReasons());
+            return;
+        }
+
         // CAS 更新任务为成功（GENERIC）
         if (!taskService.markSuccess(task, result, steps.size())) {
             log.warn("任务 {} 收尾竞争失败（状态已被并发迁移），放弃收尾", task.getId());
@@ -796,6 +817,7 @@ public class AgentOrchestrator {
         }
         log.info("任务 {} 执行成功，共 {} 步", task.getTaskNo(), steps.size());
         // 报销单状态回写：按 LLM 汇总决策细化（REJECT→FAILED、NEED_INFO→MANUAL_REVIEW，其余→SUCCESS）
+        // 注：GENERIC 任务无关联报销单，syncReimbStatus 内部按 taskType 短路
         syncReimbStatus(task, resolveSuccessStatus(extractDecision(steps)));
     }
 
