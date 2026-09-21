@@ -136,7 +136,7 @@
 | D-10 | `docs/api/tool-service.md:35-43` | 未提 `tool:manage`/`tool:execute` 权限码；注册请求示例未含 `scenario/cacheable` |
 | D-11 | `docs/planning/P3.5-execution-plan.md` §5 R3 | 复选框**未勾选**，但 R3（管理前端 + 动态渲染）实际已落地（`views/system/{user,role,dept}.vue` + `v-perm` + `meta.perm` 均存在） |
 | D-12 | `docs/api/rag-service.md` | 未说明"经网关不可达"（路由表无 9204） |
-| D-13 | `common-ocr-starter/README.md:27,41` | 把死配置 `baidu.timeout-ms` 当作生效配置 |
+| D-13 | `common-ocr-starter/README.md:27,41` | ~~把死配置 `baidu.timeout-ms` 当作生效配置~~ → **本登记项已随 R0-1 解决**（`3114b60` 已同 commit 修好代码与 README）。R7 复核仅剩两处措辞不精确（"真实生效"→ 标注为 R0-1 接线、"P3.8 修正"→ 修正编号），已补；并补记「token 获取与识别共用同一 RestClient，故同样受该超时约束」 |
 | D-14 | `common-model-starter/README.md`、`ChatClientFactory.java:7` | 陈旧 TODO（"接入 Spring AI"已完成）；`ToolServiceApplication.java:9` 停留在 P1 单工具时代 |
 | D-15 | 仓库根 | `AGENTS.md`/`CLAUDE.md` 被 gitignore → **开源仓库无规格说明**；`rag-service/target/surefire-reports` 残留三个已删除测试报告 |
 | D-16 | `docs/deploy/README.md`、`docs/test/README.md` | 仍是"待补充"；`docker-compose.yml` 只挂全量 schema，**增量迁移脚本 `migration-*.sql` 在部署文档里没有执行说明** |
@@ -569,7 +569,56 @@
 | R6-6 | 多 Agent 表述澄清：**「进程内角色化，非跨服务 A2A」** | `AgentRole.java` 注释、`docs/architecture/task-orchestration.md` §0 | 文档口径统一，避免夸大表述 |
 | R6-7 | 补 `common-jwt-starter` / `common-mq-starter` README；新增 `docs/architecture/conventions.md`；README 与架构索引补规范入口 | 两个 Starter README、`docs/architecture/conventions.md`、`README.md`、`docs/architecture/README.md` | 贡献者从 README 一步可达约定正文 |
 
-### R7 · 一致性与文档收口（P1-7 ~ P1-14、全部 D 类）
+### R7 · 一致性与文档收口（P1-7 ~ P1-14、全部 D 类）—— 🔶 代码完成，文档同步进行中
+
+
+**代码侧（R7-1 ~ R7-8 + 补做 P1-14）**
+
+| 序 | 改动 | 关键点 |
+|---|---|---|
+| R7-1 | 环境变量凭据取消回退默认值 | 各服务 `application.yml` 的 `NACOS_USERNAME/PASSWORD`、`RABBITMQ_USERNAME/PASSWORD`、`MINIO_ACCESS_KEY/SECRET_KEY` 共 30 处去掉 `:nacos`/`:guest`/`:minioadmin` 回退 → **缺失即启动失败**；地址/端口类（HOST/PORT/ENDPOINT）保留本地拓扑缺省（非凭据、固定值）。`.env.example` 重写：统一 RabbitMQ 口径（旧版 yml 回退 `guest/guest` 与 `.env.example` 的 `admin/admin123456` 相互矛盾，是登记在案的漂移），逐项标注「必填」并说明 Spring Boot 不读 `.env`（需 IDE EnvFile 插件或容器注入） |
+| R7-2 | 角色绑定校验 + 批量去重 | `SysUserService.validateRoleOwnership`：绑定/创建用户时校验 roleId 均属当前租户（经 `SysRoleService.getByIds` + 多租户拦截器，数量不符即拒），堵住「本租户用户 → 他租户角色」的越权映射行；`SysUserRoleService.replaceRoles` 入参 `distinct()`，避免重复 roleId 撞 `uk(user_id, role_id)` 把正常输入升级成 500 |
+| R7-3 | Feign 全局超时 | 新增 `FeignTimeoutProperties`（前缀 `finaudit.feign`，缺省 建连 3s / 读 10s）与 `Request.Options` Bean。此前全后端无任何 Feign 超时配置 → 用框架缺省 **读超时 60 秒**：对端假死会把调用方线程占满一分钟，在 agent-core 上连带拖停 MQ 消费线程与任务推进，表现为「任务长期 RUNNING、无错误日志」 |
+| R7-4 | 任务可见性 null 修复 + 形参改名 | `requireVisible`：`userId == null` 时不再 NPE（原先 `userId.equals(...)` → 500），按「无法证明是本人 → 拒绝」返回 403 业务语义；形参 `finance` → `viewAll`（判定依据是权限码 `task:viewAll`，按角色命名会把权限语义与角色焊死） |
+| R7-5 | 部门写操作事务 + 出参 VO + 实体转换 | `SysDeptService.create/update/delete` 加 `@Transactional`；`SysDept` 新增 `from(request, tenantId, parentId)` / `apply(request)` 与 `STATUS_ENABLED` 常量（此前 create 在 Service 里手写 set 组装实体，违反「转换封装在实体类」约定）；`SysDeptController` 出参改 `DeptVO`（原先直接回实体，会把 `tenantId/deleted/createdAt` 等内部字段暴露给前端）；字段合并（apply）与校验（查库做唯一性/防环）职责分到实体与 Service 两侧 |
+| R7-6 | 上传大小校验（后端侧） | `FileService.upload` 增加 20MB 应用层校验并给出可读提示（容器层 `max-file-size: 20MB` 抛的是 `MaxUploadSizeExceededException` → 500，前端只能看到"上传失败"）；三处口径（前端文案 / yml / 常量）对齐。**前端 `before-upload` 按 §7 只登记，前端阶段实施** |
+| R7-7 | 删死代码 + 登记删除接口 TODO | 删除 `FileService.validateAllOwned`（全仓无调用者且自身缺归属校验；附件归属校验已由 `AttachmentService.rebindForReimb` + file-service 内聚合承担）；`FileController` 末尾登记「文件删除/回收接口」TODO，并写清实现前必须先定的三件事（语义是物理删还是回收站 / 权限口径 / 跨服务引用完整性） |
+| R7-8 | MQ 发送与消费的可靠性可观测 | 两服务 yml 增 `publisher-confirm-type: correlated` + `publisher-returns: true` + `listener.simple.retry`（3 次、指数退避 1s→2s→4s、上限 10s）；`CommonMqAutoConfiguration` 增 `RabbitTemplateCustomizer`（nack / mandatory return 打 ERROR）与 DLQ 告警消费者 `DlqAlertConsumer`（此前 DLQ **无任何消费者**，消息进 DLQ 即掉进黑洞，只能靠人工翻管理台；现打印 `x-death` 死亡原因 + 截断 body）。⚠️ 已知取舍：消费者会 ACK 移除 DLQ 消息，日志非持久化存储，生产应改用 Shovel/独立死信库或接告警通道（已登记 P4/B-8） |
+| **补做** | **P1-14（原计划未落到任何 R 项，属 R7 范围漏项）** | ① `/actuator/info` 口径澄清：yml 注释与代码不一致（注释称"health/info 做存活探测"，白名单实际只放行 `health`）→ 保留更严行为、修正注释；② 删除网关白名单中 `swagger-ui/**`、`swagger-ui.html`、`v3/api-docs/**`、`webjars/**` 四条**死分支**（网关既无 springdoc 依赖也无对应路由谓词，永远匹配不到，留着只会让人误以为网关对外暴露了接口文档；各服务 Swagger 直连服务端口） |
+
+**R7-9 / R7-10（文档与仓库收口，D-1 ~ D-16 全量同步）**
+
+| 项 | 结果 |
+|---|---|
+| D-1/2/3/10 `docs/api/tool-service.md` | 三个工具结果形状改为**代码真实形状**（`ocr_extract` 字段在 `receipts[].fields`；`duplicate_check` 的 `suspected` 是布尔、清单在 `duplicates[]`、权威分级看 `dupLevel`；`budget_query` **未配置时无 `remaining`**）；补齐 `tool:manage`/`tool:execute` 权限码与注册请求的 `scenario`/`cacheable`/`outputSchema`；新增「工具执行链五道关卡」章 |
+| D-4 `docs/api/README.md` | 新增「错误语义」节：**业务错误恒 HTTP 200 + body.code**，并如实区分三个非 200 例外（网关 401 / 权限拦截器 403 / 容器层不保证 `R<T>`） |
+| D-5 `docs/api/tenant-service.md` | 补 3 个已实现端点（`GET /permissions`、`GET\|PUT /roles/{id}/permissions`）、登录响应 `perms`（示例即 admin 的 24 项真实权限码）、`deptId`/`deptName`、各章权限码清单 |
+| D-6 `docs/api/file-service.md` | 新增 P3.5c 归属校验专章（用户侧 `requireReadable` vs 内部侧仅租户隔离）；纠正批量语义（对外批量端点已随 R0-3 移除）；讲清 `Content-Disposition` 在**预签名 URL 的查询参数**里、由 SDK 生成 |
+| D-7/D-8 `docs/architecture/task-orchestration.md` | 补工具级 8 步顺序（显式标注 `amount_verify` 在 `rule_check` 之前）；工具执行链补**入参/出参 Schema 校验与四道防越权守卫**；审批动作表述改为 `@RequirePerm("audit:approve")` + JWT 权限快照（删净「X-User-Roles 含 admin/auditor」） |
+| D-9 `docs/architecture/tenant-auth.md` | 忽略表补 `sys_permission`；登录改写为 P3.5d 的 10 步顺序（密码优先、禁用后置）；补 `perms` |
+| D-11 `docs/planning/P3.5-execution-plan.md` | §5 R3 按实际勾选（附行号依据）；「联调验收」**有意不勾**并说明理由；如实标注「部门选择器实现为 el-select + 扁平化树选项，非原文的 el-tree-select」 |
+| D-12 `docs/api/rag-service.md`（+`gateway.md` 补注） | 新增「经网关不可达」章（路由表无 9204 + `discovery.locator.enabled:false`）；给出「P4 新增接口必须同时补网关路由」的硬要求 |
+| D-13 | **登记项本身已随 R0-1 解决**（见 §3 表格标注）；R7 复核仅修两处措辞并补记 token 请求同受超时约束 |
+| D-14 | `common-model-starter/README.md` + 两处 Javadoc 注释（`ChatClientFactory`、`ToolServiceApplication`）：删陈旧 TODO，改为当前事实，并**如实标注**「仅注册 DeepSeek + `fallback-type` 缺省 null ⇒ 备用模型切换默认不生效」 |
+| D-15 | 修掉指向**不入库**文件的死引用（README「目录结构见 CLAUDE.md」、`conventions.md` 头部「正文在 AGENTS.md」），明确「对克隆本仓的贡献者，`conventions.md` 就是规范正文」；未改 `.gitignore`、未把 `AGENTS.md`/`CLAUDE.md` 入库（维持 `6502641` 决策） |
+| D-16 `docs/deploy/README.md` | 从 3 行占位补成 8 节完整文档：`.env` 准备（含 R7-1 的 fail-fast 语义与完整变量清单、「Spring Boot 不读 .env」专节）、Nacos 初始化、**增量迁移执行顺序 + 逐脚本幂等性表**（如实标注 `migration-P3a/P3b.sql` 内含「仅可执行一次」的 ALTER，重跑报 Duplicate column）、启动顺序与端口、8 项故障排查（含 `Could not resolve placeholder 'NACOS_PASSWORD'` 的两种查法） |
+| D-16 `docs/test/README.md` | 从 3 行占位补成 7 节：10 个脚本逐个清单（覆盖/判据/退出码）、参数用法、**UTF-8 BOM 专章**（含 `EF BB BF` 复核与 Parser 语法自检）、配额成本注意、**评估用例模板**（供 P4 量化评估） |
+| R7-10 仓库清理 | `backend/rag-service/target` 构建残留已清理（`target/` 本就未入库，`.gitignore` 有 `backend/**/target/`） |
+
+**R7-9 复核中额外发现并修复的两处「代码内」不一致**（原不在 D 项范围，属本阶段一致性收口）：
+1. `AgentRole.RULE_VALIDATOR` 声明工具集漏了 `invoice_match`，而 `FlowDefinition` 把该步骤绑给 RULE_VALIDATOR
+   → 已补齐为 `{rule_check, amount_verify, invoice_match}`；
+2. `BaiduOcrService` 注释称其超时做法与 `OcrExtractTool`「同款」，实际口径不同（前者 connect/read 同值，
+   后者 connect 10s / read 60s）→ 已改写注释说明差异与各自理由。
+
+⚠️ **遗留（不在 R7 范围，登记待 R9/后续）**：`docs/database/README.md` 仍是 3 行占位
+（迁移顺序说明已落在 `docs/deploy/README.md`）。
+
+**本机验证**：`mvn -o clean install` 19 模块 BUILD SUCCESS；tenant-service 25 例（含新增 `SysUserRoleServiceTest` 5 例）、
+agent-core 192 例（含新增 `AgentTaskVisibilityTest` 5 例）、tool-service 45 例全绿。
+⚠️ **R7-1 的启动行为需用户复验**：凭据环境变量缺失时服务应启动失败（用户 `.env` 已含全部凭据键，故预期可直接启动成功）。
+
+
 
 | 序 | 动作 |
 |---|---|
@@ -726,11 +775,12 @@
 | **R4a** 结构化 findings | ✅ 完成并推送 | `1a9375b` | `ReviewFinding` + `review_findings` 列；含 R4-7 传输层字段丢失 |
 | **R5** 语义自校验与自主纠错 | ✅ 运行时复验通过（**未提交**） | — | 5 条一致性断言 + 矛盾重跑风控；含 R5-6/R5-8/R5-9/R5-10/R5-11 五个联调缺陷（**R5-9 为真正根因：JSON 列写入方式错误**），端到端脚本 9/9 PASS |
 | **R6** 结构与契约 | ✅ 运行时复验通过（**未提交**） | — | GENERIC 产品化（自校验 + 高风险建单）/ 工具租户基准重做 / 缓存租户隔离 / 出参 Schema / 声明式流水线 / 多 Agent 口径澄清 / conventions.md + 两个 Starter README |
+| **R7** 一致性与文档收口 | 🔶 代码完成，文档同步进行中（**未提交**） | — | 凭据取消回退默认值(fail-fast) / 角色归属校验+批量去重 / Feign 全局超时 / 可见性 null 修复 / 部门事务+VO+实体转换 / 上传大小校验 / 删死代码 / MQ confirm+DLQ 告警+退避重试；**补做 P1-14（计划漏项）** |
 | R4-4 / R4-5 前端展示 | ⏸ 延后（§7 后端先行） | — | 待修正项清单、编辑页标红预填 |
 | R6-1 前端「智能分析」页 | ⏸ 延后（§7 后端先行） | — | 后端已就绪：`POST /api/v1/tasks` + GENERIC 收尾/自校验/建单 |
 | R4-6 提交幂等 | ⏸ 移出 R4 | — | 幂等键由前端生成，与前端阶段一起做才可验证 |
 | R5-5 AUTO_PASS 基线实测 | ⬜ 未做 | — | 依赖真实 LLM 与 OCR 配额，留待配额稳定时执行 |
-| R6 ~ R9 | R6 🔶 后端主体完成，R7~R9 ⬜ | — | 见 §5 |
+| R6 ~ R9 | R6 ✅ / R7 🔶（代码完成） / R8~R9 ⬜ | — | 见 §5 |
 
 **当前验证基线**：`mvn -o clean install` 19 模块 BUILD SUCCESS；agent-core **187 例**、tool-service **45 例**、
 common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudit` 共 **21 张表**

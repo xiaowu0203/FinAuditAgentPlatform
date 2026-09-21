@@ -3,8 +3,12 @@ package com.finaudit.starter.model.client;
 import com.finaudit.starter.model.ModelType;
 
 /**
- * 模型工厂：统一管理密钥、Token 统计、故障自动切换备用模型。
- * <p>TODO(P1): 接入 Spring AI，实现各模型实现 + 调用统计 + 切换策略。</p>
+ * 模型工厂：按类型提供模型客户端，统一 Token 统计与故障自动切换备用模型。
+ * <p>实现 {@link DefaultChatClientFactory}：客户端由 Spring AI 实现（{@code OpenAiChatModel} 等，
+ * 见 {@link DeepSeekAiClient}），调用经 {@code TrackingAiClient} 包装，主模型抛异常时按
+ * {@code finaudit.model.fallback-type} 切换备用模型。</p>
+ * <p>已知限制：当前仅注册 DeepSeek 一个实现，而 {@code fallback-type} 缺省为 null，
+ * 故备用模型切换分支默认不会生效，待补齐 Qwen/Claude 实现并显式配置后启用。</p>
  */
 public interface ChatClientFactory {
 

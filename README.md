@@ -132,15 +132,19 @@ cd frontend && npm install && npm run dev   # http://localhost:5173
 
 种子账号：`admin / admin123`（租户 `default`，角色 `admin`）。
 
-> 详细环境说明见 `docs/deploy/`，接口文档见 `docs/api/`，架构见 `docs/architecture/`，分期规划见 `docs/planning/`。
+> 详细环境说明见 [`docs/deploy/`](docs/deploy/README.md)（含 `.env` 必填项、Nacos 初始化、数据库初始化与**增量迁移脚本执行顺序**、启动顺序、故障排查），
+> 接口文档见 [`docs/api/`](docs/api/README.md)（含统一 `R<T>` 与错误语义），架构见 [`docs/architecture/`](docs/architecture/README.md)，验收脚本见 [`docs/test/`](docs/test/README.md)，分期规划见 [`docs/planning/`](docs/planning/)。
 >
-> **贡献者先读**：工程硬性约定见 [`AGENTS.md`](./AGENTS.md)（强制规范正文）与
-> [`docs/architecture/conventions.md`](./docs/architecture/conventions.md)（约定入口 + 每条约定的由来与代价，含
-> 「JSON 列写法」「多租户权威租户来源」「兜底必须落库」「验收纪律」四类必须记住的坑）。
+> **贡献者先读**：工程约定入口是 **[`docs/architecture/conventions.md`](docs/architecture/conventions.md)**
+> ——对外公开的规范正文，逐条说明约定与其代价（分层与依赖、JSON 列写法、多租户权威租户来源、兜底必须落库、验收纪律、提交与分支、「多 Agent」表述口径）。
+> 仓库内另有一份更细的本地强制规范 `AGENTS.md` / `CLAUDE.md`，**按设计不入版本库**（`6502641` 的决策：本地工具文件不对外发布），
+> 其可公开部分已全部收敛进 `conventions.md`；克隆者只需读 `conventions.md` 即可对齐规范，无需这两个文件。
 
 ## 目录结构
 
-见 `CLAUDE.md` 第 4 节。
+完整目录树与各模块职责见 [`docs/architecture/README.md`](docs/architecture/README.md)；
+后端为多模块 Maven 工程：`agent-gateway`（网关）+ `tenant-service` / `agent-core-service` / `tool-service` /
+`rag-service` / `file-service` + `common/*` 自定义 Starter，前端在 `frontend/`，文档在 `docs/`。
 
 ## 开源协议
 

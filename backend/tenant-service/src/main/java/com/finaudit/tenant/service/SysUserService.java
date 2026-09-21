@@ -21,6 +21,7 @@ import org.springframework.util.StringUtils;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 用户服务：用户实体（sys_user）的所有查询与更新均收敛于此。
@@ -85,6 +86,8 @@ public class SysUserService {
 
         // 若用户角色不为空，则直接进行绑定
         if (request.roleIds() != null) {
+            // 校验角色归属（P3.8 R7-2）：与 assignRoles 同一道闸，防创建时越权绑定
+            validateRoleOwnership(request.roleIds());
             // 绑定角色
             userRoleService.replaceRoles(user.getId(), tenantId, request.roleIds());
         }
@@ -148,10 +151,36 @@ public class SysUserService {
     public void assignRoles(Long id, Long tenantId, List<Long> roleIds) {
         // 校验账户是否存在
         getRequired(id);
+        // 校验角色归属（P3.8 R7-2）：跨租户/不存在的 roleId 一律拒绝，防越权绑定
+        validateRoleOwnership(roleIds);
         // 更新用户角色
         userRoleService.replaceRoles(id, tenantId, roleIds);
         // 角色绑定变更 → 事务提交后刷新权限快照（在线用户无需重登即生效）
         eventPublisher.publishEvent(new UserAuthChangedEvent(id));
+    }
+
+    /**
+     * 校验待绑定角色均属于当前租户（P3.8 R7-2）。
+     *
+     * <p><b>为什么必须校验</b>：{@code sys_user_role} 只在 {@code tenant_id} 上随上下文过滤，
+     * 而 {@code role_id} 是调用方直接给的。此前不校验时，只要请求体里塞入他租户的 roleId，
+     * 就能建出「本租户用户 → 他租户角色」的映射行：该行在本租户查不到角色名（列表里显示异常），
+     * 但一旦后续有按 role_id 直接授权的逻辑，就会变成越权入口。</p>
+     *
+     * <p>实现上依赖多租户拦截器：{@link SysRoleService#getByIds} 自动加 {@code tenant_id} 条件，
+     * 故「查回数量 ≠ 去重后请求数量」即代表存在不属于当前租户或不存在的角色。</p>
+     */
+    private void validateRoleOwnership(List<Long> roleIds) {
+        if (roleIds == null || roleIds.isEmpty()) {
+            return;
+        }
+        List<Long> distinct = roleIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinct.isEmpty()) {
+            return;
+        }
+        if (roleService.getByIds(distinct).size() != distinct.size()) {
+            throw new BizException("存在无效或不属于当前租户的角色，请刷新后重试");
+        }
     }
 
     /**

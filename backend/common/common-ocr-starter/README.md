@@ -24,14 +24,16 @@ finaudit:
     baidu:
       api-key: ${FINAUDIT_OCR_BAIDU_API_KEY}        # 百度智能云 AK
       secret-key: ${FINAUDIT_OCR_BAIDU_SECRET_KEY}  # SK
-      # timeout-ms: 10000                           # 单次识别超时（连接/读取均取该值），缺省 10s；真实生效
+      # timeout-ms: 10000                           # 单次识别超时（连接/读取均取该值），缺省 10s；R0-1 已接线生效
 ```
 
 > 凭据一律经环境变量注入（CLAUDE.md §6），禁止硬编码。
 
-**超时语义（P3.8 修正）**：`baidu.timeout-ms` 同时作为 **connect 与 read 超时**（`SimpleClientHttpRequestFactory`）。
+**超时语义（P3.8 修复 · R0-1）**：`baidu.timeout-ms` 同时作为 **connect 与 read 超时**（`SimpleClientHttpRequestFactory`），
+识别请求与 `access_token` 请求共用同一 `RestClient`，故 token 获取亦受该超时约束。
 此前该配置被读入却从未接到 `RestClient` 上——**名为生效实为死配置**，一次网络挂起即可无限期占住
-tool-service 的 TOOL 消费线程（`concurrency=1`），冻结全部任务推进。现已接线，并补「配置非正数回退 10s」兜底。
+tool-service 的 TOOL 消费线程（`concurrency=1`），冻结全部任务推进。现已接线，并补「配置非正数回退 10s」兜底
+（回退值与 `OcrProperties.Baidu.timeoutMs` 默认值同源）。
 
 **启动自检**：引入本 starter 即代表工程需要使用 OCR，`CommonOcrAutoConfiguration` 启动时校验
 `api-key / secret-key`，缺失直接启动失败并给出明确提示（配置位置 + 环境变量名），不静默跳过——业务工程无需自行校验。

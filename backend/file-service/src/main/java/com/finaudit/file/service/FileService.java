@@ -34,6 +34,12 @@ public class FileService {
     /** 对象存储Key 月份目录格式化器，格式：yyyyMM */
     private static final DateTimeFormatter OBJ_MONTH_FMT = DateTimeFormatter.ofPattern("yyyyMM");
 
+    /** 上传大小上限（MB），与前端文案、yml 的 {@code spring.servlet.multipart.max-file-size} 三处保持一致 */
+    private static final int MAX_UPLOAD_MB = 20;
+
+    /** 上传大小上限（字节），避免每次上传都做乘法 */
+    private static final long MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024L * 1024L;
+
     /** 文件后缀 -> HTTP Content-Type 兜底映射，未匹配后缀使用二进制流类型 */
     private static final Map<String, String> EXT_CONTENT_TYPES = Map.ofEntries(
             Map.entry("png", "image/png"),
@@ -69,6 +75,16 @@ public class FileService {
     public FileVO upload(MultipartFile file, Long tenantId, Long createdBy) {
         if (file == null || file.isEmpty()) {
             throw new BizException("上传文件为空");
+        }
+        // P3.8 R7-6：应用层大小校验。
+        // 容器层（spring.servlet.multipart.max-file-size: 20MB）已能拦住超限请求，
+        // 且 file-service 对 MaxUploadSizeExceededException 有专用处理器
+        // （FileExceptionHandler → HTTP 200 + code=400「文件大小超出限制」，实现时已实测确认）。
+        // 这里再校验一次的价值是「错误信息更可用」：带上实际大小与上限（"不能超过 20MB（当前 22MB）"），
+        // 且能覆盖 max-request-size 与单文件上限的边界差异，并在读流之前就失败。
+        if (file.getSize() > MAX_UPLOAD_BYTES) {
+            throw new BizException("文件大小不能超过 " + MAX_UPLOAD_MB + "MB（当前 "
+                    + (file.getSize() / 1024 / 1024) + "MB）");
         }
         // 清洗原始文件名，防止路径穿越攻击
         String originalFilename = sanitizeFileName(file.getOriginalFilename());
@@ -192,24 +208,6 @@ public class FileService {
     public String presignDownloadForInternal(Long id) {
         FileRecord record = getRequiredForInternal(id);
         return presignDownloadUrl(record);
-    }
-
-    /**
-     * 批量校验附件ID合法性
-     * 提交报销单前置校验：全部文件必须存在且属于当前登录租户
-     * @param ids 前端传入附件ID列表
-     * @throws BizException 存在不存在/不属于当前租户的文件则报错
-     */
-    public void validateAllOwned(List<Long> ids) {
-        List<Long> distinct = ids.stream().distinct().toList();
-        if (distinct.isEmpty()) {
-            throw new BizException("文件不存在或不属于当前租户");
-        }
-        List<FileRecord> found = fileRecordMapper.selectList(new LambdaQueryWrapper<FileRecord>()
-                .in(FileRecord::getId, distinct));
-        if (found.size() != distinct.size()) {
-            throw new BizException("文件不存在或不属于当前租户");
-        }
     }
 
     /**

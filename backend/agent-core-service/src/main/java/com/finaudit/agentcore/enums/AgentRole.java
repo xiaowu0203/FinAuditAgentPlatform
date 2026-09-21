@@ -34,8 +34,8 @@ public enum AgentRole {
     /** 预算核算：budget_query */
     BUDGET_CALCULATOR("预算核算", Set.of("budget_query"), ""),
 
-    /** 规则校验：rule_check + amount_verify */
-    RULE_VALIDATOR("规则校验", Set.of("rule_check", "amount_verify"), ""),
+    /** 规则校验：amount_verify + rule_check + invoice_match（R7 对齐：invoice_match 也绑给本角色） */
+    RULE_VALIDATOR("规则校验", Set.of("rule_check", "amount_verify", "invoice_match"), ""),
 
     /** 风控审计：duplicate_check + 存疑语义判断 LLM 步骤 */
     RISK_AUDITOR("风控审计", Set.of("duplicate_check"), """

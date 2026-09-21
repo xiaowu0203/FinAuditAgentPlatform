@@ -65,4 +65,17 @@ public class FileController {
     public R<String> download(@PathVariable Long id) {
         return R.success(fileService.presignDownload(id));
     }
+
+    // ------------------------------------------------------------------
+    // TODO（P3.8 R7-7 登记，本轮不实现）：文件删除/回收接口
+    //
+    // 现状：附件与单据的"解绑"由 agent-core 侧 `expense_attachment.reimb_id` 置 NULL 完成
+    // （见 AttachmentService.unbindByReimb），file-service 侧**没有**删除端点，
+    // 于是对象存储里的文件与 file_record 行会随撤销/退回不断累积，只能靠人工清理。
+    //
+    // 实现前必须先定清三件事（否则极易做成"删了记录但对象还在"或"删了对象但历史单据打不开"）：
+    // 1) 语义：是物理删除对象+记录，还是置回收站标记（历史审批留痕是否还要求附件可回溯）；
+    // 2) 权限：仅上传人本人 / 还是 reimb:viewAll 也可（与现有读权限口径一致）；
+    // 3) 引用完整性：被任何未作废单据引用时一律拒绝删除，且要跨服务校验（agent-core 持有引用关系）。
+    // ------------------------------------------------------------------
 }

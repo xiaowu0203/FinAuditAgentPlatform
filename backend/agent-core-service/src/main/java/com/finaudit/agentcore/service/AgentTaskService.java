@@ -77,39 +77,39 @@ public class AgentTaskService {
     }
 
     /**
-     * 任务详情（P3b 可见性统一）：非财务角色仅本人可查。
+     * 任务详情（P3b 可见性统一）：无 task:viewAll 权限者仅本人可查。
      */
-    public TaskVO getTask(Long taskId, Long userId, boolean finance) {
+    public TaskVO getTask(Long taskId, Long userId, boolean viewAll) {
         // 校验任务是否存在，不存在时抛出异常
         AgentTask task = getRequired(taskId);
-        // 校验任务读可见（非财务角色仅本人创建，createdBy 为空的旧任务仅财务可见）
-        requireVisible(task, userId, finance);
+        // 校验任务读可见（无全量权限者仅本人创建，createdBy 为空的旧任务仅全量可见者可见）
+        requireVisible(task, userId, viewAll);
         return TaskVO.from(task);
     }
 
     /**
-     * 任务步骤列表（P3b 可见性统一）：非财务角色仅本人任务可查。
+     * 任务步骤列表（P3b 可见性统一）：无 task:viewAll 权限者仅本人任务可查。
      * <p>可见性校验 + 步骤查询合并为一次委托，避免 Controller 串联两个 Service；
      * 步骤数据经 {@link AgentTaskStepService#listVoByTask} 查询，本类不直接触碰步骤 Mapper。</p>
      */
-    public List<StepVO> listSteps(Long taskId, Long userId, boolean finance) {
-        // 校验任务读可见（非财务角色仅本人创建，createdBy 为空的旧任务仅财务可见）
-        requireVisible(taskId, userId, finance);
+    public List<StepVO> listSteps(Long taskId, Long userId, boolean viewAll) {
+        // 校验任务读可见（无全量权限者仅本人创建，createdBy 为空的旧任务仅全量可见者可见）
+        requireVisible(taskId, userId, viewAll);
         // 根据任务ID查询步骤VO列表
         return stepService.listVoByTask(taskId);
     }
 
     /**
-     * 任务分页查询（P3b 可见性统一）：status 为空查全部；非财务角色仅本人创建，finance 看本租户全量。
+     * 任务分页查询（P3b 可见性统一）：status 为空查全部；无 task:viewAll 权限者仅本人创建，有权限者看本租户全量。
      */
-    public Page<TaskVO> pageTask(int pageNum, int pageSize, String status, Long userId, boolean finance) {
+    public Page<TaskVO> pageTask(int pageNum, int pageSize, String status, Long userId, boolean viewAll) {
         LambdaQueryWrapper<AgentTask> wrapper = new LambdaQueryWrapper<AgentTask>()
                 .orderByDesc(AgentTask::getId);
         if (status != null && !status.isBlank()) {
             wrapper.eq(AgentTask::getStatus, status);
         }
-        // 若非财务角色，则只能查看自己的数据
-        if (!finance) {
+        // 若无全量查看权限，则只能查看自己的数据
+        if (!viewAll) {
             wrapper.eq(AgentTask::getCreatedBy, userId);
         }
         Page<AgentTask> page = taskMapper.selectPage(new Page<>(pageNum, pageSize), wrapper);
@@ -119,21 +119,37 @@ public class AgentTaskService {
     }
 
     /**
-     * 校验任务读可见（P3b 可见性统一）：非财务角色仅本人创建，createdBy 为空的旧任务仅财务可见。
-     * 供详情/步骤等只读接口复用，避免先取 VO 再抛异常的重复查询。
+     * 校验任务读可见（P3b 可见性统一）。
+     * <p>参数名刻意用 {@code viewAll} 而非 {@code finance}：判定依据是<b>权限码 {@code task:viewAll}</b>
+     * （Controller 传 {@code UserContextHolder.hasPerm("task:viewAll")}），
+     * 而"是不是财务角色"只是它当前的一种来源——按角色命名会把权限语义与角色绑定焊死。</p>
+     *
+     * @param taskId  任务 ID
+     * @param userId  当前用户 ID（可空：无登录上下文时按"非本人"处理）
+     * @param viewAll 是否有 task:viewAll 权限
      */
-    public void requireVisible(Long taskId, Long userId, boolean finance) {
-        requireVisible(getRequired(taskId), userId, finance);
+    public void requireVisible(Long taskId, Long userId, boolean viewAll) {
+        requireVisible(getRequired(taskId), userId, viewAll);
     }
 
     /**
-     * 校验任务读可见（P3b 可见性统一）：非财务角色仅本人创建，createdBy 为空的旧任务仅财务可见。
-     * @param task Agent 任务
-     * @param userId 当前用户 ID
-     * @param finance 是否财务角色
+     * 校验任务读可见（P3b 可见性统一）：无全量权限者仅本人创建，{@code createdBy} 为空的旧任务仅全量可见者可见。
+     *
+     * <p><b>userId 可空</b>（R7-4 修复）：原实现直接 {@code userId.equals(...)}，
+     * 无登录上下文（userId=null）且无全量权限时会抛 <b>NPE → 500</b>，
+     * 而正确语义是「无法证明是本人 → 拒绝」的 403 业务异常。
+     * 空值在此不是"参数传错"，而是「匿名/无上下文」这一合法输入，必须按无权处理。</p>
+     *
+     * @param task    Agent 任务
+     * @param userId  当前用户 ID（null = 无登录上下文）
+     * @param viewAll 是否有 task:viewAll 权限
      */
-    private void requireVisible(AgentTask task, Long userId, boolean finance) {
-        if (!finance && (task.getCreatedBy() == null || !userId.equals(task.getCreatedBy()))) {
+    private void requireVisible(AgentTask task, Long userId, boolean viewAll) {
+        if (viewAll) {
+            return;
+        }
+        boolean self = userId != null && userId.equals(task.getCreatedBy());
+        if (!self) {
             throw new BizException("无权查看他人任务");
         }
     }

@@ -15,8 +15,8 @@ spring:
       # Nacos注册中心地址
       discovery:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
-        username: ${NACOS_USERNAME:nacos}
-        password: ${NACOS_PASSWORD:nacos}
+        username: ${NACOS_USERNAME}
+        password: ${NACOS_PASSWORD}
     gateway:
       server:
         webflux:
@@ -113,7 +113,9 @@ finaudit:
 
 # SpringBoot Actuator监控端点配置
 # ⚠️安全收口（P3.5d）：禁止暴露 gateway 端点——该端点支持运行期增删路由，一旦被未认证访问
-# 等于绕过网关鉴权/SSRF；仅保留 health/info 做存活探测，详细信息不再对外展示
+# 等于绕过网关鉴权/SSRF；仅保留 health/info 两个端点。
+# ⚠️口径澄清（P3.8 R7，原注释与代码不一致）：**白名单只放行 /actuator/health**（免鉴权供应答式探活）；
+# /actuator/info 虽在此暴露，但需携带 JWT 才能访问（仅供内网排查）。
 management:
   endpoints:
     web:

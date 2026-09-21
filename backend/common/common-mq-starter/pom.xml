@@ -24,5 +24,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-json</artifactId>
         </dependency>
+        <!-- Spring Retry（P3.8 R7-8）：spring.rabbitmq.listener.simple.retry.* 的**运行时依赖**。
+             spring-boot-starter-amqp 不传递它；缺失时监听容器工厂在启动期就会因找不到
+             RetryInterceptor 相关类而失败（不是"重试不生效"这么温和，而是起不来），故必须显式声明。 -->
+        <dependency>
+            <groupId>org.springframework.retry</groupId>
+            <artifactId>spring-retry</artifactId>
+        </dependency>
     </dependencies>
 </project>

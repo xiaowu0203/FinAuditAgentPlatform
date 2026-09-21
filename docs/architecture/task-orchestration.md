@@ -6,7 +6,7 @@
 
 **本项目的「多 Agent」= 单进程内的角色化，不是跨服务的 A2A 多智能体。**
 
-- 四个 `AgentRole`（DOCUMENT_PARSER / BUDGET_CALCULATOR / RULE_VALIDATOR / RISK_AUDITOR / SCHEDULER）
+- 五个 `AgentRole`（SCHEDULER / DOCUMENT_PARSER / BUDGET_CALCULATOR / RULE_VALIDATOR / RISK_AUDITOR）
   全部运行在 **agent-core 进程内**，由 `FlowDefinition` 声明的流水线按步骤号依次激活；
 - 角色之间**没有**独立进程、独立记忆、消息协议或自主协商，所谓「协作」是
   **共享同一个任务的上下文**（前序步骤输出落库 → 后续步骤与 LLM prompt 读它）；
@@ -56,6 +56,14 @@
 
 `DOCUMENT_PARSER(ocr_extract)` → `BUDGET_CALCULATOR(budget_query)` → `RULE_VALIDATOR(amount_verify/rule_check)` → `RULE_VALIDATOR(invoice_match)` → `RISK_AUDITOR(duplicate_check + 风控语义判断)` → `SCHEDULER(结论汇总)`。
 
+> **工具级顺序（以 `FlowDefinition.reimbursementDefault()` 的 `order` 为准，勿凭记忆写）**：
+> `1 ocr_extract` → `2 budget_query` → `3 amount_verify` → `4 rule_check` → `5 invoice_match` → `6 duplicate_check`
+> → `7 风控语义判断(LLM)` → `8 审核结论汇总(LLM)`。
+> 有附件时 **8 步**（`RuleBasedFlowEngineTest:31-43` 逐条断言 `steps.get(0..7).toolName()`）；
+> 无附件跳过 `ocr_extract` 与 `invoice_match`，为 **5 步**（`:56-61`，此时 `amount_verify` 是第 0 步）。
+> ⚠️ **`amount_verify` 在 `rule_check` 之前**（金额自洽先判），`invoice_match` 在 `rule_check` **之后**
+> （限额已判完，再用票面数据校验明细是否虚报）——`FlowDefinition.java:93-120`。
+
 其中 OCR、预算、票据核验步骤按入参条件生成，工具步骤通过 RabbitMQ 执行，LLM 仅用于风控语义判断与汇总。步骤 `agent_role` 由流水线声明绑定，LLM 不能自由指派角色。执行完成后 `ReviewFlowDecider` 根据规则、风险等级及 `confidence/uncertain` 输出 `AUTO_PASS` 或 `NEED_REVIEW`；后者写入任务结果并置 `APPROVAL_PENDING`。
 
 **收尾闸口（P3.8 R5/R6-1）**：`AUTO_PASS` 判定之前先跑语义自校验（`SelfConsistencyChecker`，5 条确定性断言）。
@@ -76,7 +84,7 @@ agent-core TaskSubmitConsumer → Orchestrator.start()
                                   │
   ┌─────── tool.execute ──────────┘
   ▼
-tool-service ToolExecuteConsumer：注册表校验 → Redis 同入参缓存 → 执行 → tool.result
+tool-service ToolExecuteConsumer：租户上下文 → ToolExecutionService（缓存开关 → Redis 同入参缓存 → 注册表校验 → 执行）→ tool.result
                                   │
   ┌─────── tool.result ───────────┘
   ▼
@@ -85,6 +93,33 @@ agent-core ToolResultConsumer → Orchestrator.onToolResult()
   失败 → retryCount<3 重发；≥3 → 步骤 FAILED → 任务 FAILED
   全部步骤 SUCCESS → 汇总 result → AUTO_PASS 或 NEED_REVIEW
 ```
+
+**工具执行链的五道关卡（P3c 起，P3.8 R6-2/R6-4 补全为「Schema 进 + 越权守卫 + 执行器 + Schema 出」）**
+
+`ToolRegistryService.execute`（`ToolRegistryService.java:129-154`）是 HTTP 调试直调与 MQ `tool.execute`
+**共用**的唯一入口，顺序固定、不可调换：
+
+| 序 | 关卡 | 落点（`ToolRegistryService`） | 行为 |
+|---|---|---|---|
+| 1 | 编码解析 | `ToolCode.of` `:133` | 非 `ToolCode` 枚举编码直接业务报错（枚举是唯一真相） |
+| 2 | 注册表校验 | `findByCode` `:135-139` | 未注册或 `enabled != 1` → `工具未注册或已禁用` |
+| 3 | **入参 Schema 校验**（进） | `validateInput` `:141`、`:168-189` | `tool_registry.input_schema` 非空即用 JSON Schema(V7) 强校验；非法入参**在进入执行器前**拦截 |
+| 4 | **防越权守卫** | `accessGuard.check` `:148` | 四道校验覆盖双链路（见下表） |
+| 5 | 执行器分发 | `executorMap.get(code).execute` `:143-150` | 按 `ToolCode` 取唯一实现，带入 `tenantId` 供 Feign 跨服务取数 |
+| 6 | **出参 Schema 校验**（出） | `validateOutput` `:152`、`:200-221` | `output_schema` 非空即校验执行器返回值；无 schema 跳过（兼容存量工具）。出参不符视为**工具自身实现或上游数据**出错，必须让调用方看到——否则错误形状会一路流到 LLM 上下文与结构化问题项（R4-7 手工装配丢字段即此类故障） |
+
+**防越权守卫四道校验（`ToolAccessGuard.check`，`ToolAccessGuard.java:45-55`）**
+
+| 校验 | 适用工具 | 行为 |
+|---|---|---|
+| **权威租户一致性** | 全部 | 权威租户与声明租户**来源分离**后比对：HTTP 链路权威租户取网关/JWT 派生的 `UserContextHolder`（缺失即由 `ToolController.requireAuthTenant` 拒绝，fail-closed）；MQ 链路无 JWT，改由 `taskId` 经 agent-core 反查**任务真实归属租户**与消息声明比对；两者皆无（内部/单测直调）降级不阻断 |
+| **任务归属**（MQ） | 全部（有 `taskId` 时） | 消息被篡改 → 反查不到归属 → 拒绝（防伪造消息跨租户执行） |
+| **部门归属** | `budget_query` | `deptName`/`deptId` 二者任一即可（与 Schema 的 `anyOf` 口径一致），两层都缺才拒绝；有凭证（`deptId`/`reimbId`）→ 经 agent-core 校验「预算行 `dept_id` == 报销单 `dept_id`」且部门为真实 `sys_dept`，不通过即拒绝 |
+| **单据归属** | `duplicate_check` / `ocr_extract` / `invoice_match` | 入参 `reimbId` 须属于当前租户（经 agent-core 反查归属租户），防操作他租户单据 |
+
+> **安全语义别低估**：工具边界不只是「执行一段逻辑」，而是**入参契约 → 越权判定 → 执行 → 出参契约**四段闭环；
+> 入参与出参都有 Schema（P3.8 R6-4 起对称），越权守卫在**分发之前**，
+> 因此「危险入参」根本到不了执行器。详细契约见 [`docs/api/tool-service.md`](../api/tool-service.md)。
 
 P3b 审批工单闭环**不改变上述任务/工具 MQ 契约**，仅在结果分支接入：
 
@@ -95,14 +130,14 @@ ReviewFlowDecider 输出 NEED_REVIEW ─▶ enterApproval(task, ...)  （建工�
 
 审批/撤销动作为**锁内重读**：Redisson 锁 `audit:ticket:{id}`，锁内 getRequired 重读工单再校验，动作间互斥、无丢失更新。
 
-财务动作（X-User-Roles 含 admin/auditor）
+财务动作（**鉴权 = `@RequirePerm("audit:approve")` + 网关 JWT/Redis 权限快照**，口径见本节末）
   approve  → 工单 APPROVED；任务 markSuccess → SUCCESS；报销单 SUCCESS（仅 PENDING）
   reject   → 工单 REJECTED；任务 markRejected → REJECTED；报销单 FAILED（仅 PENDING）
   terminate→ 工单 TERMINATED；任务 markTerminated → REJECTED(errorMsg)；报销单 FAILED（仅 PENDING）
   withdraw-agree   → 工单 WITHDRAWN；任务/报销单 CANCELLED + 附件解绑（仅 WITHDRAW_PENDING）
   withdraw-refuse  → 工单回 APPROVED（仅 WITHDRAW_PENDING）
 
-提交人动作（createdBy，锁内校验本人）
+提交人动作（createdBy，锁内校验本人；**不挂权限码**）
   resubmit 修改重跑（仅 PENDING/REJECTED）→ 工单 AMENDED(rerun_count+1，>3 拒绝，不动 auditorId)
               + 报销单全量覆盖（title/deptName 强制取库内旧值）+ Σitems 服务端重算
               + replan 全量重建步骤 + markPlanned 刷新 totalSteps
@@ -116,6 +151,21 @@ ReviewFlowDecider 输出 NEED_REVIEW ─▶ enterApproval(task, ...)  （建工�
 每次动作追加 audit_record（操作人/前后金额/意见/时间 + before_data/after_data 快照，
 `ReimbursementService.buildSnapshot` 不含 OSS 路径/预签名 URL、日期转字符串），工单详情可查完整留痕。
 ```
+
+**财务动作的鉴权口径（P3.5 起，勿再写「X-User-Roles 含 admin/auditor」）**
+
+| 层 | 机制 | 落点 |
+|---|---|---|
+| 主防线 | 五个财务动作端点全部挂 `@RequirePerm("audit:approve")`；`PermissionInterceptor` 校验**权限码**（取自网关注入的 `X-User-Perms`，Redis 权限快照为权威），无权 → HTTP 403 + `{"code":403,"message":"无权限访问"}` | `AuditTicketController.java:71,80,89,98,107`；`PermissionInterceptor.java:53-70` |
+| 服务层兜底 | `AuditTicketService.action` 在 Redisson 锁内再验一次 `UserContextHolder.hasPerm("audit:approve")`，防内部直连/遗漏调用（fail-closed） | `AuditTicketService.java:510-513` |
+| 审计留痕 | 操作人**角色 CSV**（`UserContext.getRoles()`：快照命中用快照角色、否则 JWT claims 降级）仅用于写 `audit_record.operator_roles`，**不再作为鉴权依据** | `AuditTicketController.rolesOf`（`:123-126`） |
+
+> 因此「角色是 admin/auditor 才能审批」是**过时表述**：实际判据是权限码 `audit:approve`；
+> 种子数据把该码授予 `admin`（全量）与 `auditor`（财务业务资源级）两个内置角色
+> （`finaudit-schema.sql:559-567`）——角色只是权限码的**载体**，
+> 自定义角色授予同码同样可审批（这正是 P3.5 资源级 RBAC 的目的）。
+> 读权限同理：工单 page/detail/records 非 `audit:viewAll` 持有者按 `createdBy` 过滤
+> （`AuditTicketController.java:45-66`、`AuditTicketService.java:280-284`）。
 
 **审批工单状态机（整页图为主，mermaid 实时版 + ASCII 兜底）**
 
@@ -194,11 +244,11 @@ flowchart TB
 - `APPROVED`：`withdraw-request` 申请撤销 → WITHDRAW_PENDING（等财务决定）
 - `AMENDED` / `WITHDRAW_PENDING` / `WITHDRAWN` / `TERMINATED`：只读
 
-财务（X-User-Roles 含 admin/auditor，`allowedByStatus` 仅放行 PENDING 与 WITHDRAW_PENDING）：
+财务（**`@RequirePerm("audit:approve")` 持有者**，种子中为 admin/auditor 两角色；`allowedByStatus` 仅放行 PENDING 与 WITHDRAW_PENDING）：
 - `PENDING`：approve → APPROVED / reject → REJECTED / terminate → TERMINATED
 - `WITHDRAW_PENDING`：withdraw-agree → WITHDRAWN（作废 + 解绑）/ withdraw-refuse → 回 APPROVED
 
-读权限：工单 page/detail/records 非财务按 createdBy 过滤，财务看租户全量（租户隔离由多租户拦截器保证）。
+读权限：工单 page/detail/records 非 `audit:viewAll` 持有者按 `createdBy` 过滤，持有者看租户全量（租户隔离由多租户拦截器保证）。
 
 ## 5. 失败重试
 
@@ -221,4 +271,9 @@ flowchart TB
 
 ## 7. Redis 缓存
 
-`tool:exec:{toolCode}:{SHA-256(入参JSON)}`，TTL 1h。同入参工具执行命中直接返回。
+`tool:exec:{tenantId}:{toolCode}:{SHA-256(入参JSON)}`，TTL 1h。同租户同入参命中直接返回。
+
+> **Key 必须含租户前缀**（P3.8 R6-3）：此前 Key 不含租户，两个租户传同一入参会互相命中对方结果。
+> 缓存开关按 `tool_registry.cacheable` 判定（有状态查询工具为 0，跳过读写避免被旧结果截断）；
+> Redis 读写均 try/catch 降级——读失败直连执行、写失败不影响结果回吐
+> （`ToolExecutionService.java:108-111,171-191`）。

@@ -58,7 +58,8 @@
 
 - `getTenantId()`：读 `TenantContextHolder`，缺省回退 1 + WARN
 - `getTenantIdColumn()`：`tenant_id`
-- `ignoreTable()`：`sys_tenant`（无 tenant_id 列，全局表）
+- `ignoreTable()`：`IGNORE_TENANT_TABLES` = `sys_tenant`、**`sys_permission`**（P3.5a 新增）
+  ——两者均无 `tenant_id` 列，属平台级全局表（`CommonMybatisPlusAutoConfiguration.java:36-45,126-128`）
 
 对现有能力的影响：
 
@@ -67,17 +68,29 @@
 | 业务表 SELECT/UPDATE/DELETE | 自动拼 `tenant_id = ?` |
 | 业务表 INSERT | 自动补 `tenant_id` 列 |
 | `sys_tenant` 表 | 不拦截（租户元数据全局可见） |
+| `sys_permission` 表（P3.5a） | 不拦截（**权限目录平台级，所有租户共用同一套权限标识符**；权限的租户差异由 `sys_role_permission` 承载，该表**有** `tenant_id`、正常拦截） |
 | `AgentTaskService.pageTask` 分页 | 自动按租户过滤（P1.3 的跨租户泄露由拦截器修复） |
 | XML 批量 INSERT（`AgentTaskStepMapper.xml` 等） | 列已含 tenant_id，兼容（P1.4f 验证点） |
 
-## 5. 登录流程时序
+> ⚠️ 新增全局表必须登记进 `IGNORE_TENANT_TABLES`，否则拦截器会向 SQL 拼 `tenant_id` 导致报错或查空。
+
+## 5. 登录流程时序（P3.5d 校验顺序）
 
 1. `POST /api/v1/auth/login {username,password,tenantCode?}`（网关白名单放行，剥伪造头）
-2. tenant-service：`tenantCode`（默认 `default`）→ `SysTenantService.getByCode` 校验租户存在且启用
-3. 登录请求无 `X-Tenant-Id` 头 → `TenantContextHolder.runWithResult(tenantId, ...)` 查询该租户下的用户
-4. 校验用户存在、启用、BCrypt 密码匹配
-5. 取角色编码列表 → 组装 `AuthClaims` → 签发 JWT
-6. 返回 `LoginVO{token, tokenType:"Bearer", expiresIn, user:{..., roles}}`
+2. tenant-service：`tenantCode`（默认 `default`）→ `SysTenantService.getByCode` 校验**租户存在**
+3. 校验**租户启用**（`status == 1`，否则「租户已禁用」）
+4. 登录请求无 `X-Tenant-Id` 头 → `TenantContextHolder.runWithResult(tenantId, ...)` 在该租户上下文内查询用户
+5. **防爆破锁定**：`authSessionService.assertLoginAllowed`（同一「租户 + 用户名」连续 5 次失败锁 15 分钟，锁定中不做密码校验）
+6. **BCrypt 密码校验（先于禁用判断）**：用户不存在 → 对固定 BCrypt 哈希做同价比对 + 记失败 + 「用户名或密码错误」；密码不匹配 → 记失败 + 同一文案
+7. **密码通过后**才判用户禁用（`status == 1`）→ 否则「账号已被禁用，请联系管理员」
+8. 登录成功清空失败计数 → 取角色编码列表 + **权限标识符集合**（`permissionService.listPermCodesByUser`）
+9. 签 JWT（`AuthClaims`，`roles` 仅作快照缺失时的降级兜底）+ **写 Redis 权限快照**（`AuthSnapshot.of(roles, perms, deptId, status)`）
+10. 返回 `LoginVO{token, tokenType:"Bearer", expiresIn, user: UserInfoVO}`，
+    `user` 含 `id/tenantId/username/realName/phone` + **`roles`（角色编码）+ `perms`（权限标识符）**
+
+> **顺序是本阶段的加固点**：此前「先判禁用再比密码」，攻击者凭「用户已被禁用」文案即可**无密码探测账号存在性**；
+> 现改为密码优先、禁用后置，且未知用户与密码错误**统一文案**并做同价 BCrypt 比对抹平时序差
+> （`AuthService.java:103-137`，`DUMMY_BCRYPT_HASH` 见 `:69-70`）。
 
 ## 6. 会话与作废（方案B：JWT + Redis 黑名单）
 
@@ -113,8 +126,14 @@ JWT 无状态，签发的 token 在到期前无法自行失效；方案 B 用 Re
 - 网关注入身份头前**先剥除客户端伪造的同名头**（`X-Tenant-Id`/`X-User-Id`/`X-Username`/`X-User-Roles`/`X-User-Perms`/`X-Dept-Id`/`X-Jwt-Jti`）。
 - 快照为角色/权限/部门的权威来源；`X-User-Perms`/`X-Dept-Id` 仅在快照命中时注入，缺失时下游 `@RequirePerm` 端点 fail-closed。
 - 用户/角色 CRUD 的租户归属取上下文，**不信任请求体**中的租户字段。
+- **写操作/管理动作按权限码收口，而非按角色名**：`@RequirePerm("user:create")`、`"role:assign-perm"`、
+  `"tenant:manage"`、`"tool:manage"`/`"tool:execute"`、`"rule:manage"`、`"audit:approve"` 等；
+  「admin 才能做 X」只是种子数据里 `admin` 持有全量权限码的**结果**，判据始终是权限码本身
+  （自定义角色授予同码同样可执行）。权限码目录见 `docs/database/finaudit-schema.sql` 的 `sys_permission` 种子。
+  未标注 `@RequirePerm` 的端点走 opt-in 放行——因此**「登录即可访问」= 该端点没挂权限码**（如 `GET /api/v1/depts`、`/auth/me`、`/auth/logout`）。
 - 密码 BCrypt（`spring-security-crypto`），永不存明文；JWT 密钥走环境变量，不入库。
-- `/auth/me`、`/auth/logout` 依赖网关注入的 `X-User-Id`/`X-Jwt-Jti`，直连服务返回 400（防止绕过网关伪造身份）。
+- `/auth/me`、`/auth/logout` 依赖网关注入的 `X-User-Id`/`X-Jwt-Jti`，直连服务返回 **HTTP 200 + body `code=400`**（防止绕过网关伪造身份）。
+- 认证/授权失败的 HTTP 状态码是少数**非 200** 的场景：网关鉴权失败 → **401**（`AuthGlobalFilter.unauthorized`，手写 `{"code":401,"message":"…"}`）；`@RequirePerm` 不通过 → **403**（`PermissionInterceptor.writeForbidden`）；其余业务错误一律 HTTP 200、码在 body 的 `code`。详见 [`docs/api/README.md`](../api/README.md) 第「错误语义」。
 - 方案 B 采用**每次请求 1 次 Redis 读**（MGET）校验会话有效性，见「6. 会话与作废」。
 
 ## 8. 多租户拦截器的三个坑（P1.4f 端到端验证踩过）

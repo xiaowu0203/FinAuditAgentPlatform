@@ -10,6 +10,9 @@ set -euo pipefail
 
 NACOS_CORE_ADDR="${NACOS_SERVER_ADDR:-127.0.0.1:8848}"
 NACOS_CONSOLE_ADDR="${NACOS_CONSOLE_ADDR:-127.0.0.1:8080}"
+# ⚠️ 这两处 shell 回退是**引导脚本自身**登录 Nacos 用的（nacos/nacos 是 Nacos 出厂默认账号），
+#    与「服务运行期凭据」是两回事：服务侧的凭据占位已按 R7-1 去掉回退（缺失即启动失败）。
+#    本脚本不加载 .env，故保留回退以保证全新克隆也能一键初始化；生产环境请在环境变量中覆盖。
 NACOS_USER="${NACOS_USERNAME:-nacos}"
 NACOS_PASS="${NACOS_PASSWORD:-nacos}"
 GROUP="DEFAULT_GROUP"
@@ -59,12 +62,13 @@ for ns in dev test; do
   ensure_namespace "${ns}"
 done
 
-# 共享配置占位（密钥一律走环境变量占位，Spring 启动时解析 ${ENV_VAR}）
+# 共享配置占位（P3.8 R7-1：**凭据类占位一律无回退** —— 缺失即服务启动失败，
+# 避免把开发默认口令变成生产默认口令；地址/端口类保留本地缺省，因为它们不是凭据）
 COMMON_DB='spring:
   datasource:
     url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/finaudit?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
-    username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD:root}
+    username: ${MYSQL_USERNAME}
+    password: ${MYSQL_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver'
 
 COMMON_REDIS='spring:

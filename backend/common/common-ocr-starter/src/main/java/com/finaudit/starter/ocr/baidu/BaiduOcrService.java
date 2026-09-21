@@ -106,8 +106,10 @@ public class BaiduOcrService implements OcrService {
     /**
      * OCR HTTP 请求工厂：连接/读取超时均取 {@code finaudit.ocr.baidu.timeout-ms}（默认 10s）。
      * <p>此前 RestClient 未接 requestFactory，配置项被读入却从未生效——一次网络挂起即可
-     * <b>无限期占住 tool-service 的 TOOL 消费线程</b>（`concurrency=1`），冻结全部任务推进。
-     * 与 {@code OcrExtractTool} 的附件下载超时同款做法，对齐 P3.5d 的加固口径。</p>
+     * <b>无限期占住 tool-service 的 TOOL 消费线程</b>（`concurrency=1`），冻结全部任务推进。</p>
+     * <p>⚠️ 与 {@code OcrExtractTool} 的附件下载超时<b>口径不同</b>（R7 澄清，原注释称"同款"不准确）：
+     * 那里是 connect 10s / read 60s（下载大图本就慢，读超时给宽），
+     * 这里是 connect 与 read <b>同取一个值</b>（识别接口单次响应快，无需拉长读超时）。</p>
      */
     private static SimpleClientHttpRequestFactory httpRequestFactory(int timeoutMs) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();

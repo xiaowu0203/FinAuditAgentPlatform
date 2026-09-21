@@ -20,21 +20,27 @@ spring:
       # Nacos 远程配置中心配置
       config:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
-        username: ${NACOS_USERNAME:nacos}
-        password: ${NACOS_PASSWORD:nacos}
+        username: ${NACOS_USERNAME}
+        password: ${NACOS_PASSWORD}
         namespace: dev
       # Nacos服务注册/发现配置
       discovery:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
-        username: ${NACOS_USERNAME:nacos}
-        password: ${NACOS_PASSWORD:nacos}
+        username: ${NACOS_USERNAME}
+        password: ${NACOS_PASSWORD}
 
   # RabbitMQ消息队列连接配置
   rabbitmq:
     host: ${RABBITMQ_HOST:127.0.0.1}
     port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USERNAME:guest}
-    password: ${RABBITMQ_PASSWORD:guest}
+    username: ${RABBITMQ_USERNAME}
+    password: ${RABBITMQ_PASSWORD}
+    # publisher confirm（P3.8 R7-8）：correlated 让每次发送带 CorrelationData，
+    # 未被 broker 确认（nack/超时）时由 RabbitTemplate 回调告警——
+    # 否则「以为发出去了、其实没到」只能靠任务卡住来发现
+    publisher-confirm-type: correlated
+    # mandatory + returns：消息无法路由（交换机在但队列/绑定缺失）时回调告警，而不是静默丢弃
+    publisher-returns: true
     # 消息消费者监听配置
     listener:
       simple:
@@ -46,6 +52,15 @@ spring:
         acknowledge-mode: auto
         # 消费失败是否重新入队：false 失败直接丢弃，不重复消费
         default-requeue-rejected: false
+        # 消费失败限次重试（P3.8 R7-8）：此前消费抛异常会直接进 DLQ，无退避、
+        # 也无法区分「瞬时故障」与「必然失败」；现改为最多 3 次、指数退避
+        # （1s → 2s → 4s，上限 10s），仍失败才进 DLQ 由告警消费者登记
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1s
+          multiplier: 2
+          max-interval: 10s
 
 # MyBatis-Plus 持久层框架配置
 mybatis-plus:
@@ -61,8 +76,8 @@ finaudit:
   nacos-config:
     core-addr: http://127.0.0.1:8848
     console-addr: http://127.0.0.1:8080
-    username: ${NACOS_USERNAME:nacos}
-    password: ${NACOS_PASSWORD:nacos}
+    username: ${NACOS_USERNAME}
+    password: ${NACOS_PASSWORD}
     group: DEFAULT_GROUP
     namespace: dev
     rule-data-id: finaudit-rules-{tenantId}
