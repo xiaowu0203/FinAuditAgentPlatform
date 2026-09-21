@@ -90,6 +90,20 @@ finaudit:
     # 规则配置管理兜底白名单（主防线为类级 @RequirePerm("rule:manage") 权限码，P3.5 起；
     # 此处保留作内部直连场景的第二道防线）
     user-ids: [1]
+  # 主动通知（P3.8 R8-2：站内信 + Webhook outbox 投递）
+  notify:
+    # ⚠️ 是否允许 Webhook 投递到内网/环回地址：**默认 false**
+    #    地址由租户填写、请求由服务端发起 → 放开等于给出一个 SSRF 跳板
+    #    （可探测 http://127.0.0.1:8848/nacos、打云元数据 169.254.169.254 窃取凭据）。
+    #    仅本地联调/自测时置 true（启动日志会打 WARN 提醒），生产必须保持 false。
+    allow-private-address: ${FINAUDIT_NOTIFY_ALLOW_PRIVATE_ADDRESS:false}
+    # 定时投递开关与间隔（本地自测可置 false，改由验证脚本手工触发，避免"后台偷偷发出去"干扰断言）
+    delivery-enabled: ${FINAUDIT_NOTIFY_DELIVERY_ENABLED:true}
+    delivery-interval-ms: 15000
+    delivery-batch-size: 50
+    # 失败重试退避（秒）：首次失败快速重试一次，之后拉长间隔避免打垮对端
+    retry-backoff-seconds: [1, 10, 60]
+    connect-timeout-ms: 3000
 
 # 日志级别配置
 logging:

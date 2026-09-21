@@ -60,7 +60,8 @@
 | 服务 | 端口 | 文档 |
 |---|---|---|
 | `agent-gateway` | 9080 | [网关（路由/鉴权/注入头/401）](./gateway.md) |
-| `agent-core-service` | 9201 | [任务 API + 报销单 API（提交/详情/分页/续跑/修改重跑/撤回/撤销）+ 审批工单 API（分页/详情/审批动作/留痕）+ 规则配置 API（CRUD/启停/发布 Nacos）+ **内部**审核数据 API（`/internal/audit/**`：OCR 回写/预算/规则/重复检测/票据核验 + 越权校验端点）+ 脱敏说明](./agent-core.md) |
+| `agent-core-service` | 9201 | [任务 API + 报销单 API（提交/详情/分页/续跑/修改重跑/撤回/撤销）+ 审批工单 API（分页/详情/审批动作/留痕）+ 规则配置 API（CRUD/启停/发布 Nacos）+ **主动通知 API**（`/api/v1/notify/**`：站内信 + Webhook 配置/台账，见 [`notify.md`](./notify.md)）+ **内部**审核数据 API（`/internal/audit/**`：OCR 回写/预算/规则/重复检测/票据核验 + 越权校验端点）+ 脱敏说明](./agent-core.md) |
+| （跨服务） | — | [**主动通知契约**：站内信字段、Webhook 签名算法（接收方实现指引）、事件目录、投递语义与已知取舍](./notify.md) |
 | `tool-service` | 9202 | [工具 API（列表/注册/调试直调；`tool:manage`/`tool:execute`；执行链五道关卡）](./tool-service.md) |
 | `tenant-service` | 9203 | [租户/用户/角色/部门/权限/认证 API](./tenant-service.md) |
 | `rag-service` | 9204 | [RAG 语义检索 API（P4 填充，当前空骨架；**网关未配路由，经网关不可达**）](./rag-service.md) |

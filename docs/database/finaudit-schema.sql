@@ -1,6 +1,6 @@
 -- =====================================================================
 -- FinAuditAgentPlatform 数据库初始化脚本
--- 版本: P3.8 R9（含模型调用台账 + 任务/步骤耗时） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
+-- 版本: P3.8 R8-2（含主动通知：站内信 + Webhook 配置 + Webhook 投递台账） ｜ 目标库: finaudit（MySQL 5.7 / utf8mb4 / InnoDB）
 -- 说明: 可直接整体执行；DROP TABLE IF EXISTS 保证幂等（**会清空重灌**）。
 --       本机执行: mysql -uroot -p < docs/database/finaudit-schema.sql
 --       已有数据的环境只跑增量: mysql -uroot -p < docs/database/migration-P3a.sql（再跑 migration-P3b.sql ... 直至 migration-P3.8.sql）
@@ -30,6 +30,9 @@ DROP TABLE IF EXISTS audit_record;
 DROP TABLE IF EXISTS audit_ticket;
 DROP TABLE IF EXISTS tool_execution_log;
 DROP TABLE IF EXISTS tool_registry;
+DROP TABLE IF EXISTS notify_delivery;
+DROP TABLE IF EXISTS notify_webhook;
+DROP TABLE IF EXISTS notify_message;
 DROP TABLE IF EXISTS model_call_log;
 DROP TABLE IF EXISTS agent_task_step;
 DROP TABLE IF EXISTS agent_task;
@@ -542,6 +545,88 @@ CREATE TABLE model_call_log (
     KEY idx_step (step_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '模型调用台账（P3.8 R9-1：成本与效率指标数据源）';
 
+-- ---------------------------------------------------------------------
+-- 站内信（P3.8 R8-2）
+--   一行 = 一个收件人的一条消息（群发时按收件人展开，读状态各自独立）。
+--   dedupe_key：同租户内唯一的幂等键（NULL 表示不去重）——用于「同一事件重复触发只提醒一次」，
+--   如 DLQ 同一条死信重复告警、同一任务重复进入转人工。MySQL 唯一索引视多个 NULL 为互不冲突，
+--   故未指定幂等键的消息可无限追加。
+-- ---------------------------------------------------------------------
+CREATE TABLE notify_message (
+    id         BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id  BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    user_id    BIGINT        NOT NULL COMMENT '收件人用户ID（sys_user.id）',
+    category   VARCHAR(32)   NOT NULL COMMENT '类别: AUDIT 审核流转 / ALERT 平台告警',
+    event_type VARCHAR(48)   NOT NULL COMMENT '事件类型（见 NotifyEvents，与 Webhook 订阅同一套编码）',
+    title      VARCHAR(128)  NOT NULL COMMENT '标题',
+    content    VARCHAR(1000) DEFAULT NULL COMMENT '正文（含可读原因摘要）',
+    biz_type   VARCHAR(32)   DEFAULT NULL COMMENT '业务类型: TASK / TICKET / REIMBURSEMENT / MQ',
+    biz_id     BIGINT        DEFAULT NULL COMMENT '业务ID（单据/任务/工单）',
+    link       VARCHAR(255)  DEFAULT NULL COMMENT '前端跳转路径（如 /audit/tickets?id=12）',
+    dedupe_key VARCHAR(160)  DEFAULT NULL COMMENT '幂等键（同租户唯一；NULL=不去重）',
+    read_at    DATETIME      DEFAULT NULL COMMENT '已读时间（NULL=未读）',
+    created_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted    TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_notify_dedupe (tenant_id, dedupe_key),
+    KEY idx_notify_user_unread (tenant_id, user_id, read_at),
+    KEY idx_notify_user_created (tenant_id, user_id, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '站内信（P3.8 R8-2：主动通知）';
+
+-- ---------------------------------------------------------------------
+-- Webhook 配置（P3.8 R8-2）
+--   ⚠️ 刻意不在 (tenant_id, name) 上加唯一索引：本表有逻辑删除列，唯一索引会把「删掉后重建同名配置」
+--      永久挡住（agent_task_step 是用 deleted=id 的下标技巧绕开的，配置表不值得引入该复杂度），
+--      改为在 Service 层对未删除行做重名校验。
+--   ⚠️ secret 明文入库（HMAC 密钥需可还原才能签名）：这是已知取舍，生产应接 KMS/密文列；
+--      对外响应只回显掩码（见 WebhookVO#secretMasked）。
+-- ---------------------------------------------------------------------
+CREATE TABLE notify_webhook (
+    id           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id    BIGINT       NOT NULL DEFAULT 1 COMMENT '租户ID',
+    name         VARCHAR(64)  NOT NULL COMMENT '配置名称（租户内未删除行重名禁止）',
+    url          VARCHAR(512) NOT NULL COMMENT '回调地址（仅 http/https，默认拒绝私网/环回，见 WebhookUrlValidator）',
+    secret       VARCHAR(128) NOT NULL COMMENT 'HMAC-SHA256 签名密钥（明文，见上方取舍说明）',
+    event_types  JSON         NOT NULL COMMENT '订阅事件类型数组；[]=订阅全部（见 docs/api/notify.md）',
+    enabled      TINYINT      NOT NULL DEFAULT 1 COMMENT '启用: 1启用 0停用',
+    max_attempts INT          NOT NULL DEFAULT 3 COMMENT '最大投递次数（含首次）',
+    timeout_ms   INT          NOT NULL DEFAULT 5000 COMMENT '单次 HTTP 超时（毫秒）',
+    created_by   BIGINT       DEFAULT NULL COMMENT '创建人用户ID',
+    created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted      TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    KEY idx_webhook_tenant (tenant_id, enabled)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Webhook 配置（P3.8 R8-2）';
+
+-- ---------------------------------------------------------------------
+-- Webhook 投递台账（P3.8 R8-2：DB outbox）
+--   投递行与业务数据在**同一事务**写入 → 「业务提交成功 ⇒ 投递行必在」，不依赖 MQ 也不怕进程重启；
+--   定时任务扫 PENDING 且 next_retry_at <= now 的行做 HTTP 投递，失败指数退避，超 max_attempts 置 DEAD。
+--   payload 存原始事件体：重试原样重发（签名基于同一 body），也便于人工重投与排障。
+-- ---------------------------------------------------------------------
+CREATE TABLE notify_delivery (
+    id               BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id        BIGINT       NOT NULL DEFAULT 1 COMMENT '租户ID',
+    webhook_id       BIGINT       NOT NULL COMMENT '目标 Webhook（notify_webhook.id）',
+    event_type       VARCHAR(48)  NOT NULL COMMENT '事件类型',
+    event_id         VARCHAR(64)  NOT NULL COMMENT '事件ID（投递头 X-Finaudit-Delivery 即此值，供接收方幂等）',
+    payload          JSON         NOT NULL COMMENT '事件负载（原始 JSON，重试原样重发）',
+    status           VARCHAR(16)  NOT NULL DEFAULT 'PENDING' COMMENT '状态: PENDING 待投递/待重试, SUCCESS 成功, DEAD 超次数放弃',
+    attempt_count    INT          NOT NULL DEFAULT 0 COMMENT '已尝试次数',
+    next_retry_at    DATETIME     NOT NULL COMMENT '下次投递时间（PENDING 时有效）',
+    last_http_status INT          DEFAULT NULL COMMENT '最近一次 HTTP 状态码（网络层失败为 NULL）',
+    last_error       VARCHAR(500) DEFAULT NULL COMMENT '最近一次失败原因（截断保存）',
+    delivered_at     DATETIME     DEFAULT NULL COMMENT '投递成功时间',
+    created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted          TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    KEY idx_delivery_due (status, next_retry_at),
+    KEY idx_delivery_webhook (tenant_id, webhook_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Webhook 投递台账（P3.8 R8-2：outbox 模式）';
+
 -- =====================================================================
 -- Seed 数据（默认租户 + 管理员 + 角色 + 内置工具 + 预算 + 财务规则）
 -- =====================================================================
@@ -593,7 +678,8 @@ INSERT INTO sys_permission (id, perm_code, perm_name, perm_type, group_name) VAL
     (23, 'audit:viewAll',    '审批工单全量可见', 'API',  '财务业务'),
     (24, 'audit:approve',    '审批动作',         'API',  '财务业务'),
     (25, 'budget:viewAll',   '预算全部门查询',   'API',  '财务业务'),
-    (30, 'dashboard:admin',  '管理员风控大盘',   'MENU', '预留');
+    (30, 'dashboard:admin',  '管理员风控大盘',   'MENU', '预留'),
+    (31, 'notify:manage',    '通知配置管理（Webhook）', 'MENU', '系统管理');
 
 -- P3.5a 内置角色默认权限（admin 全量；auditor 财务业务资源级；普通用户不授码）
 INSERT INTO sys_role_permission (tenant_id, role_id, perm_id) VALUES
@@ -603,6 +689,7 @@ INSERT INTO sys_role_permission (tenant_id, role_id, perm_id) VALUES
     (1, 1, 20), (1, 1, 21), (1, 1, 22), (1, 1, 23), (1, 1, 24),
     (1, 1, 25), (1, 1, 30),
     (1, 1, 16), (1, 1, 17),
+    (1, 1, 31),
     (1, 2, 20), (1, 2, 21), (1, 2, 22), (1, 2, 23), (1, 2, 24);
 
 -- 内置金额核验工具（P1 首个落地工具，金额一律 Decimal；P3.8 R6-4 补出参 Schema）

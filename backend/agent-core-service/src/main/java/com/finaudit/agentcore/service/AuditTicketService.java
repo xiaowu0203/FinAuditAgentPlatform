@@ -63,11 +63,14 @@ public class AuditTicketService {
     private final RuleBasedFlowEngine flowEngine;
     /** 预算占用服务（P3.8 R1：审批通过时真实占用部门预算，各终态释放） */
     private final BudgetOccupancyService budgetOccupancyService;
+    /** 业务通知门面（P3.8 R8-2：审批结局主动提醒申请人/审批人） */
+    private final NotifyFacade notifyFacade;
 
     public AuditTicketService(AuditTicketMapper ticketMapper, AuditRecordMapper recordMapper,
                               AgentTaskService taskService, AgentTaskStepService stepService,
                               ReimbursementService reimbursementService, DistributedLockTemplate lockTemplate,
-                              RuleBasedFlowEngine flowEngine, BudgetOccupancyService budgetOccupancyService) {
+                              RuleBasedFlowEngine flowEngine, BudgetOccupancyService budgetOccupancyService,
+                              NotifyFacade notifyFacade) {
         this.ticketMapper = ticketMapper;
         this.recordMapper = recordMapper;
         this.taskService = taskService;
@@ -76,6 +79,7 @@ public class AuditTicketService {
         this.lockTemplate = lockTemplate;
         this.flowEngine = flowEngine;
         this.budgetOccupancyService = budgetOccupancyService;
+        this.notifyFacade = notifyFacade;
     }
 
     // ===================== 编排器回调入口（由AgentOrchestrator调用） =====================
@@ -144,6 +148,8 @@ public class AuditTicketService {
                     ticket.getOriginAmount(), ticket.getOriginAmount(), null, task.getCreatedBy(), null, null,
                     null, snapshotOf(task)));
             log.info("任务 {} 命中复核，创建审批工单 {}（trigger={}）", task.getTaskNo(), ticket.getTicketNo(), triggerType);
+            // P3.8 R8-2：主动通知——申请人（你的单子要人工看）+ 有审批权限的人（有新工单待处理）
+            notifyFacade.needReview(task, ticket, false);
             return;
         }
 
@@ -166,6 +172,8 @@ public class AuditTicketService {
             recordMapper.insert(AuditRecord.ofSnapshot(task.getTenantId(), existing.getId(), AuditAction.RERUN,
                     amt, amt, null, null, null, null, snap, snap));
             log.info("任务 {} 重跑再次命中复核，工单 {} 复位 PENDING（trigger={}）", task.getTaskNo(), existing.getTicketNo(), triggerType);
+            // P3.8 R8-2：重跑后再次命中 → 重新提醒（文案区分"改完还是没过"，避免提交人以为白改了）
+            notifyFacade.needReview(task, existing, true);
             return;
         }
         // 5. PENDING 已存在 / 终态防御（含 WITHDRAWN/WITHDRAW_PENDING/TERMINATED）：不重复建单
@@ -474,6 +482,8 @@ public class AuditTicketService {
             insertRecord(ticket, AuditAction.WITHDRAW_REQ, currentAmount(ticket), currentAmount(ticket),
                     null, userId, username, null, snap, snap);
             log.info("工单 {} 提交人发起撤销申请", ticket.getTicketNo());
+            // P3.8 R8-2：撤销申请需要财务动作 → 主动通知有审批权限的人（否则只能靠人工刷列表）
+            notifyFacade.withdrawRequested(ticket);
             return AuditTicketVO.from(ticket);
         });
     }
@@ -516,7 +526,7 @@ public class AuditTicketService {
                 throw new BizException("工单状态不允许该操作（当前 " + ticket.getStatus() + "）");
             }
             // 根据操作类型执行对应的逻辑
-            return switch (target) {
+            AuditTicketVO vo = switch (target) {
                 // 审批通过
                 case APPROVE -> approve(ticket, userId, username, roles, request);
                 // 审批驳回
@@ -529,6 +539,9 @@ public class AuditTicketService {
                 case WITHDRAW_REFUSE -> refuseWithdraw(ticket, userId, username, roles, request);
                 default -> throw new BizException("不支持的动作: " + target);
             };
+            // P3.8 R8-2：审批结局主动通知申请人（在动作成功之后、同一事务内；通知失败不影响审批）
+            notifyFacade.ticketAction(ticket, target, request == null ? null : request.comment());
+            return vo;
         });
     }
 

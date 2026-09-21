@@ -84,6 +84,8 @@ public class AgentOrchestrator {
     private final BudgetOccupancyService budgetOccupancyService;
     /** 语义自校验器（R5 自主纠错：结果一致性断言 + 重跑驱动） */
     private final SelfConsistencyChecker selfConsistencyChecker;
+    /** 业务通知门面（P3.8 R8-2：自动通过/审核失败主动提醒申请人） */
+    private final NotifyFacade notifyFacade;
 
     /** 自校验纠错上限（P3.8 R5）：超过则转人工复核，避免无限重跑烧 Token */
     private static final int SELF_CORRECTION_MAX = 1;
@@ -111,6 +113,7 @@ public class AgentOrchestrator {
      * @param executionProperties 执行加固配置（任务级超时预算）
      * @param budgetOccupancyService 预算占用服务（R1 真实占用/释放）
      * @param selfConsistencyChecker 语义自校验器（R5 自主纠错）
+     * @param notifyFacade 业务通知门面（R8-2 主动通知）
      */
     public AgentOrchestrator(AgentTaskService taskService, AgentTaskStepService stepService,
                              TaskPlanner planner, RuleBasedFlowEngine flowEngine,
@@ -119,7 +122,8 @@ public class AgentOrchestrator {
                              AuditTicketService auditTicketService,
                              AgentExecutionProperties executionProperties,
                              BudgetOccupancyService budgetOccupancyService,
-                             SelfConsistencyChecker selfConsistencyChecker) {
+                             SelfConsistencyChecker selfConsistencyChecker,
+                             NotifyFacade notifyFacade) {
         this.taskService = taskService;
         this.stepService = stepService;
         this.planner = planner;
@@ -132,6 +136,7 @@ public class AgentOrchestrator {
         this.executionProperties = executionProperties;
         this.budgetOccupancyService = budgetOccupancyService;
         this.selfConsistencyChecker = selfConsistencyChecker;
+        this.notifyFacade = notifyFacade;
     }
 
     /**
@@ -799,6 +804,8 @@ public class AgentOrchestrator {
                 return;
             }
             log.info("任务 {} 自动通过（AUTO_PASS），共 {} 步", task.getTaskNo(), steps.size());
+            // P3.8 R8-2：主动通知申请人（此前只能靠前端轮询发现"已经过了"）
+            notifyFacade.autoPassed(task);
             // 报销单审核状态回写
             syncReimbStatus(task, ReimbursementStatus.SUCCESS);
             // amend 重跑自动通过：闭合 AMENDED 工单（PENDING 不可能任务 SUCCESS，安全）
@@ -833,6 +840,8 @@ public class AgentOrchestrator {
             return;
         }
         log.info("任务 {} 执行成功，共 {} 步", task.getTaskNo(), steps.size());
+        // P3.8 R8-2：GENERIC 任务同样主动通知（与报销单共用同一事件码：对用户而言都是"自动完成"）
+        notifyFacade.autoPassed(task);
         // 报销单状态回写：按 LLM 汇总决策细化（REJECT→FAILED、NEED_INFO→MANUAL_REVIEW，其余→SUCCESS）
         // 注：GENERIC 任务无关联报销单，syncReimbStatus 内部按 taskType 短路
         syncReimbStatus(task, resolveSuccessStatus(extractDecision(steps)));
@@ -878,6 +887,8 @@ public class AgentOrchestrator {
             return;
         }
         log.error("任务 {} 失败: {}", task.getTaskNo(), error);
+        // P3.8 R8-2：失败也要主动告知申请人（否则用户只看到"一直在转圈"然后自己去翻列表）
+        notifyFacade.failed(task, error);
         // 报销单状态回写【审核失败】
         syncReimbStatus(task, ReimbursementStatus.FAILED);
         // 提交人修改重跑（AMENDED 工单）失败时复位工单 PENDING + RERUN_FAILED 留痕，

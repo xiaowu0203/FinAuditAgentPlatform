@@ -633,7 +633,7 @@ agent-core 192 例（含新增 `AgentTaskVisibilityTest` 5 例）、tool-service
 | R7-9 | D-1 ~ D-16 全量文档同步（**与对应代码同 commit**），含 `tool-service.md` 三处形状级错误 |
 | R7-10 | 清理 `rag-service/target` 残留；`docs/deploy` 补增量迁移执行说明；`docs/test` 补评估用例模板 |
 
-### R8 · 可选增强 —— 🔶 R8-3 后端完成并运行时复验通过（**待提交**），R8-1 待商务决策、R8-2 未开始、R8-4 归前端
+### R8 · 可选增强 —— 🔶 R8-2 后端完成、R8-3 后端完成并运行时复验通过（均**待提交**），R8-1 待商务决策、R8-4 归前端
 
 **R8-3 进度百分比与预计等待时间（✅ 后端完成并运行时复验通过）**
 
@@ -749,12 +749,105 @@ RUNNING pct=100.0 步=8/8 当前=(空) 已耗时=7471ms 剩余=0ms 依据=DEFAUL
 ⑤ 失败降级（建议：联网失败不阻断审核，仅并入 findings，离线规则仍为主判据）；⑥ 缓存与幂等（同票号只查一次）。
 决策后的实现量约与 R3-5 同级：新增查验工具 + **服务商适配器接口**（便于换厂商）+ 结果落库/缓存 + 工具注册与 Schema + 单测（mock 适配器）。
 
+---
+
+**R8-2 主动通知（站内信 / Webhook）（✅ 后端完成，运行时待用户验证）**
+
+走查记录 B-8：全仓无任何通知能力，进度完全依赖前端轮询。契约文档见 [`docs/api/notify.md`](../api/notify.md)。
+
+| 落点 | 要点 |
+|---|---|
+| 三张表（迁移 §19 + 全量 schema） | `notify_message`（站内信，一行=一个收件人）/ `notify_webhook`（配置）/ `notify_delivery`（投递台账）；**幂等与升级路径已在隔离临时库实测**：从"升级前"状态连跑两次迁移 → 3 表 + 1 权限码 + 1 授权，两次均 0 ERROR |
+| 权限码 `notify:manage`（§20） | Webhook 配置管理（仅内置 admin 持有，24 码种子）；**刻意不用 `INSERT IGNORE`**——它会连"数据过长"这类真错误一起吞掉（R9 的 `error_msg` 超长就是这么丢掉一整行台账的） |
+| 站内信 | `NotifyMessage` 实体（**实体边界按列宽截断**）+ `NotifyMessageService`（批量失败降级逐行、单行失败只记日志**不上抛**）+ 4 个端点（列表/未读数/标记已读/全部已读） |
+| 收件人解析 | `NotifyRecipientService`：申请人取 `created_by`；**审批人/管理员按权限码反查**（新增 tenant-service 内部端点 `GET /internal/users/by-perm` + `TenantServiceFeign` 扩展）——后台线程没有登录上下文，只能按权限码反查 |
+| Webhook 配置 | CRUD + 事件码目录 + **测试投递** + 投递台账 + 人工重投 + 积压数（整类挂 `notify:manage`）；密钥只回显掩码、部分更新空值不动（留空 = 保留原密钥） |
+| 投递（outbox） | 业务事务内登记 → 定时任务（15s）**先枚举有到期记录的租户**再逐租户取件 → `attempt_count` 乐观认领（多实例安全）→ JDK HttpClient 投递 → 退避重试（1s/10s/60s）→ 次数用尽 `DEAD` 并给配置创建人写告警站内信 |
+| 签名 | `HMAC-SHA256(secret, timestamp + "." + rawBody)`，头 `X-Finaudit-Signature/Timestamp/Event/Delivery`；**时间戳参与签名**（否则抓到一次合法请求即可无限重放），常量时间比较 |
+| SSRF 防线 | 仅 http/https；拒绝环回/私网/链路本地（含云元数据 169.254.169.254）/通配/组播/IPv6 唯一本地，**含 IPv4-mapped 还原**（`::ffff:10.0.0.1` 否则能绕过）；配置时 + 每次投递前各校验一次；仅 `allow-private-address=true` 可放开（启动打 WARN） |
+| 业务触发点（7 处） | 转人工（申请人 + 审批人，重跑命中用不同文案）、自动通过、任务失败、撤销申请、审批结局（通过/驳回/终止/撤销同意/撤销拒绝）；**过程性动作（SUBMIT/AMEND/RERUN/…) 刻意不发**——否则真正的结局被噪音淹没 |
+| R7-8 遗留收口 | `common-mq-starter` 新增 SPI `MqAlertSink`（与 R9-1 的 `ModelCallRecorder` 同模式），agent-core 实现为"管理员站内信 + `MQ_DLQ_ALERT` 事件"；**顺带修竞争消费**：agent-core 与 tool-service 原本同时监听 `finaudit.dlq`，告警会随机落在没有告警通道的一边 → tool-service 显式 `dlq-alert.enabled: false` |
+| 网关 | 新增 `agent-core-notify` 路由 `/api/v1/notify/**`（站内信子路径不挂权限码，Webhook 子路径服务内挂码） |
+| 验证脚本 | 新增 `docs/test/r8-notify-e2e.ps1`：本地 HttpListener 当接收方，断言站内信发给对的人、**签名经服务端算法复算通过**、台账转 SUCCESS、500 对端 ⇒ DEAD + 告警、非 http 地址被拒 |
+
+**设计取舍**
+
+1. **为什么用 DB outbox 而不是 MQ**：投递行与业务数据**同事务**提交，"业务成功 ⇒ 必投递"是免费的；
+   重启不丢、可用 SQL 排障、人工重投就是改一行；也回避了"先发 MQ 后提交业务、消费者抢在提交前处理"的经典竞态。
+   代价是多一次表写入 + 一个定时任务（本仓此前无任何定时任务，由本阶段首次开启 `@EnableScheduling`）。
+2. **为什么站内信与 Webhook 走同一个事件对象**：若两处分别拼装文案，迟早出现"站内信说已驳回、Webhook 说审批通过"
+   （口径漂移）。`NotifyFacade` 是"业务语义 → 事件码/收件人/文案"的唯一映射点。
+3. **业务事件不设幂等键**："驳回 → 修改重跑 → 再驳回"是三次真实事件，用 `(事件, 单据)` 去重会把第二次提醒静默吃掉——
+   而"少发一条提醒"这类 bug 几乎不可能被发现。只有"同一物理事件可能被重复投递"（MQ 死信、Webhook 放弃）才设键。
+4. **平台故障不复用故障通道**：`WEBHOOK_DEAD` 只发站内信、不再生成 Webhook 投递，否则
+   "Webhook 挂了 → 发告警 → 走同一个挂掉的 Webhook"会自我放大。
+
+**本机验证**：新增 47 个单测全绿（`WebhookSignerTest` 5 / `WebhookUrlValidatorTest` 5 /
+`NotifyWebhookTest` 7 / `NotifyDeliveryTest` 7 / `NotifyMessageServiceTest` 9 /
+`NotifyEventPublisherTest` 6 / `NotifyFacadeTest` 8）；全量 `mvn -o clean install` 19 模块 BUILD SUCCESS。
+迁移脚本幂等与升级路径：**隔离临时库实测**（复制脚本改 `USE`，绝不碰开发库，见 AGENTS.md §10）。
+
+**验证进展（第一轮运行时，2026-09-22 03:3x）**：
+
+| 项 | 结果 |
+|---|---|
+| 增量迁移（§19 三表 + §20 权限码） | ✅ 已执行（备份先行：`backups/finaudit-20260922-033031.sql`）；**幂等复跑一次 0 ERROR**；25 表、`notify:manage`+1 授权、业务行数不变（tasks=7/reimbs=7/tickets=7/steps=56） |
+| 判据 D（SSRF 防线） | ✅ `ftp://` 被拒（可读原因）；内网地址分支 SKIP（前置条件未满足，见下） |
+| **判据 A（站内信业务链路）** | ✅ **全部通过**：真实提交一单（`taskId=30008`）→ 转人工 → 申请人收 `TASK_NEED_REVIEW`（link `/reimbursements/8`）+ 审批人收 `TICKET_CREATED`（link `/audits/8`，正文含 RISK_HIT 明细且在 1000 字符处按实体边界截断）→ 未读数 2、标记已读后 1、分页 `read=false` 正确 |
+| 判据 B/C（Webhook 投递/签名/DEAD） | ⏸ 未执行：`allow-private-address` 未生效（`.env` 有该键但未进入 JVM；诊断依据：内网地址仍被拒，且 Spring 中环境变量优先级高于 yml）。改用 Run Configuration 的 VM 选项 `-Dfinaudit.notify.allow-private-address=true` 可绕开该不确定性 |
+| R8-2c（DLQ 告警接通知通道） | ⚠️ **发现真问题**：DLQ 消费者确属 agent-core（连接映射：同一连接消费 `task.submit`/`tool.result`/`dlq`；tool-service 只剩 `tool.execute` ⇒ `dlq-alert.enabled:false` 生效 ✓），死信投递后 `deliver` 递增但 **`ack` 恒为 1**、且未写站内信 ⇒ 监听器抛异常、消息被 reject 丢弃。**根因待日志确认**，但已定位到我的代码缺口：`DlqAlertConsumer.dispatch` 只兜 `Exception`，抛 `Error` 会穿透（已改为 `catch (Throwable)` 并打印完整堆栈）；同时把 `MqAlertNotifySink` 整段包进默认租户上下文（原先只包住"查管理员"一步，读侧 SELECT 在多租户下会查错租户）。 |
+
+**第二轮运行时（2026-09-22 03:40~03:50）：Webhook 链路跑通，并抓出 3 个真实缺陷**
+
+| 已验证 ✅ | 证据 |
+|---|---|
+| SSRF 开关生效 | `allow-private-address=true` 后 `127.0.0.1` 地址可配置；`ftp://` 仍被拒（可读原因） |
+| 投递链路 | 测试投递 → 手工触发轮次 → 台账 `SUCCESS` + `last_http_status=200`；对端本地 HttpListener 收到请求 |
+| **签名正确性** | 用接收到的原始 body + 时间戳 + 密钥**独立复算 HMAC-SHA256，与 `X-Finaudit-Signature` 完全一致**；`eventId` 与 `X-Finaudit-Delivery` 一致 |
+| 失败处置 | 对端返回 500 → `maxAttempts=1` 即置 `DEAD` + 记录状态码与原因 + **给配置创建人写 `WEBHOOK_DEAD` 告警站内信** |
+| 密钥不外泄 | 响应只回显掩码（`ab****gh`），不含明文 |
+
+| 缺陷（本轮修） | 现象与根因 |
+|---|---|
+| **DLQ 告警会静默丢掉"坏报文"死信**（最严重） | 三组对照实验定位：投到 DLQ 的**合法 JSON** 会被正常 ack 并告警；**非法 JSON body** 则 `deliver` 递增而 `ack` 不动、消息被 reject 丢弃、无任何告警。根因：默认容器工厂用共享的 `Jackson2JsonMessageConverter`，body 不是合法 JSON 时**在调用监听器之前**就抛 `MessageConversionException` → `try/catch` 够不着 + `default-requeue-rejected:false` + DLQ 无二级死信 ⇒ 消息蒸发。而这恰是 R7-8 建告警要捕获的头号场景（DTO 契约不兼容）。修法：给 DLQ 监听器独立的 `dlqListenerContainerFactory`（`SimpleMessageConverter`，不做 JSON 解析） |
+| 测试投递端点返回 null ID | `enqueueTest` 用了自定义 `insertBatch`（多行 INSERT 无 `useGeneratedKeys`）→ `delivery.getId()` 恒 null，端点契约承诺返回 ID 却回 null（验证脚本拿不到 id，连带 `deliveries//retry` 拼出非法 URL）。修法：改用 MP 单行 `insert`（`IdType.AUTO` 回填主键） |
+| 人工重投没真正清零次数 | `updateResult` 的 SET 缺 `attempt_count` → `resetForRetry()` 只改了内存，库里仍是旧值，重投后立刻又被判 `DEAD`。修法：SET 中补 `attempt_count`（正常投递路径写回同值，属幂等 no-op） |
+
+> 同轮修掉的**脚本自身**缺陷（非产品问题）：登录响应是 `data.user.id` 而非 `data.userId`；跨 runspace 共享集合不可靠 → 接收记录改为落文件；`PSCustomObject` 不能用 `["键"]` 索引 → 改用 `PSObject.Properties`（否则"头明明在，断言说没有"）；内网开关未开时不再整体中止，改为继续验判据 A。
+
+**第三轮运行时（2026-09-22 03:50~03:55）：全部判据通过**
+
+`docs/test/r8-notify-e2e.ps1` 最终 **PASS=35 FAIL=0 SKIP=0**（`-ApproveTicketId 7` 零配额入口）：
+
+| 判据 | 结果 |
+|---|---|
+| D 地址安全 | `ftp://` 被拒；内网地址在开关打开后可配置 |
+| B 成功投递 + 签名 | 测试投递 `deliveryId=7`（**缺陷 ② 已修**，端点直接返回 ID）→ 台账 `SUCCESS`/HTTP 200 → 对端收到 → **签名复算一致** → 篡改一个字符即不匹配 |
+| C 失败处置 | 对端 500 + `maxAttempts=1` → `DEAD` + 记录状态码与原因 + 配置创建人收到 `WEBHOOK_DEAD` 告警 → **人工重投后 `PENDING` 且次数清零**（缺陷 ③ 已修） |
+| **A 业务事件（零配额入口）** | 审批既有待审工单 #7 → 申请人收到 `TICKET_APPROVED`（标题「报销单已通过」、link `/audits/7`、类别 AUDIT）→ **Webhook 收到该事件且签名复算通过** → 负载 `eventType/bizId/action` 正确 → 台账 `SUCCESS` |
+| **DLQ 告警（缺陷 ① 回归）** | 投一条**非法 JSON** 死信到 DLQ → `deliver 8→9` 且 **`ack 3→4`**（不再被丢弃）→ 产生 `MQ_DLQ_ALERT` 管理员站内信（内容含路由键、死亡原因、截断报文） |
+
+**第四处修复（同一轮发现）**：投递行的 `next_retry_at` 由 JVM 时钟写入**秒精度 DATETIME 列**，MySQL 对超出精度的时间**四舍五入** → 标称"立刻到期"的行实际可能还差零点几秒，而到期判定用的是数据库 `NOW()`，于是**手工催投当场会漏掉刚登记的行**（实测：该行随后因脚本清理删掉配置而被定时任务判 `DEAD`）。修法：`NotifyDelivery.pending` 把到期时间截断到秒（`withNano(0)`）；验证脚本同时改为**轮询等待**（不依赖亚秒时序），两侧都加固。
+
+**✅ 收尾项已确认（2026-09-22 03:58）**：用户已删除 `FINAUDIT_NOTIFY_ALLOW_PRIVATE_ADDRESS` 并重启 agent-core，处置后复核无副作用——
+① 内网地址重新被拒（`code=400`，提示"解析到内网/保留地址 127.0.0.1（环回地址）"）；② 公网地址仍可正常配置（探针创建后即删）；
+③ 站内信三个端点正常（未读数 11、分页 3 条、事件码 12 个）；④ 库内无生效中的 Webhook 配置（未删 0 条、逻辑删除 18 条）。
+修复④（到期时间截断到秒）**已包含在本次重启的构建中**，并由新增单测 `NotifyDeliveryTest#pendingTruncatesNextRetryToSecondPrecision` 钉住
+（原先只有临时打开内网开关才可能观测到该精度问题，单测使其与安全开关解耦）。
+
+
+**用户验证清单（待执行）**：
+1. 备份后执行增量迁移：`mysql -uroot -p < docs/database/migration-P3.8.sql`（新增 §19 三表 + §20 权限码）；
+2. `.env` 追加 `FINAUDIT_NOTIFY_ALLOW_PRIVATE_ADDRESS=true`（**仅为本地脚本联调**，验证完改回 `false`）；
+3. 重启 agent-core（tool-service 也需重启以应用 `dlq-alert.enabled: false`）；
+4. 跑 `docs/test/r8-notify-e2e.ps1`（`-SkipSubmit` 可先不消耗 LLM 配额只验 Webhook 链路）。
+
 
 
 | 序 | 动作 | 状态 |
 |---|---|---|
 | R8-1 | 离线规则验真升级为外部查验服务商对接（**待商务决策**，见 §4.3 决策 2） | ⏸ 待决策（6 项决策点见 §11 R8 记录；决策前保持离线规则验真） |
-| R8-2 | 主动通知：站内信 / Webhook（B-8） | ⬜ 未开始（后端可做） |
+| R8-2 | 主动通知：站内信 / Webhook（B-8） | ✅ 后端完成（**待提交**，运行时待用户验证）。含 outbox 投递 + HMAC 签名 + SSRF 防线 + DLQ 告警收口，见 §11 R8 记录 |
 | **R8-3** | **进度百分比与预计等待时间（进度查询体验）** | ✅ 后端完成 + 运行时复验通过（**待提交**，见 §11 R8 记录）。含运行时发现的「进度回退」处置与 `correctionCount` 透出 |
 | R8-4 | `reimbursement/list.vue` 补轮询 | ⏸ 归前端阶段（后端进度端点已就绪，见 R8-3）。**前端必须同时处理进度回退**：`correctionCount > 0` 且 `progressPct` 回退时显示「正在重新核验（第 N 次纠错）」；若产品要求进度条只增不减，须由前端对**展示值**取历史最大（`max(seen)`），后端仍返回真实值；`estimateSource=DEFAULT` 时要提示"粗略估算" |
 

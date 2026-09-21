@@ -17,6 +17,15 @@
 --   10 核对工单表新列（R4）
 --   11 agent_task 增 correction_count / self_check_result（R5 语义自校验）
 --   12 核对 agent_task 自校验两列（R5）
+--   13 tool_registry 增出参 Schema 列（R6）
+--   14 工具契约对称化：budget_query 入参 Schema + amount_verify 出参 Schema（R6）
+--   （15 未使用：编号在 R7 期间跳过，保留空号以免与旧记录错位）
+--   16 模型调用台账表（R9-1）
+--   17 任务/步骤耗时列（R9-2）
+--   18 核对 R9 的表与列
+--   19 主动通知三表：站内信 / Webhook 配置 / 投递台账（R8-2）
+--   20 通知配置权限码 notify:manage（R8-2）
+--   21 核对 R8-2 的表与权限码
 --
 -- 背景（业务走查 B-1/B-2）：budget.used_amount 此前全仓无写入点，只做只读预检，
 --   同一部门同月多笔报销全部报「预算充足」，系统一次都不拦。
@@ -382,4 +391,104 @@ WHERE table_schema = DATABASE()
   AND ((TABLE_NAME = 'agent_task' AND COLUMN_NAME = 'duration_ms')
     OR (TABLE_NAME = 'agent_task_step' AND COLUMN_NAME = 'duration_ms'))
 ORDER BY TABLE_NAME;
+
+-- ---------------------------------------------------------------------
+-- 19. 主动通知三表（R8-2）
+--     notify_message  站内信（一行 = 一个收件人的一条消息，群发按收件人展开）
+--     notify_webhook  Webhook 配置（按租户多条；订阅事件数组 + HMAC 密钥）
+--     notify_delivery Webhook 投递台账（outbox：投递行与业务数据同事务写入，定时任务负责投递与重试）
+--     幂等：CREATE TABLE IF NOT EXISTS（与 §16 同一写法）。三表均为新增表，无历史数据可回填——
+--     上线前的业务事件没有通知记录是事实，不做"补发"（补发会给出早已过期的提醒）。
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notify_message (
+    id         BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id  BIGINT        NOT NULL DEFAULT 1 COMMENT '租户ID',
+    user_id    BIGINT        NOT NULL COMMENT '收件人用户ID（sys_user.id）',
+    category   VARCHAR(32)   NOT NULL COMMENT '类别: AUDIT 审核流转 / ALERT 平台告警',
+    event_type VARCHAR(48)   NOT NULL COMMENT '事件类型（见 NotifyEvents，与 Webhook 订阅同一套编码）',
+    title      VARCHAR(128)  NOT NULL COMMENT '标题',
+    content    VARCHAR(1000) DEFAULT NULL COMMENT '正文（含可读原因摘要）',
+    biz_type   VARCHAR(32)   DEFAULT NULL COMMENT '业务类型: TASK / TICKET / REIMBURSEMENT / MQ',
+    biz_id     BIGINT        DEFAULT NULL COMMENT '业务ID（单据/任务/工单）',
+    link       VARCHAR(255)  DEFAULT NULL COMMENT '前端跳转路径（如 /audit/tickets?id=12）',
+    dedupe_key VARCHAR(160)  DEFAULT NULL COMMENT '幂等键（同租户唯一；NULL=不去重）',
+    read_at    DATETIME      DEFAULT NULL COMMENT '已读时间（NULL=未读）',
+    created_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted    TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_notify_dedupe (tenant_id, dedupe_key),
+    KEY idx_notify_user_unread (tenant_id, user_id, read_at),
+    KEY idx_notify_user_created (tenant_id, user_id, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '站内信（P3.8 R8-2：主动通知）';
+
+CREATE TABLE IF NOT EXISTS notify_webhook (
+    id           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id    BIGINT       NOT NULL DEFAULT 1 COMMENT '租户ID',
+    name         VARCHAR(64)  NOT NULL COMMENT '配置名称（租户内未删除行重名禁止）',
+    url          VARCHAR(512) NOT NULL COMMENT '回调地址（仅 http/https，默认拒绝私网/环回）',
+    secret       VARCHAR(128) NOT NULL COMMENT 'HMAC-SHA256 签名密钥（明文，见表注释取舍）',
+    event_types  JSON         NOT NULL COMMENT '订阅事件类型数组；[]=订阅全部',
+    enabled      TINYINT      NOT NULL DEFAULT 1 COMMENT '启用: 1启用 0停用',
+    max_attempts INT          NOT NULL DEFAULT 3 COMMENT '最大投递次数（含首次）',
+    timeout_ms   INT          NOT NULL DEFAULT 5000 COMMENT '单次 HTTP 超时（毫秒）',
+    created_by   BIGINT       DEFAULT NULL COMMENT '创建人用户ID',
+    created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted      TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    KEY idx_webhook_tenant (tenant_id, enabled)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Webhook 配置（P3.8 R8-2）';
+
+CREATE TABLE IF NOT EXISTS notify_delivery (
+    id               BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    tenant_id        BIGINT       NOT NULL DEFAULT 1 COMMENT '租户ID',
+    webhook_id       BIGINT       NOT NULL COMMENT '目标 Webhook（notify_webhook.id）',
+    event_type       VARCHAR(48)  NOT NULL COMMENT '事件类型',
+    event_id         VARCHAR(64)  NOT NULL COMMENT '事件ID（投递头 X-Finaudit-Delivery，供接收方幂等）',
+    payload          JSON         NOT NULL COMMENT '事件负载（原始 JSON，重试原样重发）',
+    status           VARCHAR(16)  NOT NULL DEFAULT 'PENDING' COMMENT '状态: PENDING/SUCCESS/DEAD',
+    attempt_count    INT          NOT NULL DEFAULT 0 COMMENT '已尝试次数',
+    next_retry_at    DATETIME     NOT NULL COMMENT '下次投递时间（PENDING 时有效）',
+    last_http_status INT          DEFAULT NULL COMMENT '最近一次 HTTP 状态码（网络层失败为 NULL）',
+    last_error       VARCHAR(500) DEFAULT NULL COMMENT '最近一次失败原因（截断保存）',
+    delivered_at     DATETIME     DEFAULT NULL COMMENT '投递成功时间',
+    created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted          TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    PRIMARY KEY (id),
+    KEY idx_delivery_due (status, next_retry_at),
+    KEY idx_delivery_webhook (tenant_id, webhook_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Webhook 投递台账（P3.8 R8-2：outbox 模式）';
+
+-- ---------------------------------------------------------------------
+-- 20. 通知配置权限码（R8-2）
+--     notify:manage：Webhook 配置的增删改查 + 投递台账查看（仅内置 admin 角色持有）
+--     幂等：先判存在再插入。**刻意不用 INSERT IGNORE**——它会连"数据过长/取值非法"这类真错误
+--     一起吞掉，R9 的 error_msg 超长就是这样被静默丢了一整行台账。
+-- ---------------------------------------------------------------------
+INSERT INTO sys_permission (id, perm_code, perm_name, perm_type, group_name)
+SELECT 31, 'notify:manage', '通知配置管理（Webhook）', 'MENU', '系统管理'
+FROM DUAL
+WHERE NOT EXISTS (SELECT 1 FROM sys_permission WHERE perm_code = 'notify:manage');
+
+INSERT INTO sys_role_permission (tenant_id, role_id, perm_id)
+SELECT 1, 1, p.id
+FROM sys_permission p
+WHERE p.perm_code = 'notify:manage'
+  AND NOT EXISTS (SELECT 1 FROM sys_role_permission rp
+                  WHERE rp.tenant_id = 1 AND rp.role_id = 1 AND rp.perm_id = p.id AND rp.deleted = 0);
+
+-- ---------------------------------------------------------------------
+-- 21. 核对：R8-2 的表与权限码已就位
+-- ---------------------------------------------------------------------
+SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.tables
+WHERE table_schema = DATABASE()
+  AND TABLE_NAME IN ('notify_message', 'notify_webhook', 'notify_delivery')
+ORDER BY TABLE_NAME;
+
+SELECT p.id, p.perm_code, p.perm_name, p.group_name,
+       (SELECT COUNT(*) FROM sys_role_permission rp WHERE rp.perm_id = p.id AND rp.deleted = 0) AS granted_roles
+FROM sys_permission p
+WHERE p.perm_code = 'notify:manage';
 

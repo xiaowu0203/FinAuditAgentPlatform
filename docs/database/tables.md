@@ -377,6 +377,53 @@ PENDING → WITHDRAWN（提交人撤回，直接生效）
 | created_at | DATETIME | |
 | deleted | TINYINT | 逻辑删除 |
 
+## 18. notify_message 站内信表（P3.8 R8-2 新增）
+
+一行 = **一个收件人的一条消息**（群发按收件人展开，读状态各自独立）。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | BIGINT | 主键 |
+| `tenant_id` | BIGINT | 租户（多租户拦截器自动过滤） |
+| `user_id` | BIGINT | 收件人（`sys_user.id`）；所有读写都按登录用户的 `user_id` 限定，越权防线在此 |
+| `category` | VARCHAR(32) | `AUDIT` 审核流转 / `ALERT` 平台告警（前端按此分组、红点分色） |
+| `event_type` | VARCHAR(48) | 事件码，取值见 [`docs/api/notify.md`](../api/notify.md) §4 |
+| `title` / `content` | VARCHAR(128) / VARCHAR(1000) | 标题与正文（实体边界按列宽截断，避免超长导致整行写入失败） |
+| `biz_type` / `biz_id` | VARCHAR(32) / BIGINT | 业务类型（TASK/TICKET/REIMBURSEMENT/MQ）与业务 ID |
+| `link` | VARCHAR(255) | 前端跳转路径（如 `/audits/12`） |
+| `dedupe_key` | VARCHAR(160) | 幂等键；`uk_notify_dedupe (tenant_id, dedupe_key)`，NULL 表示不去重（多个 NULL 互不冲突） |
+| `read_at` | DATETIME | 已读时间（NULL = 未读），已读再标不改原时间 |
+
+索引：`uk_notify_dedupe(tenant_id, dedupe_key)`、`idx_notify_user_unread(tenant_id, user_id, read_at)`（未读数）、
+`idx_notify_user_created(tenant_id, user_id, created_at)`（分页）。
+
+## 19. notify_webhook Webhook 配置表（P3.8 R8-2 新增）
+
+| 列 | 说明 |
+|---|---|
+| `name` / `url` | 配置名称（租户内未删除行重名禁止）/ 回调地址（仅 http/https，默认拒绝内网/环回） |
+| `secret` | HMAC-SHA256 签名密钥。⚠️ 明文入库（签名需可还原），对外只回显掩码；生产应接 KMS |
+| `event_types` | JSON 数组，订阅的事件码；`[]` = 订阅全部。JSON 列：写入必须走实体更新（§5.13） |
+| `enabled` / `max_attempts` / `timeout_ms` | 启用状态 / 最大投递次数（默认 3、上限 10）/ 单次 HTTP 超时（默认 5000ms、上限 60000ms） |
+| `created_by` | 创建人（投递放弃时告警到此人） |
+
+⚠️ 刻意不在 `(tenant_id, name)` 上加唯一索引：本表有逻辑删除列，唯一索引会把"删掉后重建同名配置"永久挡住
+（`agent_task_step` 是用 `deleted=id` 的下标技巧绕开的，配置表不值得引入该复杂度），改为 Service 层校验。
+
+## 20. notify_delivery Webhook 投递台账（P3.8 R8-2 新增，outbox）
+
+| 列 | 说明 |
+|---|---|
+| `webhook_id` / `event_type` / `event_id` | 目标配置 / 事件码 / 事件 ID（投递头 `X-Finaudit-Delivery`，供接收方幂等） |
+| `payload` | JSON：**原始事件体**，重试原样重发（签名基于同一 body） |
+| `status` | `PENDING` 待投递/待重试 / `SUCCESS` 成功 / `DEAD` 超次数放弃（刻意无 FAILED 中间态） |
+| `attempt_count` / `next_retry_at` | 已尝试次数（同时作为乐观认领的版本号）/ 下次投递时间 |
+| `last_http_status` / `last_error` / `delivered_at` | 最近 HTTP 状态码 / 失败原因（500 字符截断）/ 成功时间 |
+
+索引：`idx_delivery_due(status, next_retry_at)`（取到期行）、`idx_delivery_webhook(tenant_id, webhook_id, id)`（台账查询）。
+
+> 投递行与业务数据**同事务**写入（outbox）：业务提交成功 ⇒ 投递记录必在，重启不丢、可用 SQL 排障。
+> 定时任务（默认 15s）按租户取件 → 乐观认领 → HTTP 投递 → 回写结果。详见 [`docs/api/notify.md`](../api/notify.md) §3.3。
 ## Seed 数据（脚本内置）
 
 | 表 | 数据 |
@@ -385,8 +432,8 @@ PENDING → WITHDRAWN（提交人撤回，直接生效）
 | sys_role | `admin`（管理员）、`auditor`（审核员） |
 | sys_user | `admin` / 密码 `admin123`（BCrypt） |
 | sys_user_role | admin 绑定 admin 角色 |
-| sys_permission | 权限目录 23 码种子（系统管理操作级 15 + 业务资源级 7 + 预留 1，P3.5a） |
-| sys_role_permission | admin 全量 22 码；auditor 财务业务 5 码（rule:manage + 三个 viewAll + audit:approve）；普通用户不授码 |
+| sys_permission | 权限目录 24 码种子（系统管理操作级 16 + 业务资源级 7 + 预留 1；P3.5a 建，P3.8 R8-2 增 `notify:manage`） |
+| sys_role_permission | admin 全量 23 码（R8-2 起含 `notify:manage`）；auditor 财务业务 5 码（rule:manage + 三个 viewAll + audit:approve）；普通用户不授码 |
 | tool_registry | 预置 `amount_verify`（金额核验工具，含 JSON Schema）+ P2b 四个审核工具（ocr_extract/budget_query/rule_check/duplicate_check，scenario=FINANCE） |
 | budget | 默认租户 2026-08 四个部门预算种子 |
 | finance_rule | 四类规则种子（amount_limit/reimburse_expire/travel_standard/subsidy_limit，P2c 起 `published=1` 生效集） |

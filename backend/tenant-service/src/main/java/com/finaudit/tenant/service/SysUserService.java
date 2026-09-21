@@ -311,4 +311,25 @@ public class SysUserService {
                 .eq(SysUser::getTenantId, tenantId)
                 .eq(SysUser::getUsername, username));
     }
+
+    /**
+     * 按权限码解析收件人（P3.8 R8-2）：本租户内「启用且未删除、且其角色持有该权限码」的用户 id。
+     *
+     * <p>用于通知收件人解析——「转人工 → 通知有审批权限的人」「DLQ 告警 → 通知管理员」这类场景，
+     * 触发方是后台线程（没有登录用户上下文），只能按权限码反查。</p>
+     *
+     * <p>租户来自 {@code X-Tenant-Id} 请求头写入的 {@link com.finaudit.starter.web.tenant.TenantContextHolder}，
+     * 由多租户拦截器落到 SQL；此处刻意**不接收 tenantId 参数**，避免调用方伪造（与
+     * {@code SysUserService} 其余方法一致：租户取上下文，不信任入参）。</p>
+     *
+     * @param permCode 权限码（空白则直接返回空列表，不查库）
+     * @return 用户 id 列表（可能为空，调用方须容忍空集）
+     */
+    public List<Long> listEnabledUserIdsByPermCode(String permCode) {
+        if (!StringUtils.hasText(permCode)) {
+            return List.of();
+        }
+        List<Long> ids = userMapper.listEnabledUserIdsByPermCode(permCode);
+        return ids == null ? List.of() : ids;
+    }
 }

@@ -17,6 +17,7 @@
 | `agent-core-reimbursements` | `/api/v1/reimbursements/**`（P2a-重构单据闭环） | `lb://agent-core-service` |
 | `agent-core-approval` | `/api/v1/audit/tickets/**`（P3b 审批工单，用户侧） | `lb://agent-core-service` |
 | `agent-core-rules` | `/api/v1/rules/**`（P2c 规则可视化配置） | `lb://agent-core-service` |
+| `agent-core-notify` | `/api/v1/notify/**`（P3.8 R8-2 主动通知：站内信 + Webhook 配置，见 [`notify.md`](./notify.md)） | `lb://agent-core-service` |
 
 Discovery locator 已关闭，仅走上述显式路由。
 

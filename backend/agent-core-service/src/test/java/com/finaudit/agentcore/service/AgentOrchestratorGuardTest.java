@@ -65,6 +65,10 @@ class AgentOrchestratorGuardTest {
     @Mock
     private AgentExecutionProperties executionProperties;
 
+
+    @Mock
+    private NotifyFacade notifyFacade;
+
     @InjectMocks
     private AgentOrchestrator orchestrator;
 

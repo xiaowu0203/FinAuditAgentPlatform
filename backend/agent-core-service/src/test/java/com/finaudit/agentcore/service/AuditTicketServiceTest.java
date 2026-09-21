@@ -75,6 +75,9 @@ class AuditTicketServiceTest {
     private RuleBasedFlowEngine flowEngine;
     @Mock
     private BudgetOccupancyService budgetOccupancyService;
+    /** P3.8 R8-2：审批结局会调通知门面；不注入 mock 会让 hook 直接 NPE */
+    @Mock
+    private NotifyFacade notifyFacade;
 
     @InjectMocks
     private AuditTicketService service;

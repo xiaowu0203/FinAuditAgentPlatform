@@ -71,6 +71,10 @@ class AgentOrchestratorSelfCheckTest {
     @Mock
     private SelfConsistencyChecker selfConsistencyChecker;
 
+
+    @Mock
+    private NotifyFacade notifyFacade;
+
     @InjectMocks
     private AgentOrchestrator orchestrator;
 

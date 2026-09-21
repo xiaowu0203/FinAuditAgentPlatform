@@ -74,6 +74,10 @@ class AgentOrchestratorFinalizeIsolationTest {
     @Mock(strictness = Mock.Strictness.LENIENT)
     private SelfConsistencyChecker selfConsistencyChecker;
 
+
+    @Mock(strictness = Mock.Strictness.LENIENT)
+    private NotifyFacade notifyFacade;
+
     @InjectMocks
     private AgentOrchestrator orchestrator;
 

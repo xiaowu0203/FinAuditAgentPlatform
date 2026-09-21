@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.finaudit.agentcore.mapper.NotifyMessageMapper">
+
+    <!--
+      批量新增站内信（P3.8 R8-2）：单条多行 INSERT，禁止 for 循环逐行插入（AGENTS.md §5.10）。
+      - id 自增、created_at/updated_at 走数据库默认值，deleted 显式写 0；
+      - dedupe_key 为 NULL 时 MySQL 唯一索引视其为互不冲突（可无限追加同事件通知）；
+      - 不带 UPDATE：重复事件（如二次驳回）本就该再提醒一次，幂等只对"同一事件重复投递"生效，
+        由调用方通过 dedupeKey 显式表达。
+    -->
+    <insert id="insertBatch">
+        INSERT INTO notify_message
+        (tenant_id, user_id, category, event_type, title, content, biz_type, biz_id, link, dedupe_key, deleted)
+        VALUES
+        <foreach collection='list' item='m' separator=','>
+            (#{m.tenantId}, #{m.userId}, #{m.category}, #{m.eventType}, #{m.title}, #{m.content},
+             #{m.bizType}, #{m.bizId}, #{m.link}, #{m.dedupeKey}, 0)
+        </foreach>
+    </insert>
+
+</mapper>

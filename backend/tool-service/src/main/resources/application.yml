@@ -68,3 +68,14 @@ mybatis-plus:
 logging:
   level:
     com.finaudit: info
+
+# 主动通知相关（P3.8 R8-2）
+finaudit:
+  mq:
+    dlq-alert:
+      # ⚠️ 刻意在 tool-service 关闭 DLQ 告警消费者：agent-core 与 tool-service 都引入 common-mq-starter，
+      # 若不关闭，两者会对 finaudit.dlq 形成**竞争消费**——告警随机落在一边，而只有 agent-core
+      # 持有告警通道（MqAlertNotifySink：管理员站内信 + MQ_DLQ_ALERT Webhook），
+      # 落在 tool-service 的那一半就只剩控制台日志（本仓日志不落盘）。
+      # 关闭后由 agent-core 独占消费，告警不再丢。详见 docs/api/notify.md。
+      enabled: false
