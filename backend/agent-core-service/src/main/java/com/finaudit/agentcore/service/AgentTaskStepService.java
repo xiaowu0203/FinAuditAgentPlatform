@@ -131,6 +131,69 @@ public class AgentTaskStepService {
     }
 
     /**
+     * 写入步骤入参（P3.8 R5）：自纠错重跑风控步骤时，把矛盾提示放进该步入参，
+     * 使 {@code executeLlmStep} 组装上下文时携带「自校验发现矛盾」的增强信息。
+     *
+     * <p><b>⚠️ 必须走实体补丁更新（R5-9）</b>：{@code input_params} 是 JSON 列，wrapper 的
+     * {@code set(col, value)} 不带 typeHandler，驱动会按 binary 字符集发送字符串，MySQL 5.7 报
+     * {@code Cannot create a JSON value from a string with CHARACTER SET 'binary'}。
+     * 实测该异常曾让「自校验矛盾提示」注入静默失败（被兜底 catch 吞掉），
+     * 见 {@link AgentTaskStep#inputParamsPatch}。</p>
+     *
+     * @param stepId      步骤 ID
+     * @param inputParams 步骤入参
+     * @return false = 未命中（步骤不存在）
+     */
+    public boolean updateInputParams(Long stepId, Map<String, Object> inputParams) {
+        return stepMapper.update(AgentTaskStep.inputParamsPatch(stepId, inputParams),
+                new LambdaUpdateWrapper<AgentTaskStep>()
+                        .eq(AgentTaskStep::getId, stepId)) > 0;
+    }
+
+    /**
+     * 自纠错重跑：将指定步骤重置为 PENDING 并清空输出/错误/重试计数（P3.8 R5）。
+     *
+     * <p>用于语义自校验命中矛盾后重跑风控语义步骤。因步骤编号靠后，其后的步骤（结论汇总等）
+     * 也要一并重置，故按 stepNo 升序传入待重置步骤。</p>
+     *
+     * <p><b>⚠️ 必须同步内存对象（R5-8 踩过）</b>：调用方（{@code AgentOrchestrator.finalizeSuccess}）
+     * 持有的 {@code steps} 列表与本方法入参是<b>同一批对象引用</b>。若只改数据库而不改内存，
+     * 重置后下游再用这批对象判断「还有没有待执行步骤」时，看到的仍是 SUCCESS，
+     * 于是判定「无可重置步骤」→ <b>重跑永远不会发生</b>（实测现象：自校验判定不一致、
+     * 但 correction_count 恒为 0、工单原因里没有自校验项）。
+     * 内存同步后，对象状态与 DB 一致，后续逻辑才能看到 PENDING。</p>
+     *
+     * <p><b>⚠️ 清空必须走 wrapper 的 {@code set(col, null)}</b>：把 null 放进实体再 update，
+     * MyBatis-Plus 默认 NOT_NULL 策略会跳过该字段，输出与错误信息根本清不掉
+     * （同 {@code AttachmentService.unbindByReimb} 踩过的坑）。</p>
+     *
+     * @param steps 待重置的步骤（调用方按 stepNo 升序传入）
+     * @return 实际重置的步骤数
+     */
+    public int resetForSelfCorrection(List<AgentTaskStep> steps) {
+        if (steps == null || steps.isEmpty()) {
+            return 0;
+        }
+        int reset = 0;
+        for (AgentTaskStep step : steps) {
+            reset += stepMapper.update(null, new LambdaUpdateWrapper<AgentTaskStep>()
+                    .eq(AgentTaskStep::getId, step.getId())
+                    // 仅重置已成功/失败的步骤；RUNNING 说明有在途执行，不动它
+                    .in(AgentTaskStep::getStatus, StepStatus.SUCCESS.name(), StepStatus.FAILED.name())
+                    .set(AgentTaskStep::getStatus, StepStatus.PENDING.name())
+                    .set(AgentTaskStep::getOutput, null)
+                    .set(AgentTaskStep::getErrorMsg, null)
+                    .set(AgentTaskStep::getRetryCount, 0));
+            // 同步内存对象：调用方持有同一批引用，不同步会让下游看到过期的 SUCCESS 状态
+            step.setStatus(StepStatus.PENDING.name());
+            step.setOutput(null);
+            step.setErrorMsg(null);
+            step.setRetryCount(0);
+        }
+        return reset;
+    }
+
+    /**
      * 全量重规划（P3b 工作流重设计）：逻辑删除旧步骤 + 按新规划重插。
      * <p>提交人修改明细后步骤可能增删（附件清空→OCR 步消失），update-in-place 只能置状态不能
      * 改结构，故必须全量重建；这也一并修复了旧实现「重跑时 TOOL 步骤沿用规划时投影的旧

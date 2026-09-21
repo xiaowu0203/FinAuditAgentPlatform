@@ -97,4 +97,20 @@ public class AgentTaskStep {
         step.setRetryCount(0);
         return step;
     }
+
+    /**
+     * 步骤入参补丁（P3.8 R5-9）：只带主键 + {@code input_params}，供
+     * {@code mapper.update(patch, wrapper)} 精确更新单个 JSON 列。
+     *
+     * <p><b>⚠️ 为什么不能用 wrapper 的 {@code set(col, value)}</b>：它生成的参数不带 typeHandler，
+     * {@code Map} 会被驱动按 binary 字符集发送，MySQL 5.7 报
+     * {@code Cannot create a JSON value from a string with CHARACTER SET 'binary'}。
+     * 实体字段带 {@link JacksonTypeHandler}，经实体更新才会序列化成 utf8 字符串。</p>
+     */
+    public static AgentTaskStep inputParamsPatch(Long id, Map<String, Object> inputParams) {
+        AgentTaskStep patch = new AgentTaskStep();
+        patch.setId(id);
+        patch.setInputParams(inputParams);
+        return patch;
+    }
 }

@@ -66,6 +66,21 @@ public class AgentTask {
     @Schema(description = "错误信息")
     private String errorMsg;
 
+    /**
+     * 自校验纠错次数（P3.8 R5-4）。语义自校验命中矛盾后重跑风控语义步骤时累加，上限见
+     * {@code AgentOrchestrator}（默认 1 次）。同时是 P4「工具纠错次数」指标的来源。
+     */
+    @Schema(description = "自校验纠错次数（命中矛盾重跑风控步骤累加）")
+    private Integer correctionCount;
+
+    /**
+     * 自校验结果（P3.8 R5-4）：{@code SelfCheckResult} 的 JSON 快照，
+     * 含是否通过、命中的矛盾/幻觉清单与断言条数。供任务详情展示「自校验明细」。
+     */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    @Schema(description = "语义自校验结果（JSON：是否通过 + 矛盾/幻觉清单）")
+    private Map<String, Object> selfCheckResult;
+
     @Schema(description = "创建人ID")
     private Long createdBy;
 
@@ -99,6 +114,39 @@ public class AgentTask {
         task.setTotalSteps(0);
         task.setFinishedSteps(0);
         return task;
+    }
+
+    /**
+     * 自校验结果补丁（P3.8 R5-9）：只带主键 + {@code self_check_result}，供
+     * {@code mapper.update(patch, wrapper)} 精确更新单个 JSON 列。
+     *
+     * <p><b>⚠️ 为什么不能用 wrapper 的 {@code set(col, value)} 写 JSON 列</b>：
+     * {@code LambdaUpdateWrapper.set} 生成的参数<b>不携带 typeHandler</b>，MyBatis 只能把
+     * {@code Map} 当未知对象交给 JDBC 驱动，驱动按 binary 字符集发送字符串，MySQL 5.7 直接拒绝：
+     * {@code Data truncation: Cannot create a JSON value from a string with CHARACTER SET 'binary'}。
+     * 实体字段带 {@link JacksonTypeHandler}，经实体更新时 MP 渲染
+     * {@code #{et.xxx,typeHandler=JacksonTypeHandler}}，序列化为 utf8 字符串后正常入库。</p>
+     *
+     * <p>本机 MySQL 5.7 + mysql-connector-j 实测：wrapper.set 写 {@code self_check_result}
+     * 抛 {@code MysqlDataTruncation}，换成本补丁更新即成功。补丁只带 JSON 列，
+     * 避免把整个实体写回造成脏写。</p>
+     */
+    public static AgentTask selfCheckResultPatch(Long id, Map<String, Object> selfCheckResult) {
+        AgentTask patch = new AgentTask();
+        patch.setId(id);
+        patch.setSelfCheckResult(selfCheckResult);
+        return patch;
+    }
+
+    /**
+     * 任务入参补丁（P3.8 R5-9）：只带主键 + {@code input_params}。
+     * <p>同 {@link #selfCheckResultPatch}：JSON 列必须走实体（带 typeHandler）更新。</p>
+     */
+    public static AgentTask inputParamsPatch(Long id, Map<String, Object> inputParams) {
+        AgentTask patch = new AgentTask();
+        patch.setId(id);
+        patch.setInputParams(inputParams);
+        return patch;
     }
 
     /**

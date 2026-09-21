@@ -15,6 +15,8 @@
 --   8  核对工具注册表（R3）
 --   9  audit_ticket 增 review_findings 结构化问题项列（R4）
 --   10 核对工单表新列（R4）
+--   11 agent_task 增 correction_count / self_check_result（R5 语义自校验）
+--   12 核对 agent_task 自校验两列（R5）
 --
 -- 背景（业务走查 B-1/B-2）：budget.used_amount 此前全仓无写入点，只做只读预检，
 --   同一部门同月多笔报销全部报「预算充足」，系统一次都不拦。
@@ -240,4 +242,37 @@ DEALLOCATE PREPARE stmt;
 SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
 FROM information_schema.columns
 WHERE table_schema = DATABASE() AND table_name = 'audit_ticket' AND COLUMN_NAME = 'review_findings';
+
+-- ---------------------------------------------------------------------
+-- 11. agent_task 增自校验两列（R5-4）
+--     correction_count：语义自校验命中矛盾后重跑风控语义步骤的次数（上限 1，超限转人工）
+--     self_check_result：自校验结果快照（是否通过 + 矛盾/幻觉清单 + 断言条数）
+--     幂等：information_schema 判定后动态 DDL（MySQL 5.7 无 ADD COLUMN IF NOT EXISTS）
+-- ---------------------------------------------------------------------
+SET @col_cc = (SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_schema = DATABASE() AND table_name = 'agent_task' AND column_name = 'correction_count');
+SET @ddl_cc = IF(@col_cc = 0,
+    'ALTER TABLE agent_task ADD COLUMN correction_count INT NOT NULL DEFAULT 0 COMMENT ''自校验纠错次数（P3.8 R5：命中矛盾重跑风控语义步骤时累加）'' AFTER error_msg',
+    'SELECT ''correction_count 已存在，跳过'' AS skip_msg');
+PREPARE stmt_cc FROM @ddl_cc;
+EXECUTE stmt_cc;
+DEALLOCATE PREPARE stmt_cc;
+
+SET @col_scr = (SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema = DATABASE() AND table_name = 'agent_task' AND column_name = 'self_check_result');
+SET @ddl_scr = IF(@col_scr = 0,
+    'ALTER TABLE agent_task ADD COLUMN self_check_result JSON DEFAULT NULL COMMENT ''语义自校验结果（P3.8 R5：是否通过 + 矛盾/幻觉清单 + 断言条数）'' AFTER correction_count',
+    'SELECT ''self_check_result 已存在，跳过'' AS skip_msg');
+PREPARE stmt_scr FROM @ddl_scr;
+EXECUTE stmt_scr;
+DEALLOCATE PREPARE stmt_scr;
+
+-- ---------------------------------------------------------------------
+-- 12. 核对：agent_task 自校验两列已就位
+-- ---------------------------------------------------------------------
+SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+FROM information_schema.columns
+WHERE table_schema = DATABASE() AND table_name = 'agent_task'
+  AND COLUMN_NAME IN ('correction_count', 'self_check_result')
+ORDER BY ORDINAL_POSITION;
 

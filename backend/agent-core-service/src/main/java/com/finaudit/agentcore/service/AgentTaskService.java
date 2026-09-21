@@ -209,6 +209,45 @@ public class AgentTaskService {
     }
 
     /**
+     * 落库自校验结果（P3.8 R5-4）。
+     *
+     * <p>只在字段非空时更新，避免把结果覆盖成 null。<b>必须走实体补丁更新（R5-9）</b>：
+     * 本列是 JSON 列，wrapper 的 {@code set(col, value)} 不带 typeHandler，MySQL 5.7 会拒绝
+     * （{@code Cannot create a JSON value from a string with CHARACTER SET 'binary'}）——
+     * 实测该异常曾被自校验的兜底 catch 吞掉，表现为「自校验结果落库了、但自纠错从未触发」，
+     * 排查见 {@link AgentTask#selfCheckResultPatch}。</p>
+     *
+     * @param task   任务（会同步内存字段，供同事务后续逻辑读取）
+     * @param result 自校验结果快照
+     * @return false = 更新未命中（任务不存在）
+     */
+    public boolean applySelfCheckResult(AgentTask task, Map<String, Object> result) {
+        if (result == null) {
+            return false;
+        }
+        task.setSelfCheckResult(result);
+        return taskMapper.update(AgentTask.selfCheckResultPatch(task.getId(), result),
+                new LambdaUpdateWrapper<AgentTask>()
+                        .eq(AgentTask::getId, task.getId())) > 0;
+    }
+
+    /**
+     * 自校验纠错计数 +1（P3.8 R5-4，命中矛盾重跑风控步骤时调用）。
+     * <p>用 SQL 自增而非「读-改-写」，避免并发重跑时计数丢失。</p>
+     *
+     * @return 自增后的纠错次数；-1 表示未命中（任务不存在）
+     */
+    public int incrementCorrectionCount(AgentTask task) {
+        taskMapper.update(null, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, task.getId())
+                .setSql("correction_count = IFNULL(correction_count, 0) + 1"));
+        AgentTask fresh = taskMapper.selectById(task.getId());
+        int count = fresh == null || fresh.getCorrectionCount() == null ? 0 : fresh.getCorrectionCount();
+        task.setCorrectionCount(count);
+        return count;
+    }
+
+    /**
      * 更新任务为失败状态，写入相关错误信息。
      *
      * @return false = 状态已被并发迁移，调用方应放弃失败联动（报销单回写/工单复位）
@@ -270,28 +309,32 @@ public class AgentTaskService {
      * 状态回 RUNNING、已完成步骤清零、刷新本次执行开始时间——单条条件 UPDATE 原子完成。
      * <p>期望态含 APPROVAL_PENDING（工单待审批时修改）与 REJECTED（工单已驳回后修改）。
      * 注意 result/errorMsg 置空必须用 wrapper 的 {@code set(..., null)} 显式写 NULL——
-     * entity 参数的 null 字段不会进 SET 子句，{@code updateById} 清不掉列值。</p>
+     * entity 参数的 null 字段不会进 SET 子句，{@code updateById} 清不掉列值。
+     * 而 {@code input_params} 是 JSON 列、值为非 null，<b>必须走实体补丁（R5-9）</b>：
+     * wrapper 的 {@code set} 不带 typeHandler，MySQL 5.7 会以 binary 字符集拒绝该写入
+     * （见 {@link AgentTask#inputParamsPatch}），此前 amend 重跑链路会因此直接失败。</p>
      *
      * @param inputParams 修正后的任务快照入参（含新 items 与重算 claimedTotal）
      * @return false = 状态已被并发迁移，调用方应放弃重跑
      */
     public boolean prepareRerun(AgentTask task, Map<String, Object> inputParams) {
-        boolean applied = taskMapper.update(null, new LambdaUpdateWrapper<AgentTask>()
-                .eq(AgentTask::getId, task.getId())
-                .in(AgentTask::getStatus, TaskStatus.APPROVAL_PENDING.name(), TaskStatus.REJECTED.name())
-                .set(AgentTask::getInputParams, inputParams)
-                .set(AgentTask::getResult, null)
-                .set(AgentTask::getErrorMsg, null)
-                .set(AgentTask::getStatus, TaskStatus.RUNNING.name())
-                .set(AgentTask::getStartedAt, LocalDateTime.now())
-                .set(AgentTask::getFinishedSteps, 0)) > 0;
+        LocalDateTime now = LocalDateTime.now();
+        boolean applied = taskMapper.update(AgentTask.inputParamsPatch(task.getId(), inputParams),
+                new LambdaUpdateWrapper<AgentTask>()
+                        .eq(AgentTask::getId, task.getId())
+                        .in(AgentTask::getStatus, TaskStatus.APPROVAL_PENDING.name(), TaskStatus.REJECTED.name())
+                        .set(AgentTask::getResult, null)
+                        .set(AgentTask::getErrorMsg, null)
+                        .set(AgentTask::getStatus, TaskStatus.RUNNING.name())
+                        .set(AgentTask::getStartedAt, now)
+                        .set(AgentTask::getFinishedSteps, 0)) > 0;
         if (applied) {
             // 内存实体同步（调用方随后 flowEngine.plan(task) 依赖新入参）
             task.setInputParams(inputParams);
             task.setResult(null);
             task.setErrorMsg(null);
             task.setStatus(TaskStatus.RUNNING.name());
-            task.setStartedAt(LocalDateTime.now());
+            task.setStartedAt(now);
             task.setFinishedSteps(0);
         }
         return applied;

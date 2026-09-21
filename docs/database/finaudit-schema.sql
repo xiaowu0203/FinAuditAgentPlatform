@@ -135,6 +135,8 @@ CREATE TABLE agent_task (
     finished_steps INT          NOT NULL DEFAULT 0 COMMENT '已完成步骤数',
     result        JSON          DEFAULT NULL COMMENT '最终结果（汇总 JSON）',
     error_msg     VARCHAR(1024) DEFAULT NULL COMMENT '失败原因',
+    correction_count INT        NOT NULL DEFAULT 0 COMMENT '自校验纠错次数（P3.8 R5：命中矛盾重跑风控语义步骤时累加）',
+    self_check_result JSON      DEFAULT NULL COMMENT '语义自校验结果（P3.8 R5：是否通过 + 矛盾/幻觉清单 + 断言条数）',
     created_by    BIGINT        DEFAULT NULL COMMENT '提交人用户ID',
     created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

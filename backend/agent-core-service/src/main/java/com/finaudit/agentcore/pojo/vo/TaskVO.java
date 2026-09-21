@@ -46,6 +46,12 @@ public class TaskVO {
     @Schema(description = "错误信息")
     private String errorMsg;
 
+    @Schema(description = "自校验纠错次数（P3.8 R5：命中矛盾重跑风控语义步骤的次数）")
+    private Integer correctionCount;
+
+    @Schema(description = "语义自校验结果（是否通过 + 矛盾/幻觉清单 + 断言条数）")
+    private Map<String, Object> selfCheckResult;
+
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
 
@@ -62,6 +68,9 @@ public class TaskVO {
         vo.setFinishedSteps(task.getFinishedSteps());
         vo.setResult(task.getResult());
         vo.setErrorMsg(task.getErrorMsg());
+        // P3.8 R5：自校验明细透出，前端任务详情可展示「纠错 N 次 + 自校验明细」
+        vo.setCorrectionCount(task.getCorrectionCount());
+        vo.setSelfCheckResult(task.getSelfCheckResult());
         vo.setCreatedAt(task.getCreatedAt());
         return vo;
     }

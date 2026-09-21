@@ -459,6 +459,11 @@
 
 ### R4 · 结构化 findings 与驳回重提引导（B-7）—— 🔶 后端主体完成（R4-4/4-5 前端延后、R4-6 幂等未做）
 
+> ⚠️ **R4 验收的补正（2026-09-21，R5 阶段发现）**：`r4-review-findings-e2e.ps1` 19/19 通过**未覆盖
+> amend 重跑链路**。该链路的入口 `AgentTaskService.prepareRerun` 用 `wrapper.set` 写 JSON 列
+> `input_params`，在真实库上必然抛 `MysqlDataTruncation`（详见 §11 R5-9），即
+> **「工单驳回 → 提交人修改后重跑」此前不可用**。修复已随 R5 一并提交，需在 R5 复验时补测该链路。
+
 > B-7：驳回只给一句 `risk_desc` 文字（如「规则校验超标」），提交人**不知道该改哪一行、改成多少**。
 > 本阶段把复核原因从「字符串列表」升级为「结构化问题项」，直接支撑业务目标里的**驳回重提引导**。
 
@@ -536,15 +541,21 @@
 - [ ] **R4-6 提交幂等未做**（见下）
 
 
-### R5 · Agent 语义自校验与自主纠错（A-1，放大器；依赖 R2/R3 数据）
+### R5 · Agent 语义自校验与自主纠错（A-1，放大器；依赖 R2/R3 数据）—— ✅ 后端完成，见 §11
 
 | 序 | 动作 | 涉及文件 | 验收断言 |
 |---|---|---|---|
-| R5-1 | 新增 `SelfConsistencyChecker`（5 条断言，第 ③④ 条来自 R3 的真实产出） | 新增 `domain/SelfCheckResult.java`、`service/SelfConsistencyChecker.java` | 单测：5 条断言各自命中/通过 |
-| R5-2 | `RuleBasedFlowEngine` 插入 `self_check` 步骤（LLM 风控后、汇总前） | `RuleBasedFlowEngine.java` | `RuleBasedFlowEngineTest` 断言步骤序列与顺序 |
-| R5-3 | 矛盾命中 → 重跑风控步骤（增强 prompt 携带矛盾提示），上限 1 次；超限 → `NEED_REVIEW` + findings | `AgentOrchestrator.java` | 单测：构造矛盾 → 重跑 1 次 → 仍矛盾则 NEED_REVIEW |
-| R5-4 | `agent_task` 增 `correction_count`、`self_check_result` 列 + 迁移 + VO 透出 | `migration-P3.8.sql`、`AgentTask.java`、`TaskVO.java` | 前端任务详情可见"纠错 N 次 + 自校验明细" |
-| R5-5 | **AUTO_PASS 基线实测**：构造 20~30 张小样本单据，统计自动通过率与各 reviewReason 分布，据此决定是否放宽 `confidence<0.7`（决策 5） | 测试脚本 + 结果记录 | 输出基线报告，作为阈值调整依据 |
+| R5-1 | 新增 `SelfConsistencyChecker`（5 条断言，第 ③④ 条来自 R3 的真实产出） | 新增 `domain/SelfCheckResult.java`、`service/SelfConsistencyChecker.java` | 单测：5 条断言各自命中/通过 ✅ 13/13 |
+| R5-2 | 自校验接入收尾闸口（**设计偏差**：未做成流水线步骤，理由见 §11） | `AgentOrchestrator.java` | 收尾前强制校验，通过才允许 AUTO_PASS ✅ |
+| R5-3 | 矛盾命中 → 重跑风控步骤（增强 prompt 携带矛盾提示），上限 1 次；超限 → `NEED_REVIEW` + findings | `AgentOrchestrator.java` | 单测：构造矛盾 → 重跑 1 次 → 仍矛盾则 NEED_REVIEW ✅ |
+| R5-4 | `agent_task` 增 `correction_count`、`self_check_result` 列 + 迁移 + VO 透出 | `migration-P3.8.sql`、`AgentTask.java`、`TaskVO.java` | 前端任务详情可见"纠错 N 次 + 自校验明细" ✅ 列已建出 |
+| R5-5 | **AUTO_PASS 基线实测**：构造 20~30 张小样本单据，统计自动通过率与各 reviewReason 分布，据此决定是否放宽 `confidence<0.7`（决策 5） | 测试脚本 + 结果记录 | ⬜ **未做**（需真实 LLM 与 OCR 配额，见 §11 R5 待办） |
+| R5-6 | 联调缺陷：自纠错重跑误用 `continueTask` → 重入 `finalizeSuccess` → 无限递归 `StackOverflowError` | `AgentOrchestrator.resumeFromFirstPendingStep` | ✅ 直接分发首个 PENDING 步骤，不再重入收尾 |
+| R5-7 | 加固：自校验/自纠错异常一律兜底放行，绝不阻断收尾（否则单据永久卡 RUNNING） | `AgentOrchestrator.passSelfCheckOrCorrect` | ✅ 单测 `AgentOrchestratorFinalizeIsolationTest` 3/3 |
+| R5-8 | 联调缺陷：`resetForSelfCorrection` 只改 DB 未同步内存对象 | `AgentTaskStepService.java` | ✅ 回归护栏 `resetSyncsInMemoryStepState` |
+| R5-9 | **联调缺陷（真正根因）**：wrapper `set(jsonColumn, value)` 不带 typeHandler → MySQL 5.7 以 binary 字符集拒绝写入，异常被兜底吞掉 → 自纠错链路从未执行 | `AgentTask`/`AgentTaskStep` 补丁工厂、`AgentTaskService.applySelfCheckResult`/`prepareRerun`、`AgentTaskStepService.updateInputParams` | ✅ 真实库最小复现 + `JsonColumnTypeHandlerGuardTest` 4/4 |
+| R5-10 | 联调缺陷：矛盾提示注入到了 TOOL 步骤（风控角色下 `findFirst` 命中 `duplicate_check`），从未到达 LLM，重跑等于白跑 | `AgentOrchestrator.injectSelfCheckHint` | ✅ 只注入 `stepType=LLM` 的风控步骤，退化到首个 LLM 步骤 |
+| R5-11 | 加固：自校验/自纠错轨迹落库（`result.selfCheckTrace`），摆脱「只能看 IDE 控制台日志」 | `AgentOrchestrator.trace`、`docs/test/r5-self-check-e2e.ps1` | ✅ 脚本新增判据 C：轨迹必须存在且不含「自校验执行失败/自纠错动作执行失败」 |
 
 ### R6 · 结构与契约（A-2 / A-4 / A-5、P1-1 / P1-4 / P1-5 / P1-6）
 
@@ -709,16 +720,18 @@
 | **R1** 预算真实占用与释放 | ✅ 完成并推送 | `d8f1586` | `budget_occupancy` 记账表 + 原子占用 SQL；含 R1-8 单号撞库、R1-9 配平公式两个联调缺陷 |
 | **R2** 发票标识符入链 | ✅ 完成并推送 | `1acaa9a` | 票号入链 + `invoice_record` 投影表；含 R2-10 审计时间戳填充框架缺陷 |
 | **R3** 按票查重 + 票据核验 | ✅ 完成并推送 | `a4df2e7` | 两级查重 + `invoice_match` 工具；含 R3-7 一票多单归属的**架构缺陷**修复 |
-| **R4a** 结构化 findings | ✅ 代码完成 + 端到端验收通过（**未提交**） | — | `ReviewFinding` + `review_findings` 列；含 R4-7 传输层字段丢失 |
+| **R4a** 结构化 findings | ✅ 完成并推送 | `1a9375b` | `ReviewFinding` + `review_findings` 列；含 R4-7 传输层字段丢失 |
+| **R5** 语义自校验与自主纠错 | ✅ 运行时复验通过（**未提交**） | — | 5 条一致性断言 + 矛盾重跑风控；含 R5-6/R5-8/R5-9/R5-10/R5-11 五个联调缺陷（**R5-9 为真正根因：JSON 列写入方式错误**），端到端脚本 9/9 PASS |
 | R4-4 / R4-5 前端展示 | ⏸ 延后（§7 后端先行） | — | 待修正项清单、编辑页标红预填 |
 | R4-6 提交幂等 | ⏸ 移出 R4 | — | 幂等键由前端生成，与前端阶段一起做才可验证 |
-| R5 ~ R9 | ⬜ 未开始 | — | 见 §5 |
+| R5-5 AUTO_PASS 基线实测 | ⬜ 未做 | — | 依赖真实 LLM 与 OCR 配额，留待配额稳定时执行 |
+| R6 ~ R9 | ⬜ 未开始 | — | 见 §5 |
 
-**当前验证基线**：`mvn -o clean install` 19 模块 BUILD SUCCESS；agent-core 135 例、tool-service 25 例、
+**当前验证基线**：`mvn -o clean install` 19 模块 BUILD SUCCESS；agent-core **175 例**、tool-service 25 例、
 common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudit` 共 **21 张表**
-（迁移脚本 `migration-P3.8.sql` 共 10 节，全部幂等可重复执行）。
+（迁移脚本 `migration-P3.8.sql` 共 12 节，全部幂等可重复执行）。
 
-**六个端到端/专项验收脚本**（`docs/test/`，均带 UTF-8 BOM）：
+**八个端到端/专项验收脚本**（`docs/test/`，均带 UTF-8 BOM）：
 
 | 脚本 | 覆盖 | 最近结果 |
 |---|---|---|
@@ -729,6 +742,8 @@ common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudi
 | `r2-audit-timestamp-check.ps1` | R2-10 审计时间戳填充 | 2/2 PASS |
 | `r3-invoice-dedup-e2e.ps1` | R3 按票查重 + 票据核验 | 5/5 PASS |
 | `r4-review-findings-e2e.ps1` | R4a 结构化问题项 | 19/19 PASS |
+| `r5-self-check-e2e.ps1` | R5 自校验落库 + 自纠错重跑 + 轨迹无异常（判据 A/B/C） | **9/9 PASS**（taskId=400683） |
+| `r5-amend-rerun-e2e.ps1` | R5-9 顺带修复：驳回 → 修改明细 → 同单重跑全链路 | **19/19 PASS**（taskId=400683） |
 
 ### 跨阶段踩坑清单（按「下次一定还会踩」排序）
 
@@ -768,17 +783,40 @@ common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudi
     例：明细级 5000 元上限整条链路都是死代码，金额上限实际由 `rule_check` 兜住。
 13. **唯一索引决定「一行」，与「需要记录多对多」是同一张表上的冲突**。
     设计投影/快照表时先问：这张表要回答的关系是一对一还是一对多？（R3-7 架构缺陷的根因）
+14. **JSON 列禁止用 `wrapper.set(列, 非null值)` 写入，必须走实体更新**：wrapper 参数不带 typeHandler，
+    驱动按 binary 字符集发送字符串，MySQL 5.7 报
+    `Cannot create a JSON value from a string with CHARACTER SET 'binary'`。
+    `wrapper.getSqlSet()` 看起来完全正常，报错只在**驱动绑定参数**时发生——mock 单测永远抓不到。
+    实测：实体更新（字段带 `JacksonTypeHandler`）成功，wrapper `set` 必失败（R5-9 的根因）。
+    ⚠️ 置 NULL 是例外，`set(col, null)` 实测无问题。
+15. **`try/catch` 兜底必须留下落库痕迹**：R5-7 为防单据卡死给自校验加了兜底，结果致命异常被降级成
+    「IDE 控制台里的一行日志」——而 agent-core 日志既不落盘、验证方也读不到，于是故障被藏了三轮。
+    兜底可以吞异常，但**必须把异常原文写进可查询的持久化字段**（R5-11 的 `result.selfCheckTrace`）。
+16. **「真实库最小复现」是最快的定位手段**：拿生产同一套 Mapper/实体，手工装配 `SqlSessionFactory`，
+    对真实库跑一遍可疑的 DB 操作序列，能一次区分「wrapper 构造问题 / 参数绑定问题 / 表结构问题」。
+    比在应用里加日志、重启、复跑快一个数量级（本仓可参考 R5-9 的复现程序思路，
+    成品见 `docs/test/repro/JsonColumnWriteRepro.java`）。
+17. **校验脚本里的 `Api()` 必须区分「R 结构响应」与「非 R 响应」**：把 `Invoke-WebRequest` 的异常体
+    直接 `ConvertFrom-Json` 时，404/403 的空体或 Spring 默认错误体会被解析成**空对象**，
+    于是 `code`/`message` 全空、被判成「业务失败」并可能降级为 SKIP —— **脚本看似全绿，其实那段压根没测到**。
+    实测踩过：端点前缀写成 `/api/v1/audit-tickets`（实为 `/api/v1/audit/tickets`）返回 404，
+    amend 脚本 16/16 PASS 却从未执行驳回。修法：非 R 响应统一返回
+    `{ code = -1; message = "HTTP <status> <body>" }`。
+    **推论**：验收脚本里的 `SKIP` 必须打印原始响应，禁止无痕降级。
 
 验证方法类：
 
-14. **「某值应被更新」的断言必须对比前后跳变**，绝不能与 0 或某个绝对值比较 ——
+17. **「某值应被更新」的断言必须对比前后跳变**，绝不能与 0 或某个绝对值比较 ——
     否则历史遗留偏差会让「修复无效」也报 PASS（R2-10 首版就假通过了）。
-15. **删掉能 PR 的符号必然留下死代码**：R0 拆 `/internal` 漏删 `AuditDataController`、
+18. **删掉能 PR 的符号必然留下死代码**：R0 拆 `/internal` 漏删 `AuditDataController`、
     R3 删 `findBudgetRow` 留下失效 `@link`。删改端点/方法后必须全仓 grep 旧名。
-16. **端到端验收不可省**：R3-7（一票多单归属）、R4-7（装配层丢字段）两个缺陷
+19. **端到端验收不可省**：R3-7（一票多单归属）、R4-7（装配层丢字段）两个缺陷
     **单测全绿、只有端到端才暴露**。
-17. **验收前先确认目标进程还活着**：R1-8 首次造撞其实成功了，但目标进程随后重启导致日志丢失，
+20. **验收前先确认目标进程还活着**：R1-8 首次造撞其实成功了，但目标进程随后重启导致日志丢失，
     被误判为「没撞上」，白折腾数轮。
+21. **「落库成功」的表象可能来自另一个写入路径**：R5-9 里 `self_check_result` 有值并非因为
+    `applySelfCheckResult` 成功，而是后续 `markApprovalPending` 用实体更新把内存字段顺带写了进去。
+    判断某次写入是否成功，要看**该语句自己**的结果，而不是最终列里有没有值。
 
 
 ---
@@ -814,8 +852,11 @@ common-mybatisplus-starter 4 例、file-service 3 例全绿。数据库 `finaudi
 - [x] ~~`git rm` 停用的 `AuditDataController.java`~~ **已删除**
 - [x] ~~按 AGENTS.md §6 提交 + 双仓推送（R0 为一个阶段）~~ **已完成**：提交 `3114b60`，双仓已推送
 - [x] ~~进入 R1（预算真实占用与释放）~~ **已完成**：见下文 R1 段落
-- [x] R1 / R2 / R3 均已完成并推送；R4a 代码与端到端验收完成（**待提交**）
-- [ ] **下一步：提交 R4a**（一阶段一提交，双仓推送）→ 然后进入 **R5**（Agent 语义自校验与自主纠错）
+- [x] R1 / R2 / R3 / R4a 均已完成并推送
+- [x] R5 代码与单测完成（**待提交**）
+- [ ] **下一步：提交 R5**（一阶段一提交，双仓推送）
+- [ ] **重启 agent-core 联调 R5**：验证自校验命中 → 重跑风控步骤 → `correction_count`/`self_check_result` 落库
+- [ ] R5-5 AUTO_PASS 基线实测（依赖真实 LLM 与 OCR 配额，见 R5 待办）
 - [ ] R6 / R7 中需补的历史欠账：**R2-10 审计时间戳填充对其余实体仍未生效**
       （`agent_task` / `audit_ticket` / `budget_occupancy` 等仍走 `updateById` 且未标注 `FieldFill`，
       `updated_at` 依然从不刷新）——需逐个实体评估后补标注
@@ -1269,6 +1310,309 @@ AFTER : seen_count=5 attachment_id=46 reimb_id=48 updated_at=01:37:22   ← 三�
 - [x] **`updated_at` 自动填充运行时复验通过**（重启后实测 `01:49:10 → 01:49:15` 跳变）
 - [ ] **R3 依赖本阶段产出**：`queryDuplicates` 改按 `(invoice_code, invoice_num)` 硬命中
 - [ ] R6/R7：为其余实体补 `@TableField(fill=...)` 标注（R2-10 缺陷对它们仍未修复）
+
+---
+
+### R5 · 语义自校验与自主纠错 —— ✅ 后端完成（**待重启联调**）
+
+> A-1：需求标准③「自主任务拆解 / 分步执行 / 工具联动 / **自主纠错**」中，自主纠错此前**实质未实现** ——
+> 只有 TOOL 步骤传输层重试 3 次（即时重发、无退避），没有任何**语义层**的
+> 「结果合法性与交叉一致性校验 → 异常自动重执行」。
+
+**实现要点**
+
+| 序 | 落点 | 要点 |
+|---|---|---|
+| R5-1 | 新增 `domain/SelfCheckResult` + `service/SelfConsistencyChecker` | 5 条确定性交叉一致性断言；命中即返回不通过，并给出矛盾/幻觉清单 |
+| R5-2 | 自校验接入 `AgentOrchestrator.finalizeSuccess` 的**收尾闸口** | 通过才允许 AUTO_PASS；**设计偏差见下** |
+| R5-3 | 命中矛盾 → `resetForSelfCorrection` 重置风控语义步骤（含其后步骤）→ `continueTask` 重跑；上限 1 次，超限转人工 | 矛盾提示经 `updateInputParams` 注入风控步骤入参 |
+| R5-4 | `agent_task` 增 `correction_count` / `self_check_result`（迁移第 11 节）+ `AgentTask` / `TaskVO` 透出 | `correctionCount` 用 SQL 自增（`IFNULL(...)+1`）避免并发丢失 |
+
+**⚠️ 设计偏差（R5-2）：自校验不做成流水线步骤，而是收尾闸口**
+
+原计划是在 `RuleBasedFlowEngine` 里 LLM 风控之后、结论汇总之前插一个 `self_check` 步骤。
+实施时发现**该位置拿不到断言 ①③ 需要的数据**：这两条断言要对比「汇总结论」，
+而汇总结论由排在最后的 LLM 汇总步骤产出——校验插在它之前，结论还不存在，断言只能空转。
+
+故改为在 `finalizeSuccess`（收尾判定 AUTO_PASS 之前）执行校验。此时风控评估与汇总结论都已落库，
+5 条断言才都有真实数据可比。**代价**：`RuleBasedFlowEngine` 步骤序列不变（仍 8 步），
+前端步骤列表里不会出现 `self_check` 这一行；自校验明细改由 `agent_task.self_check_result` 透出。
+
+**5 条断言**
+
+| 序 | 断言 | 数据来源 |
+|---|---|---|
+| ① | `amount_verify.match=false` 但汇总结论 APPROVE | R0 起的金额核验 + LLM 汇总 |
+| ② | `rule_check.overLimit=true` 但风险等级 LOW | R4 结构化规则命中 + LLM 风控 |
+| ③ | `invoice_match.match=false` 但汇总结论 APPROVE | **R3 真实产出**（票据-明细交叉核验） |
+| ④ | `duplicate_check` 硬命中但风控置信度 ≥ 0.9 | **R3 真实产出**（按票号硬命中） |
+| ⑤ | LLM 输出引用了前序步骤中不存在的发票号（幻觉） | R2 落库的票号 + LLM 自由文本 |
+
+**为什么这算「自主纠错」而不是又一层规则**：它**消费 LLM 输出并对 LLM 自己下判断**（含幻觉维度），
+并**驱动重执行**（重跑风控语义步骤），属 self-consistency / self-reflection 模式；
+同时天然产出 P4 所需指标（工具纠错次数、幻觉率）。
+
+**验证（AI 自测，非用户验收）**
+
+| 项 | 方式 | 结果 |
+|---|---|---|
+| 5 条断言 | 新增 `SelfConsistencyCheckerTest` | **13/13 通过**：① 命中 + 非 APPROVE 时不命中；② 命中 + 风险等级已反映时不命中；③ 命中；④ 硬命中触发 / 中置信不触发；⑤ 幻觉命中 + 引用真实票号不触发 + 不同长度数字不触发；干净流水线全通过且报告断言条数；空步骤不误判；findings 结构化转换与矛盾提示生成 |
+| 收尾 + 自纠错链路 | 新增 `AgentOrchestratorSelfCheckTest` | **5/5 通过**：自校验通过时收尾不抛异常且结果落库、AUTO_PASS 正常标记成功；命中矛盾时重置并**直接分发**（回归护栏）、不误标成功；超限转人工；`toResultMap` 含幻觉标记 |
+| 全量构建 | `mvn -o clean install`（19 模块） | **BUILD SUCCESS**；agent-core **166 例**（135 + 13 + 5 + 其他） |
+| 迁移 | 已在真实 `finaudit` 库执行 | 退出码 0，`correction_count`（int NOT NULL DEFAULT 0）与 `self_check_result`（json）已建出；**重复执行退出码 0（幂等）** |
+
+**过程中单测抓到的一个误报（已修）**
+
+断言⑤ 初版只用「数字长度与真实票号一致」做形态判断，结果把日期 `20260901`（8 位）
+误判成幻觉票号 —— 真实票号 `07632553` 也是 8 位。已补日期形态排除（`yyyyMMdd`）。
+设计取舍：**宁可漏判，也不要让自校验把正常结论误判成矛盾而触发无谓重跑**（重跑会多烧一次 LLM Token）。
+
+**⚠️ R5-6（运行时验证暴露的致命缺陷）：自纠错重跑写成自调用，无限递归至 StackOverflow**
+
+**现象**：R5 上线后提交一张单，任务 **8 步全部 SUCCESS 却永久卡在 RUNNING**，
+`agent_task.result` 与 `self_check_result` 均为 NULL，且未建工单 —— 收尾整体没完成。
+
+**排查过程**（值得记，因为我一开始猜错了方向）：
+1. 先怀疑「列映射不一致」「自校验把结果判空」「事务边界」——逐项排除：列与实体一致（`self_check_result` json）、
+   步骤 6/7/8 输出齐全（LLM 确实产出了结论）、`onToolResult` 非事务。
+2. **关键线索**：`result` 也是 NULL。`result` 在 `finalizeSuccess` 一开始就 `put` 了，
+   若收尾跑完必然有值 ⇒ **`finalizeSuccess` 内部抛了异常**，且因为 `markSuccess` 在最后，
+   任务保持 RUNNING。这一条线索同时解释了全部现象。
+3. 不再靠读代码猜，直接写测试复现（`AgentOrchestratorSelfCheckTest`，通过公开入口 `onToolResult` 驱动收尾），
+   一次就拿到确凿异常：
+   ```
+   java.lang.StackOverflowError
+     at SelfConsistencyChecker.check
+     at AgentOrchestrator.passSelfCheckOrCorrect
+     at AgentOrchestrator.finalizeSuccess
+     at AgentOrchestrator.continueTask
+     at AgentOrchestrator.passSelfCheckOrCorrect     ← 回到起点，无限递归
+   ```
+
+**根因（我的实现缺陷）**：命中矛盾后重置步骤再调 `continueTask(task.getId())`。
+但 `continueTask` 内部会**重新 `listByTask`**，而在**同一事务**里读到的仍是**重置前的 SUCCESS 状态**
+⇒ 它判定「所有步骤已完成」⇒ 再次进入 `finalizeSuccess` ⇒ 自校验再次失败 ⇒ 再次重置 ⇒ 递归至栈溢出。
+**任务因此永远收不了尾** —— 这是个会让整条流水线静默停摆的致命缺陷。
+
+**修复**：重置后**重新加载步骤并直接 `dispatch` 第一个 PENDING 步骤**，不再经过 `continueTask`：
+
+```java
+// ⚠️ 重置后【不能】调用 continueTask：它内部会重新 listByTask，而在同一事务里读到的
+//    仍是重置前的 SUCCESS 状态，于是又走到 finalizeSuccess → 再次自校验失败 → 再次重置，
+//    形成无限递归（实测 StackOverflowError）。
+resumeFromFirstPendingStep(task);   // 直接分发第一个 PENDING 步骤
+```
+
+并补 `AgentOrchestratorSelfCheckTest`（5 例）作为回归护栏，其中
+`rerunPathDispatchesPendingStepInsteadOfReenteringContinueTask` 专门断言「重置后走 dispatch 而非重回收尾」。
+
+> **教训一**：**在同一事务里「改状态 → 再重新查询驱动流程」是危险模式**——查到的可能是未刷新的旧状态。
+> 改状态后若要靠查询驱动后续，要么按刚改后的明确意图直接分发，要么确保查询走新事务。
+> **教训二**：**private 的收尾路径必须通过公开入口补测试**。该缺陷单测全绿、端到端才暴露，
+> 而端到端现象（任务卡 RUNNING、字段全 NULL）本身不指向根因 —— 是靠写测试复现才拿到栈的。
+
+**⚠️ R5-7：修掉递归后现象仍在 → 改为给自校验加兜底（并留下真实栈）**
+
+修掉递归（R5-6）并重启后，**现象完全一样**：任务 8 步全 SUCCESS、卡 RUNNING、`result` 与
+`self_check_result` 全 NULL、不建工单。说明递归不是唯一原因，收尾链路上还有别的异常。
+
+**逐个排除的四个嫌疑**（全部新增了测试，均通过）：
+
+| 嫌疑 | 测试 | 结果 |
+|---|---|---|
+| 递归未除净 | `AgentOrchestratorSelfCheckTest` | 已修；断言「重置后走 dispatch 而非重回收尾」 |
+| 编排器收尾逻辑本身 | `AgentOrchestratorFinalizeIsolationTest` 3/3 | 全桩成功时收尾不抛异常 → 排除编排逻辑 |
+| 校验器消费真实数据 | `SelfConsistencyCheckerRobustnessTest` 4/4 | 用**从真实流水线复制的 output 形态**（含 LLM 长文本、7 条嵌套 duplicates、深层嵌套 200 项）与畸形形态驱动，均不抛 → 排除校验器 |
+| 自校验结果落库 | `AgentTaskServiceSelfCheckPersistTest` 4/4 | 真实 `TableInfo` 下 wrapper 能解析 `self_check_result` 列与 JSON 类型处理器 → 排除落库 |
+
+单测层面全部排除，但真实栈拿不到（agent-core 日志只进 IDE 控制台、不落盘）。
+
+**处置：加兜底 + 留栈（这也是本来就该有的设计）**
+
+自校验是**增强环节**，其自身故障**绝不允许阻断收尾**——否则单据永远审不完。
+故在 `passSelfCheckOrCorrect` 外包 try/catch：任何异常都 `log.error` 打印**完整堆栈**并**放行收尾**，
+由后续确定性判定（`ReviewFlowDecider`）与人工兜底继续把关。自纠错动作（重置/计数）同样加兜底。
+
+> 这个兜底不是"掩盖问题"：它把一个**让流水线静默停摆的致命缺陷**降级为**可观测的告警**。
+> 重启后日志会给出真实栈，据此可继续定位；同时即使还有未知故障，单据也不再永久卡死。
+
+**🔶 R5-8（修复正确、但归因错误，真实根因见 R5-9）：重置步骤只改了 DB、没同步内存对象**
+
+加上兜底后重启复验，现象收敛为：**`self_check_result` 已落库且含矛盾清单**（自校验确实执行、
+断言④ 精确命中「硬命中重复 + 置信度 0.95」），但 **`correction_count` 恒为 0**、
+工单原因里没有「自校验未通过」——说明自纠错分支没走通。
+
+**定位方法（这次没再靠猜）**：写了一个**用真实 service 逻辑（spy）+ 可变步骤对象**驱动的收尾测试，
+它一次就给出了确切断言：
+
+```
+AssertionFailedError: 第 7 步（风控）应被重置 ==> expected: <PENDING> but was: <SUCCESS>
+```
+
+**根因**：`resetForSelfCorrection` 只通过 wrapper 更新了**数据库**，**没有同步内存里的步骤对象**。
+而 `AgentOrchestrator.finalizeSuccess` 收到的 `steps` 列表与该方法入参是**同一批对象引用**——
+重置后下游再读它，看到的仍是 `SUCCESS`，于是判定「没有待重跑步骤」（`reset == 0`），
+走进「无可重置步骤 → 转人工」分支；该分支内部又抛了异常被兜底放行，
+最终由 `ReviewFlowDecider` 正常建单，形成"自校验判定不一致但什么都没发生"的假象。
+
+**修复**：重置时**同步内存对象**（状态转 PENDING、清空输出/错误、重试归零），
+使内存状态与 DB 一致，下游才能看到 PENDING 并真正重跑。
+
+**回归护栏**：`AgentTaskStepResetSqlTest.resetSyncsInMemoryStepState` 直接断言
+「重置后内存对象状态必须为 PENDING 且输出已清空」——这条断言若无修复必然失败。
+
+> **教训（与 R5-6 同源）**：**「改状态」必须同时覆盖 DB 与内存两种表示**。
+> R5-6 是「改完后重新查 DB 拿到旧值」，R5-8 是「只改 DB 没改内存」——
+> 两个缺陷都源于同一件事：**混淆了「持久化状态」与「调用方持有的对象状态」**。
+> 凡是 service 方法修改了调用方传入的实体，就应当考虑是否要同步回内存对象。
+
+**✅ R5-9（真正的根因，已修复）：wrapper `set(jsonColumn, value)` 不带 typeHandler，写 JSON 列必失败**
+
+R5-8 修复 + 重启后复验，现象**一模一样**：`self_check_result` 有值、`correction_count=0`。
+这次不再猜，改用**在真实 MySQL 上直接复现**的方式定位：写了一个独立 Java 程序，
+用与生产同一套 MyBatis-Plus Mapper/实体（仅手工装配 `SqlSessionFactory`）对真实库跑一遍
+`decideBySelfCheck` 里的每一步 DB 操作，结果一次给出全部答案：
+
+| # | 复现的操作 | 结果 |
+|---|---|---|
+| 1 | `resetForSelfCorrection` 原样 wrapper（含 `set(output, null)`） | ✅ OK（`set(col, null)` 无问题） |
+| 3 | `updateInputParams(Map)` 原样 wrapper | ❌ `MysqlDataTruncation` |
+| 5 | `applySelfCheckResult(Map)` 原样 wrapper | ❌ `MysqlDataTruncation` |
+| 8 | `prepareRerun` 原样 wrapper（`set(inputParams, map)`） | ❌ `MysqlDataTruncation` |
+| 6 | 修复方案：实体补丁更新写 `self_check_result` | ✅ OK |
+| 7 | 修复方案：实体补丁更新写 `input_params` | ✅ OK |
+
+异常原文：
+
+```
+org.apache.ibatis.exceptions.PersistenceException:
+### Error updating database.  Cause: com.mysql.cj.jdbc.exceptions.MysqlDataTruncation:
+Data truncation: Cannot create a JSON value from a string with CHARACTER SET 'binary'.
+```
+
+**根因**：`LambdaUpdateWrapper.set(列, 值)` 生成的参数**不携带 typeHandler**（`formatParam` 只把值塞进
+`paramNameValuePairs`）。MyBatis 只能把 `Map` 当未知对象交给 JDBC 驱动，驱动按 **binary 字符集**发送字符串，
+MySQL 5.7 的 JSON 列直接拒绝。而实体字段带 `@TableField(typeHandler = JacksonTypeHandler.class)`，
+经**实体更新**时 MP 渲染 `#{et.xxx,typeHandler=JacksonTypeHandler}`，序列化为 utf8 字符串后正常入库——
+这也是为什么 `result`、`review_findings` 等列一直没出问题（它们都走实体更新）。
+
+**为什么这个缺陷极难定位**（三重伪装）：
+
+1. 异常发生在 `applySelfCheckResult`（自校验闸口的**第一行落库**），被 R5-7 的兜底 catch 吞掉，
+   于是 `decideBySelfCheck`（**真正做纠错的地方**）整段根本没被执行——重置、注入、计数、重跑全部没发生；
+2. `self_check_result` **却有值**：`applySelfCheckResult` 会先 `task.setSelfCheckResult(result)` 同步内存，
+   随后 `markApprovalPending(task, ...)` 用**实体**更新，把这个内存字段（带 typeHandler）顺带写进了库——
+   于是「落库成功」的表象把「写入语句其实每次都抛异常」完美掩盖了；
+3. `result` 里的 `selfCheck` 键也正常存在（写在抛异常之前），判据 A 全绿。
+
+**修复**（统一原则：**JSON 列一律经实体更新，禁止出现在 wrapper 的 `set` 片段里**）：
+
+| 位置 | 原写法 | 新写法 |
+|---|---|---|
+| `AgentTaskService.applySelfCheckResult` | `set(AgentTask::getSelfCheckResult, map)` | `AgentTask.selfCheckResultPatch(id, map)` 实体补丁 |
+| `AgentTaskService.prepareRerun` | `set(AgentTask::getInputParams, map)` | `AgentTask.inputParamsPatch(id, map)` 实体补丁 + wrapper 负责其余列 |
+| `AgentTaskStepService.updateInputParams` | `set(AgentTaskStep::getInputParams, map)` | `AgentTaskStep.inputParamsPatch(id, map)` 实体补丁 |
+
+> 补丁实体**只带主键 + 目标 JSON 列**，绝不把整个实体写回（否则会把并发期间的其他字段覆盖成脏值）。
+> 置 NULL 仍走 wrapper 的 `set(col, null)`——实测 null 值不会触发该问题（列 1/2 均 OK）。
+
+**⚠️ 同一根因牵出的潜伏缺陷（R4 遗留，非 R5 新增）**：`prepareRerun` 用在「工单驳回 → 提交人修改后重跑」
+（amend 重跑）链路上。它原样写法**必然抛异常**，即该功能在真实库上一直不可用——
+R4 阶段的验证脚本没有覆盖 amend 重跑，故未被发现。本次一并修复。
+
+**amend 链路运行时复验证据（2026-09-21，`docs/test/r5-amend-rerun-e2e.ps1`，19/19 PASS / 0 SKIP）**
+
+完整走了一遍真实链路：财务驳回 → 提交人改金额 50107 → 7000 → 同单重跑。
+
+| 环节 | 结果 |
+|---|---|
+| 财务驳回（`POST /api/v1/audit/tickets/{id}/reject`） | code=0；工单 `REJECTED`、任务 `REJECTED`、报销单 `FAILED` |
+| 提交人修改重跑（`POST /api/v1/reimbursements/{id}/resubmit`） | **code=0**（修复前该调用必然失败，见上） |
+| `agent_task.input_params.claimedTotal` | **7000** —— prepareRerun 写 JSON 列成功的直接证据 |
+| 工单 | `AMENDED`（rerun_count 0→1→2）、`adjusted_amount=7000.00` |
+| 步骤重规划 | 有效 8 条 + 已软删 16 条（`replan` 全量重建确实执行），与 `total_steps` 一致 |
+| `audit_record` | `action=AMEND` 且 `before_data`/`after_data` 均非空（顺带验证两个 JSON 列） |
+| 重跑结果 | 无 FAILED 步骤、任务 `APPROVAL_PENDING`、`self_check_result` 已落库（自校验在重跑链路上同样生效） |
+| 收口 | 工单由 `AMENDED` 复位 `PENDING`（**不是死端**）、报销单 `total_amount=7000` |
+
+> 脚本首版把端点写成 `/api/v1/audit-tickets/{id}/reject`（实为 `/api/v1/audit/**tickets**`），
+> 得到 404 空响应，被 `ConvertFrom-Json` 解析成空对象后**静默当成「驳回失败」SKIP**，
+> 于是 16/16 全绿却根本没测到驳回环节。教训已固化为两处改造：
+> ① 两个脚本的 `Api()` 对「非 R 结构响应」统一包装成可诊断的 `HTTP <status> <body>`；
+> ② 驳回类前置步骤失败时打印原始响应，禁止静默降级为 SKIP 而不留痕。
+
+**回归护栏**（不连数据库，用 MyBatis 真实解析出的 SQL 断言纪律）：
+`JsonColumnTypeHandlerGuardTest` 四条断言：实体补丁写 `self_check_result` / `input_params` 的参数
+必须是 `JacksonTypeHandler`；**反面证据**：`wrapper.set` 的同列参数**不得**带 `JacksonTypeHandler`
+（把这个「看起来完全正常」的写法钉死）；`TableInfo` 确实登记了 typeHandler。
+
+> **教训 1**：**「SQL 看起来对」不等于「能跑」**——`wrapper.getSqlSet()` 完全正常，
+> 报错在驱动层参数绑定。凡涉及非字符串列（JSON/枚举/自定义 typeHandler），必须用**真实库**
+> 验证一次，mock 单测永远抓不到。本次能一次定位，靠的就是「用真实 Mapper + 真实库跑最小复现」。
+> **教训 2**：**兜底 catch 必须留下可观测的痕迹**。R5-7 的兜底本身是对的（防止单据永久卡死），
+> 但它把致命异常降级成了控制台一行日志（而 agent-core 日志不落盘、只输出到 IDE 控制台），
+> 等于把故障藏了起来。故本节配套 R5-11（轨迹落库）。
+
+**✅ R5-10（同一轮排查中发现并修复）：矛盾提示注入到了 TOOL 步骤，从未到达 LLM**
+
+`injectSelfCheckHint` 原先只按 `agentRole == RISK_AUDITOR` 找注入目标，而风控角色下**既有 TOOL 步骤
+（`duplicate_check`）又有 LLM 步骤（风控语义判断）**，`findFirst` 命中的是 stepNo 更小的 TOOL 步骤。
+只有 `executeLlmStep` 会读 `inputParams` 组装 prompt，工具不认 `selfCheckHint` 字段——
+即使重跑真的发生，LLM 拿到的上下文与首次完全一致，**只会给出同样的结论（重跑等于白跑）**。
+
+**修复**：注入目标改为「`stepType = LLM` 且 `agentRole = RISK_AUDITOR`」的步骤；
+找不到时退化为重跑范围内的**第一个 LLM 步骤**（结论汇总），并在日志中说明；同时把注入到的步骤 ID
+写进自校验轨迹（R5-11），可直接看到「提示到底进了哪一步」。
+
+**✅ R5-11（配套加固）：自校验/自纠错轨迹落库，不再依赖 IDE 控制台**
+
+R5 前后三次误判根因，共同的障碍是：**agent-core 的日志只在开发机 IDE 控制台，既不落盘也无法被
+验证方读取**。故把自校验的执行轨迹写进任务结果 `agent_task.result.selfCheckTrace`（字符串数组），
+内容包括：自校验是否执行完成、`coherent`、命中矛盾数与断言名、是否进入自纠错分支、`riskStepNo`、
+重置了哪些步骤、提示注入到哪一步、第几次重跑、重跑起点，以及**任何兜底 catch 捕获的异常原文**。
+
+`docs/test/r5-self-check-e2e.ps1` 据此新增**判据 C**：`selfCheckTrace` 必须存在，
+且其中**不得出现**「自校验执行失败 / 自纠错动作执行失败」——这一条正是 R5-9 这类
+「异常被吞、链路静默失效」故障的直接检测器（此前判据 A 全绿而链路实际未执行）。
+
+**R5 现状小结（诚实标注）**
+
+- 已确认可用（单测 + 真实运行时）：5 条断言的判定逻辑、`self_check_result` 落库、安全兜底
+- **已修复并在真实运行时复验通过**：R5-6 递归、R5-8 内存状态未同步、**R5-9（真正根因）JSON 列写入方式**、
+  R5-10 提示注入目标、R5-11 轨迹落库 → 自纠错重跑**确实发生**
+- 单测：agent-core 175 个用例全绿（含新增 `JsonColumnTypeHandlerGuardTest` 4 条护栏）
+- R5-5 基线实测未做（见下）
+
+**运行时复验证据（2026-09-21，taskId=400683，脚本 PASS=9 / FAIL=0）**
+
+| 证据 | 值 |
+|---|---|
+| `agent_task.correction_count` | **1**（修复前恒为 0） |
+| `tool_execution_log` 中 `duplicate_check` 执行次数 | **2 次**（23:39:45 首次 → 23:39:49 重跑）——重跑确实发生的最硬证据 |
+| step 7（风控 LLM）`input_params` | 含 `selfCheckHint`（R5-10 修复生效） |
+| step 6（TOOL `duplicate_check`）`input_params` | `{"reimbId":74}` 保持干净（修复前提示会错误注入到这里） |
+| `result.selfCheckTrace` | `自校验执行完成：coherent=false，断言 5 条，矛盾 1 条，历史纠错 1 次 [DUPLICATE_HIGH_VS_HIGH_CONFIDENCE]` → `已达纠错上限 1 次，转人工复核` |
+| 重跑后结果 | LLM 仍给 0.98 置信度（≥0.9）→ 矛盾仍在 → 按上限转人工 → 工单 `review_reasons` 末条含 `RISK_HIT:自校验未通过[DUPLICATE_HIGH_VS_HIGH_CONFIDENCE]…` |
+
+> 注意：本次 LLM 在**拿到矛盾提示后**仍给出更高的置信度（0.93/0.95 → 0.98），
+> 属模型行为而非链路缺陷——系统按设计「上限 1 次 → 转人工」收口，这正是希望的行为
+> （自主纠错不追求「一定说服模型」，而是**发现不一致 → 重跑一次 → 仍不一致就交给人**）。
+
+**待办**
+
+- [x] 迁移已在真实库执行（自校验两列）
+- [x] R5-9 复现与修复（真实库最小复现程序 + 实体补丁写法）
+- [x] **重启复验通过**（taskId=400683，脚本 9/9 PASS）：`correction_count=1`、`duplicate_check` 执行 2 次、
+      轨迹无异常、重跑后仍矛盾 → 工单含「自校验未通过」
+- [x] **amend 重跑链路复验通过**（`r5-amend-rerun-e2e.ps1` 19/19 PASS）：驳回 → 改金额 → 同单重跑 → 工单复位 PENDING
+- [ ] **遗留卡死任务**：`agent_task.id=400675` / `400676` / `400679` 等是 R5-6/R5-9 的受害者
+      （8 步全 SUCCESS 但永久 RUNNING、无 result）。属测试残留，可人工作废或忽略
+- [ ] **R5-5 AUTO_PASS 基线实测未做**：需构造 20~30 张小样本单据统计自动通过率与 reviewReason 分布。
+      依赖**真实 LLM 调用与百度 OCR 配额**（免费版有 QPS 限制），且样本量会显著消耗配额，
+      故留待有稳定配额时执行；届时据此决定是否放宽 `confidence<0.7`（决策 5）
+- [ ] R6 起：`GENERIC` 路径也接入自校验（计划已列在 R6-1）
+- [ ] R6/R7：把「JSON 列写入纪律」（禁止 wrapper `set` 写 JSON 列）补进 `AGENTS.md` §5 代码规范，
+      与既有的「批量新增统一 XML」同级（本轮护栏已在单测层面生效，规范层面待补）
 
 
 

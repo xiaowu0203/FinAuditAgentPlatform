@@ -7,6 +7,7 @@ import com.finaudit.agentcore.domain.AuditConclusion;
 import com.finaudit.agentcore.domain.FlowDecision;
 import com.finaudit.agentcore.domain.ReviewFinding;
 import com.finaudit.agentcore.domain.RiskAssessment;
+import com.finaudit.agentcore.domain.SelfCheckResult;
 import com.finaudit.agentcore.domain.TaskPlanStep;
 import com.finaudit.agentcore.enums.AgentRole;
 import com.finaudit.agentcore.enums.ReimbursementStatus;
@@ -32,9 +33,11 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Agent 编排器（核心状态机 + 事件驱动推进）
@@ -78,6 +81,20 @@ public class AgentOrchestrator {
     private final AgentExecutionProperties executionProperties;
     /** 预算占用服务（P3.8 R1：AUTO_PASS 收尾时真实占用部门预算） */
     private final BudgetOccupancyService budgetOccupancyService;
+    /** 语义自校验器（R5 自主纠错：结果一致性断言 + 重跑驱动） */
+    private final SelfConsistencyChecker selfConsistencyChecker;
+
+    /** 自校验纠错上限（P3.8 R5）：超过则转人工复核，避免无限重跑烧 Token */
+    private static final int SELF_CORRECTION_MAX = 1;
+
+    /** LLM 步骤类型标识（风控语义 / 结论汇总步骤；与 {@code dispatch} 的分发判断同一口径） */
+    private static final String STEP_TYPE_LLM = "LLM";
+
+    /**
+     * 自校验/自纠错轨迹在任务结果里的键名（P3.8 R5-11）。
+     * <p>落库而非只打日志的原因见 {@link #trace}。</p>
+     */
+    private static final String TRACE_KEY = "selfCheckTrace";
 
     /**
      * 构造注入所有依赖组件
@@ -92,6 +109,7 @@ public class AgentOrchestrator {
      * @param auditTicketService 审批工单服务（P3b 审批态进入/闭合）
      * @param executionProperties 执行加固配置（任务级超时预算）
      * @param budgetOccupancyService 预算占用服务（R1 真实占用/释放）
+     * @param selfConsistencyChecker 语义自校验器（R5 自主纠错）
      */
     public AgentOrchestrator(AgentTaskService taskService, AgentTaskStepService stepService,
                              TaskPlanner planner, RuleBasedFlowEngine flowEngine,
@@ -99,7 +117,8 @@ public class AgentOrchestrator {
                              ChatClientFactory modelFactory, ReimbursementService reimbursementService,
                              AuditTicketService auditTicketService,
                              AgentExecutionProperties executionProperties,
-                             BudgetOccupancyService budgetOccupancyService) {
+                             BudgetOccupancyService budgetOccupancyService,
+                             SelfConsistencyChecker selfConsistencyChecker) {
         this.taskService = taskService;
         this.stepService = stepService;
         this.planner = planner;
@@ -111,6 +130,7 @@ public class AgentOrchestrator {
         this.auditTicketService = auditTicketService;
         this.executionProperties = executionProperties;
         this.budgetOccupancyService = budgetOccupancyService;
+        this.selfConsistencyChecker = selfConsistencyChecker;
     }
 
     /**
@@ -155,6 +175,224 @@ public class AgentOrchestrator {
         log.info("任务 {} 规划完成，共 {} 步", task.getTaskNo(), plan.size());
         // 驱动流程执行第一个步骤
         continueTask(taskId);
+    }
+
+    /**
+     * 语义自校验闸口（P3.8 R5，自主纠错）。
+     *
+     * <p><b>流程</b>：确定性交叉一致性校验（5 条断言）→ 通过则继续收尾；
+     * 命中矛盾且纠错次数未达上限 → <b>重跑风控语义步骤</b>（清空其输出并重新分发，增强 prompt 携带矛盾提示）；
+     * 已达上限 → 转人工复核，工单复核原因附「自校验未通过」结构化问题项。</p>
+     *
+     * <p><b>为什么这算自主纠错而不是又一层规则</b>：它消费 LLM 输出并对 LLM 自己下判断
+     * （含幻觉维度），并驱动重执行（重跑风控步骤），属 self-consistency / self-reflection 模式。</p>
+     *
+     * @param task      当前任务
+     * @param steps     全部步骤
+     * @param result    待写入的任务结果（校验结果会并入，供前端展示自校验明细）
+     * @return true = 允许继续收尾流程；false = 已触发重跑或已转人工，调用方须立即返回
+     */
+    private boolean passSelfCheckOrCorrect(AgentTask task, List<AgentTaskStep> steps, Map<String, Object> result) {
+        // ⚠️ 自校验是【增强环节】，其自身故障绝不允许阻断收尾 —— 否则单据永远审不完。
+        //    实测踩过：R5 首版在收尾里抛异常，表现为任务 8 步全 SUCCESS 却永久卡 RUNNING、
+        //    result 与 self_check_result 全 NULL、也不建工单（整条流水线静默停摆）。
+        //    故此处兜底：任何异常都记录完整堆栈并放行收尾，由后续确定性判定继续把关。
+        //
+        //    ⚠️ 但「兜底」不等于「可以静默」（R5-9 教训）：applySelfCheckResult 曾因 JSON 列写法
+        //    错误每次都抛异常，被这里吞掉后表现为「自校验结果已落库、自纠错却从未触发」，
+        //    排查耗了三轮。故所有异常与分支走向都要写进 result 的 selfCheckTrace 一并落库。
+        SelfCheckResult check;
+        try {
+            check = selfConsistencyChecker.check(steps);
+            result.put("selfCheck", OBJECT_MAPPER.convertValue(check, new TypeReference<Map<String, Object>>() {}));
+            taskService.applySelfCheckResult(task, check.toResultMap());
+        } catch (Exception e) {
+            log.error("任务 {} 语义自校验执行失败，已跳过自校验继续收尾（不阻断主链路）", task.getTaskNo(), e);
+            trace(result, "自校验执行失败（已跳过，不阻断收尾）：" + e);
+            return true;
+        }
+        trace(result, "自校验执行完成：coherent=" + check.coherent() + "，断言 " + check.checkedCount()
+                + " 条，矛盾 " + check.contradictions().size() + " 条"
+                // 带上历史纠错次数：重跑后的收尾会重写 result（上一轮的 trace 不落库），
+                // 故把「此前已纠错过几次」写进本轮轨迹，保证落库内容能自证重跑确实发生过
+                + "，历史纠错 " + (task.getCorrectionCount() == null ? 0 : task.getCorrectionCount()) + " 次"
+                + (check.contradictions().isEmpty() ? ""
+                        : " " + check.contradictions().stream()
+                                .map(SelfCheckResult.Contradiction::assertion).toList()));
+
+        try {
+            return decideBySelfCheck(task, steps, result, check);
+        } catch (Exception e) {
+            // 自纠错动作本身失败（如重置/计数异常）：同样不得阻断，放行收尾让确定性判定与人工兜底
+            log.error("任务 {} 自纠错动作执行失败，已放行收尾（不阻断主链路）", task.getTaskNo(), e);
+            trace(result, "自纠错动作执行失败（已放行收尾）：" + e);
+            return true;
+        }
+    }
+
+    /**
+     * 记录自校验/自纠错执行轨迹，随 {@code agent_task.result} 落库（P3.8 R5-11）。
+     *
+     * <p><b>为什么必须落库而不是只打日志</b>：agent-core 的日志只输出到开发机 IDE 控制台，
+     * 联调排查拿不到、也不持久化——R5 曾因此连续三次误判根因（R5-6/R5-7/R5-9）。
+     * 轨迹落库后，任何一次运行的「是否进入自纠错分支、重置了哪些步骤、提示注入到哪一步、
+     * 有没有异常」都能直接从数据库读到，不再依赖控制台。</p>
+     */
+    private void trace(Map<String, Object> result, String event) {
+        List<String> events = new ArrayList<>();
+        Object raw = result.get(TRACE_KEY);
+        if (raw instanceof List<?> list) {
+            for (Object o : list) {
+                events.add(String.valueOf(o));
+            }
+        }
+        events.add(event);
+        result.put(TRACE_KEY, events);
+        log.info("任务自校验轨迹：{}", event);
+    }
+
+    /**
+     * 依据自校验结论决定收尾走向：通过 → 放行；命中矛盾且未达上限 → 重跑风控步骤；超限 → 转人工。
+     */
+    private boolean decideBySelfCheck(AgentTask task, List<AgentTaskStep> steps,
+                                      Map<String, Object> result, SelfCheckResult check) {
+        if (check.coherent()) {
+            trace(result, "自校验通过，放行收尾");
+            return true;
+        }
+
+        int corrected = task.getCorrectionCount() == null ? 0 : task.getCorrectionCount();
+        // R5-7 诊断埋点：自校验已判定不一致，记录进入自纠错分支的入参，
+        // 便于区分「未进入分支」「重置数为 0」「动作抛异常」三种失败形态
+        log.warn("任务 {} 进入自纠错分支：correctionCount={}, 矛盾数={}, 步骤数={}",
+                task.getTaskNo(), corrected, check.contradictions().size(), steps.size());
+        if (corrected < SELF_CORRECTION_MAX) {
+            // 重跑风控语义步骤：步骤号靠后的（风控评估、结论汇总）一并重置，
+            // 否则重跑完风控后流水线会认为"汇总已完成"而不再重新汇总
+            int riskNo = riskStepNo(steps);
+            List<AgentTaskStep> rerun = steps.stream()
+                    .filter(s -> s.getStepNo() != null && s.getStepNo() >= riskNo)
+                    .sorted(Comparator.comparing(AgentTaskStep::getStepNo))
+                    .toList();
+            log.warn("任务 {} 自纠错重置范围：riskStepNo={}, 命中 {} 个步骤, stepNos={}",
+                    task.getTaskNo(), riskNo, rerun.size(),
+                    rerun.stream().map(AgentTaskStep::getStepNo).toList());
+            trace(result, "进入自纠错分支：correctionCount=" + corrected + "，riskStepNo=" + riskNo
+                    + "，待重置步骤 " + rerun.stream().map(AgentTaskStep::getStepNo).toList());
+            int reset = stepService.resetForSelfCorrection(rerun);
+            if (reset == 0) {
+                log.warn("任务 {} 自校验命中矛盾但无可重置步骤（可能已被并发迁移），转人工", task.getTaskNo());
+                trace(result, "无可重置步骤（可能已被并发迁移），转人工复核");
+                return enterReviewBySelfCheck(task, steps, result, check);
+            }
+            // 把矛盾提示注入风控步骤入参：重跑时 executeLlmStep 组装上下文会带上它，
+            // 否则 LLM 在同样的上下文下只会给出同样的结论（重跑等于白跑）
+            Long hintStepId = injectSelfCheckHint(rerun, check);
+            trace(result, "已重置 " + reset + " 个步骤，矛盾提示注入步骤 " + hintStepId);
+            int now = taskService.incrementCorrectionCount(task);
+            log.warn("任务 {} 自校验命中 {} 条矛盾，第 {} 次重跑风控语义步骤（重置 {} 个步骤）",
+                    task.getTaskNo(), check.contradictions().size(), now, reset);
+            trace(result, "第 " + now + " 次重跑风控语义步骤（重置 " + reset + " 个步骤）");
+            // ⚠️ 重置后【不能】调用 continueTask：它内部会重新 listByTask，
+            //    而在同一事务里读到的仍是重置前的 SUCCESS 状态，于是又走到 finalizeSuccess
+            //    → 再次自校验失败 → 再次重置，形成无限递归（实测 StackOverflowError，
+            //    现象是任务 8 步全 SUCCESS 却永久卡在 RUNNING）。
+            //    故此处重新加载步骤、直接把第一个 PENDING 步骤分发出去。
+            resumeFromFirstPendingStep(task, result);
+            return false;
+        }
+
+        log.warn("任务 {} 自校验仍不通过且已达纠错上限（{} 次），转人工复核", task.getTaskNo(), SELF_CORRECTION_MAX);
+        trace(result, "已达纠错上限 " + SELF_CORRECTION_MAX + " 次，转人工复核");
+        return enterReviewBySelfCheck(task, steps, result, check);
+    }
+
+    /**
+     * 把自校验矛盾提示写入待重跑的风控语义步骤入参，返回注入到的步骤 ID（未注入返回 null）。
+     * <p>不注入的话，重跑时 LLM 拿到的上下文与首次完全一致，只会给出同样的结论——重跑等于白跑。</p>
+     *
+     * <p><b>⚠️ 注入目标必须是 LLM 步骤（R5-10）</b>：只有 {@code executeLlmStep} 会读取
+     * {@code inputParams} 组装 prompt。风控角色下既有 TOOL 步骤（duplicate_check）又有 LLM 步骤
+     * （风控语义判断），早先只按 agentRole 命中，提示被写进了 TOOL 步骤——工具不认这个字段，
+     * 等于提示从未到达 LLM。</p>
+     */
+    private Long injectSelfCheckHint(List<AgentTaskStep> rerun, SelfCheckResult check) {
+        AgentTaskStep target = rerun.stream()
+                .filter(s -> STEP_TYPE_LLM.equalsIgnoreCase(s.getStepType())
+                        && AgentRole.RISK_AUDITOR.name().equals(s.getAgentRole()))
+                .findFirst()
+                // 退化：没有风控 LLM 步骤时，注入到第一个 LLM 步骤（结论汇总），至少让结论看到矛盾
+                .orElseGet(() -> rerun.stream()
+                        .filter(s -> STEP_TYPE_LLM.equalsIgnoreCase(s.getStepType()))
+                        .findFirst()
+                        .orElse(null));
+        if (target == null) {
+            log.warn("自纠错重跑范围内没有 LLM 步骤，矛盾提示无处注入（重跑仍会执行）");
+            return null;
+        }
+        Map<String, Object> params = target.getInputParams() == null
+                ? new LinkedHashMap<>() : new LinkedHashMap<>(target.getInputParams());
+        params.put("selfCheckHint", check.toPromptHint());
+        stepService.updateInputParams(target.getId(), params);
+        // 同步内存对象：同一批对象可能被后续逻辑复用（与 resetForSelfCorrection 同理）
+        target.setInputParams(params);
+        log.info("已向步骤 {}（{}）注入自校验矛盾提示", target.getId(), target.getStepName());
+        return target.getId();
+    }
+
+    /**
+     * 自纠错重跑：重新加载步骤并分发第一个 PENDING 步骤（P3.8 R5）。
+     *
+     * <p>刻意不复用 {@link #continueTask}：后者会重新 listByTask，而在同一事务里读到的仍是
+     * 重置前的 SUCCESS 状态，会再次触发收尾与自校验，形成无限递归。</p>
+     */
+    private void resumeFromFirstPendingStep(AgentTask task, Map<String, Object> result) {
+        AgentTaskStep next = stepService.listByTask(task.getId()).stream()
+                .filter(s -> StepStatus.PENDING.name().equals(s.getStatus()))
+                .findFirst()
+                .orElse(null);
+        if (next == null) {
+            // 理论上不会发生（上面刚重置过）；兜底转人工，避免任务静默卡死
+            log.warn("任务 {} 自纠错重置后未找到 PENDING 步骤，任务可能卡死，请人工介入", task.getTaskNo());
+            trace(result, "重置后未找到 PENDING 步骤，任务可能卡死（需人工介入）");
+            return;
+        }
+        trace(result, "重跑起点：步骤 " + next.getStepNo() + "（" + next.getStepName() + "，"
+                + next.getStepType() + "）");
+        dispatch(task, next);
+    }
+
+    /**
+     * 自校验未通过且纠错已达上限：转人工复核，复核原因与结构化问题项并入自校验结论。
+     */
+    private boolean enterReviewBySelfCheck(AgentTask task, List<AgentTaskStep> steps,
+                                           Map<String, Object> result, SelfCheckResult check) {
+        FlowDecision decision = reviewFlowDecider.decide(steps);
+        List<ReviewFinding> findings = new ArrayList<>(decision.findings());
+        findings.addAll(check.toFindings());
+        List<String> reasons = new ArrayList<>(decision.reviewReasons());
+        for (SelfCheckResult.Contradiction c : check.contradictions()) {
+            reasons.add(ReviewFinding.LEVEL_RISK_HIT + ":自校验未通过[" + c.assertion() + "]" + c.detail());
+        }
+        result.put("flowBranch", FlowDecision.NEED_REVIEW);
+        result.put("reviewReasons", reasons);
+        result.put("reviewFindings", findings);
+        auditTicketService.enterApproval(task, result, steps.size(), reasons, findings);
+        return false;
+    }
+
+    /** 定位风控语义步骤的步骤号（重跑起点）；无该步骤时退化为「整体重跑最后一个 LLM 步骤」 */
+    private static int riskStepNo(List<AgentTaskStep> steps) {
+        return steps.stream()
+                .filter(s -> AgentRole.RISK_AUDITOR.name().equals(s.getAgentRole()))
+                .map(AgentTaskStep::getStepNo)
+                .filter(Objects::nonNull)
+                .min(Integer::compareTo)
+                .orElseGet(() -> steps.stream()
+                        .map(AgentTaskStep::getStepNo)
+                        .filter(Objects::nonNull)
+                        .max(Integer::compareTo)
+                        .orElse(1));
     }
 
     /**
@@ -228,7 +466,7 @@ public class AgentOrchestrator {
             return;
         }
         // 若为LLM类型，执行LLM步骤
-        if ("LLM".equalsIgnoreCase(step.getStepType())) {
+        if (STEP_TYPE_LLM.equalsIgnoreCase(step.getStepType())) {
             executeLlmStep(task, step);
         } else if ("TOOL".equalsIgnoreCase(step.getStepType())) {
             // 若为TOOL类型，发布MQ消息，交由远程工具服务异步执行（ToolExecuteConsumer）
@@ -493,6 +731,13 @@ public class AgentOrchestrator {
 
         // P3a 结果分支：REIMBURSEMENT 走确定性判定（AUTO_PASS / NEED_REVIEW），GENERIC 维持原 LLM 决策回写
         if (TaskType.REIMBURSEMENT.name().equals(task.getTaskType())) {
+            // ---- P3.8 R5：AUTO_PASS 之前先做语义自校验（自主纠错的闸口）----
+            // 位置刻意如此：断言 ①③ 要对比"汇总结论"，而结论由最后的 LLM 步骤产出，
+            // 故校验必须在收尾时执行而非流水线中段；校验通过才允许后续自动通过。
+            if (!passSelfCheckOrCorrect(task, steps, result)) {
+                return;
+            }
+
             // 执行步骤，获取判定结果
             FlowDecision decision = reviewFlowDecider.decide(steps);
             result.put("flowBranch", decision.flowBranch());
@@ -619,7 +864,7 @@ public class AgentOrchestrator {
     private static String extractDecision(List<AgentTaskStep> steps) {
         for (int i = steps.size() - 1; i >= 0; i--) {
             AgentTaskStep s = steps.get(i);
-            if ("LLM".equalsIgnoreCase(s.getStepType()) && s.getOutput() instanceof Map<?, ?>) {
+            if (STEP_TYPE_LLM.equalsIgnoreCase(s.getStepType()) && s.getOutput() instanceof Map<?, ?>) {
                 Object d = ((Map<?, ?>) s.getOutput()).get("decision");
                 return d == null ? null : d.toString();
             }
