@@ -39,5 +39,11 @@
             <artifactId>jakarta.servlet-api</artifactId>
             <scope>provided</scope>
         </dependency>
+        <!-- Lombok（optional：不传递依赖，仅本模块编译期生成访问器；R7-3 的 FeignTimeoutProperties 用 @Getter/@Setter） -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
     </dependencies>
 </project>

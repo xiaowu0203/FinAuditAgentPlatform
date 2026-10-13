@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.finaudit.tenant.mapper.SysUserMapper">
+
+    <!--
+      按权限码列收件人（P3.8 R8-2）：用户 → 角色 → 角色权限 → 权限目录。
+      ⚠️ 四张表里 sys_user / sys_user_role / sys_role_permission 都有 tenant_id，由多租户拦截器自动追加；
+         sys_permission 是平台级全局表（已登记 IGNORE_TENANT_TABLES），不追加。
+      ⚠️ 只取启用（status=1）且未删除的用户：给已停用账号发通知等于发给一个永远不会看的人。
+      DISTINCT：一个用户可能有多个角色都含该权限码（如 admin 与 auditor 同时授予），必须去重，
+         否则同一人会被通知多次。
+    -->
+    <select id="listEnabledUserIdsByPermCode" resultType="java.lang.Long">
+        SELECT DISTINCT u.id
+        FROM sys_user u
+                 JOIN sys_user_role ur ON ur.user_id = u.id AND ur.deleted = 0
+                 JOIN sys_role_permission rp ON rp.role_id = ur.role_id AND rp.deleted = 0
+                 JOIN sys_permission p ON p.id = rp.perm_id
+        WHERE u.deleted = 0
+          AND u.status = 1
+          AND p.status = 1
+          AND p.perm_code = #{permCode}
+        ORDER BY u.id
+    </select>
+
+</mapper>

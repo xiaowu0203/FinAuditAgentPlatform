@@ -7,7 +7,7 @@ OCR 识别统一抽象。当前实现 **百度智能云票据识别**（P2b D6 �
 - `OcrService.recognizeVat(byte[])` **增值税发票识别（细节兜底）**：补税号/金额细节（`SellerRegisterNum` / `SellerName` / `AmountInFiguers` / `InvoiceDate` 等）
 - access_token 内存缓存（过期前自动刷新），不引官方 SDK，`RestClient` 直连
 - 非 200 / 业务 `error_code` 非 0 → 抛 `OcrException`（unchecked，由工具层重试兜底）
-- 金额字段一律 **BigDecimal**（千分位逗号已清洗，CLAUDE.md §5.3）
+- 金额字段一律 **BigDecimal**（千分位逗号已清洗，docs/architecture/conventions.md §1）
 
 ## 使用
 ```xml
@@ -24,10 +24,16 @@ finaudit:
     baidu:
       api-key: ${FINAUDIT_OCR_BAIDU_API_KEY}        # 百度智能云 AK
       secret-key: ${FINAUDIT_OCR_BAIDU_SECRET_KEY}  # SK
-      # timeout-ms: 10000                           # 单次识别超时，缺省 10s
+      # timeout-ms: 10000                           # 单次识别超时（连接/读取均取该值），缺省 10s；R0-1 已接线生效
 ```
 
-> 凭据一律经环境变量注入（CLAUDE.md §6），禁止硬编码。
+> 凭据一律经环境变量注入（docs/architecture/conventions.md §6），禁止硬编码。
+
+**超时语义（P3.8 修复 · R0-1）**：`baidu.timeout-ms` 同时作为 **connect 与 read 超时**（`SimpleClientHttpRequestFactory`），
+识别请求与 `access_token` 请求共用同一 `RestClient`，故 token 获取亦受该超时约束。
+此前该配置被读入却从未接到 `RestClient` 上——**名为生效实为死配置**，一次网络挂起即可无限期占住
+tool-service 的 TOOL 消费线程（`concurrency=1`），冻结全部任务推进。现已接线，并补「配置非正数回退 10s」兜底
+（回退值与 `OcrProperties.Baidu.timeoutMs` 默认值同源）。
 
 **启动自检**：引入本 starter 即代表工程需要使用 OCR，`CommonOcrAutoConfiguration` 启动时校验
 `api-key / secret-key`，缺失直接启动失败并给出明确提示（配置位置 + 环境变量名），不静默跳过——业务工程无需自行校验。
@@ -38,7 +44,7 @@ finaudit:
 |---|---|---|
 | `baidu.api-key` | - | 百度 API Key（未配置启动即失败并提示，见「启动自检」） |
 | `baidu.secret-key` | - | 百度 Secret Key |
-| `baidu.timeout-ms` | `10000` | 单次识别超时（毫秒） |
+| `baidu.timeout-ms` | `10000` | 单次识别超时（毫秒），**connect 与 read 均取该值**；非正数回退 10000 |
 
 ## 备注
 - **finance 接口必传 `classifierId=10001`**（财会票据预置分类器，百度官方固定值）。缺失/非法时百度报 `216100 invalid param, classifierId is not number`——已踩坑，客户端已内置，勿在业务侧重复传。

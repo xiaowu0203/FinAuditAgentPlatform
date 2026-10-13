@@ -18,14 +18,14 @@ spring:
       # Nacos 远程配置中心配置
       config:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
-        username: ${NACOS_USERNAME:nacos}
-        password: ${NACOS_PASSWORD:nacos}
+        username: ${NACOS_USERNAME}
+        password: ${NACOS_PASSWORD}
         namespace: dev
       # Nacos服务注册/发现配置
       discovery:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
-        username: ${NACOS_USERNAME:nacos}
-        password: ${NACOS_PASSWORD:nacos}
+        username: ${NACOS_USERNAME}
+        password: ${NACOS_PASSWORD}
 
   # 文件上传大小限制（覆盖 Boot 默认 1MB）
   servlet:
@@ -46,8 +46,8 @@ finaudit:
   oss:
     enabled: true
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-    access-key: ${MINIO_ACCESS_KEY:minioadmin}
-    secret-key: ${MINIO_SECRET_KEY:minioadmin123}
+    access-key: ${MINIO_ACCESS_KEY}
+    secret-key: ${MINIO_SECRET_KEY}
     default-bucket: ${MINIO_BUCKET:finaudit-file}
   swagger:
     enabled: true

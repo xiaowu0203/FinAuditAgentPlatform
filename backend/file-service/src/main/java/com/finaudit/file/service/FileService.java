@@ -34,6 +34,12 @@ public class FileService {
     /** 对象存储Key 月份目录格式化器，格式：yyyyMM */
     private static final DateTimeFormatter OBJ_MONTH_FMT = DateTimeFormatter.ofPattern("yyyyMM");
 
+    /** 上传大小上限（MB），与前端文案、yml 的 {@code spring.servlet.multipart.max-file-size} 三处保持一致 */
+    private static final int MAX_UPLOAD_MB = 20;
+
+    /** 上传大小上限（字节），避免每次上传都做乘法 */
+    private static final long MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024L * 1024L;
+
     /** 文件后缀 -> HTTP Content-Type 兜底映射，未匹配后缀使用二进制流类型 */
     private static final Map<String, String> EXT_CONTENT_TYPES = Map.ofEntries(
             Map.entry("png", "image/png"),
@@ -69,6 +75,16 @@ public class FileService {
     public FileVO upload(MultipartFile file, Long tenantId, Long createdBy) {
         if (file == null || file.isEmpty()) {
             throw new BizException("上传文件为空");
+        }
+        // P3.8 R7-6：应用层大小校验。
+        // 容器层（spring.servlet.multipart.max-file-size: 20MB）已能拦住超限请求，
+        // 且 file-service 对 MaxUploadSizeExceededException 有专用处理器
+        // （FileExceptionHandler → HTTP 200 + code=400「文件大小超出限制」，实现时已实测确认）。
+        // 这里再校验一次的价值是「错误信息更可用」：带上实际大小与上限（"不能超过 20MB（当前 22MB）"），
+        // 且能覆盖 max-request-size 与单文件上限的边界差异，并在读流之前就失败。
+        if (file.getSize() > MAX_UPLOAD_BYTES) {
+            throw new BizException("文件大小不能超过 " + MAX_UPLOAD_MB + "MB（当前 "
+                    + (file.getSize() / 1024 / 1024) + "MB）");
         }
         // 清洗原始文件名，防止路径穿越攻击
         String originalFilename = sanitizeFileName(file.getOriginalFilename());
@@ -123,13 +139,22 @@ public class FileService {
     }
 
     /**
-     * 文件归属校验（P3.5c）：内部链路（Feign/MQ，无用户上下文）放行——供 agent-core 组附件快照/预签名；
-     * 网关登录用户须为上传人本人，或持有 reimb/audit:viewAll（财务全量）；否则 403，防租户内按 id 枚举他人附件。
+     * 文件归属校验（P3.5c）：网关登录用户须为上传人本人，或持有 reimb/audit:viewAll（财务全量）；
+     * 否则 403，防租户内按 id 枚举他人附件。
+     *
+     * <p><b>P3.8 修正（R0-3）</b>：原先以「无用户上下文」判定为内部链路并放行，该前提在
+     * <b>HTTP-Feign 调用下不成立</b>——{@code FeignHeaderPropagator} 会在业务服务的请求线程上
+     * 透传 {@code X-User-Id}/{@code X-User-Perms}，于是「用户 A 打开同租户用户 B 的报销单」时，
+     * agent-core 组附件快照的调用带的是 A 的上下文，A 既非上传人也无 viewAll 权限 → 被本方法拒绝 →
+     * {@code AttachmentService.fetchFiles} 静默返回空 Map → <b>前端附件区静默空白且无任何错误提示</b>。
+     * 现改为：内部链路走显式 {@code /internal/**} 契约（{@link #getRequiredForInternal(Long)} 等），
+     * 本方法仅服务于用户侧调用，语义收敛为「用户可见性」。</p>
      */
     private void requireReadable(FileRecord record) {
         UserContext user = UserContextHolder.get();
         if (user == null) {
-            return;
+            // 无用户上下文（MQ 消费线程等）不构成用户侧调用，拒绝而非放行：越权面收窄
+            throw new BizException("缺少登录上下文，请通过网关访问");
         }
         if (Objects.equals(record.getCreatedBy(), user.getUserId())) {
             return;
@@ -140,22 +165,49 @@ public class FileService {
         throw new BizException("无权访问该文件: " + record.getId());
     }
 
+    // ===================== 内部契约（/internal/files/**，服务间调用，网关不暴露） =====================
+
     /**
-     * 批量校验附件ID合法性
-     * 提交报销单前置校验：全部文件必须存在且属于当前登录租户
-     * @param ids 前端传入附件ID列表
-     * @throws BizException 存在不存在/不属于当前租户的文件则报错
+     * 内部读取单条文件元数据：仅做租户隔离（多租户拦截器），<b>不做用户可见性校验</b>。
+     * <p>供业务服务（agent-core 附件快照、tool-service OCR 取图）经 Feign 调用。
+     * 越权由调用方负责：agent-core 在提交时已校验附件归属租户，tool-service 由
+     * {@code ToolAccessGuard} 校验 reimbId 归属。</p>
      */
-    public void validateAllOwned(List<Long> ids) {
-        List<Long> distinct = ids.stream().distinct().toList();
-        if (distinct.isEmpty()) {
-            throw new BizException("文件不存在或不属于当前租户");
+    public FileRecord getRequiredForInternal(Long id) {
+        FileRecord record = fileRecordMapper.selectById(id);
+        if (record == null) {
+            throw new BizException("文件不存在: " + id);
         }
-        List<FileRecord> found = fileRecordMapper.selectList(new LambdaQueryWrapper<FileRecord>()
-                .in(FileRecord::getId, distinct));
-        if (found.size() != distinct.size()) {
-            throw new BizException("文件不存在或不属于当前租户");
+        return record;
+    }
+
+    /**
+     * 内部批量读取文件元数据：仅做租户隔离，不做用户可见性校验。
+     * <p>消费方（agent-core {@code AttachmentService.fetchFiles}）需要拿到同租户其他用户上传的附件
+     * 才能组装报销单详情，故此处不能套用用户可见性规则。</p>
+     */
+    public List<FileRecord> listByIdsForInternal(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
         }
+        return fileRecordMapper.selectList(new LambdaQueryWrapper<FileRecord>()
+                .in(FileRecord::getId, ids));
+    }
+
+    /**
+     * 内部预览预签名 URL：仅做租户隔离，不做用户可见性校验。
+     */
+    public String presignPreviewForInternal(Long id) {
+        FileRecord record = getRequiredForInternal(id);
+        return presignPreviewUrl(record);
+    }
+
+    /**
+     * 内部下载预签名 URL：仅做租户隔离，不做用户可见性校验。
+     */
+    public String presignDownloadForInternal(Long id) {
+        FileRecord record = getRequiredForInternal(id);
+        return presignDownloadUrl(record);
     }
 
     /**
@@ -176,6 +228,15 @@ public class FileService {
      */
     public String presignDownload(Long id) {
         FileRecord record = getRequired(id);
+        return presignDownloadUrl(record);
+    }
+
+    /**
+     * 内部工具：根据文件元数据生成下载签名链接（带 Content-Disposition），避免重复查询DB
+     * @param record 文件元数据实体
+     * @return 下载临时URL
+     */
+    private String presignDownloadUrl(FileRecord record) {
         return objectStorageService.presignGetUrl(objectStorageService.defaultBucket(), record.getObjectName(),
                 "attachment; filename=\"" + record.getFileName() + "\"");
     }

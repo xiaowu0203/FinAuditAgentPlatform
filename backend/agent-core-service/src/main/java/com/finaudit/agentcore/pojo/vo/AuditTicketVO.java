@@ -1,5 +1,6 @@
 package com.finaudit.agentcore.pojo.vo;
 
+import com.finaudit.agentcore.domain.ReviewFinding;
 import com.finaudit.agentcore.pojo.entity.AuditTicket;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
@@ -50,6 +51,14 @@ public class AuditTicketVO {
     @Schema(description = "复核原因列表")
     private List<String> reviewReasons;
 
+    /**
+     * 结构化审核问题项（P3.8 R4-3）。
+     * <p>前端据此在「待修正项清单」里定位到具体明细行并展示
+     * 「期望值 / 实际值 / 差额 / 修改建议」，支撑驳回重提引导。</p>
+     */
+    @Schema(description = "结构化审核问题项（定位明细行 + 期望/实际/差额/建议）")
+    private List<ReviewFinding> reviewFindings;
+
     @Schema(description = "最近处理人用户ID")
     private Long auditorId;
 
@@ -73,6 +82,7 @@ public class AuditTicketVO {
         vo.setStatus(t.getStatus());
         vo.setRerunCount(t.getRerunCount());
         vo.setReviewReasons(t.getReviewReasons());
+        vo.setReviewFindings(t.getReviewFindings());
         vo.setAuditorId(t.getAuditorId());
         vo.setAuditComment(t.getAuditComment());
         vo.setCreatedAt(t.getCreatedAt());

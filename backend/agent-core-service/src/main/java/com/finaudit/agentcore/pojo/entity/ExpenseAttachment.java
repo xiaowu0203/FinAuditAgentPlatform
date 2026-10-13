@@ -1,5 +1,6 @@
 package com.finaudit.agentcore.pojo.entity;
 
+import com.baomidou.mybatisplus.annotation.FieldFill;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -52,6 +53,9 @@ public class ExpenseAttachment {
     private LocalDateTime createdAt;
 
     @Schema(description = "更新时间")
+    /** 更新时间（P3.8 R9-2 修复 R2-10 遗留）：标 fill=INSERT_UPDATE，使 updateById/实体更新能刷新该列，
+     * 否则实体里读出的旧值会被写回 SET、抑制 MySQL 的 ON UPDATE CURRENT_TIMESTAMP。 */
+    @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updatedAt;
 
     @TableLogic
@@ -72,7 +76,13 @@ public class ExpenseAttachment {
     }
 
     /**
-     * 仅用于回填 reimb_id 的批量 UPDATE 载体（转换封装在实体类，业务层不手写 set 组装，见 CLAUDE.md §5.6）。
+     * 仅用于回填 reimb_id 的批量 UPDATE 载体（转换封装在实体类，业务层不手写 set 组装，见 docs/architecture/conventions.md §1）。
+     *
+     * <p><b>⚠️ 只能传非 null 值</b>：MyBatis-Plus 默认 NOT_NULL 更新策略会跳过实体中的 null 字段，
+     * 若传 null，SET 子句为空 → 生成非法 SQL（{@code UPDATE expense_attachment  WHERE ...}）→
+     * JSqlParser 报 {@code unexpected token "UPDATE"}。
+     * <b>置 NULL 请改用 {@code LambdaUpdateWrapper.set(列, null)} 且实体参数传 null</b>
+     * （见 {@code AttachmentService.unbindByReimb}）。</p>
      */
     public static ExpenseAttachment forBindReimb(Long reimbId) {
         ExpenseAttachment attachment = new ExpenseAttachment();
@@ -81,7 +91,7 @@ public class ExpenseAttachment {
     }
 
     /**
-     * 回填 OCR 结果（P2b ocr_extract 工具写回，更新型 apply 见 CLAUDE.md §5.6）。
+     * 回填 OCR 结果（P2b ocr_extract 工具写回，更新型 apply 见 docs/architecture/conventions.md §1）。
      * fileType 空值保留原值（分类未产生时不覆盖）。
      */
     public void applyOcrResult(String ocrStatus, String fileType, Map<String, Object> ocrResult) {

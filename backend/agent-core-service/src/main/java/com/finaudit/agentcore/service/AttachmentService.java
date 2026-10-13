@@ -21,7 +21,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 报销业务附件服务（expense_attachment 实体数据访问仅允许在本类，见 CLAUDE.md §5.8）。
+ * 报销业务附件服务（expense_attachment 实体数据访问仅允许在本类，见 docs/architecture/conventions.md §1）。
  * <p>业务附件仅存 file_record 引用 + 业务字段；文件元数据/预签名 URL 一律经 FileServiceFeign 远程联取，
  * 禁止直连 OSS。</p>
  */
@@ -30,10 +30,14 @@ public class AttachmentService {
 
     private final ExpenseAttachmentMapper attachmentMapper;
     private final FileServiceFeign fileServiceFeign;
+    /** 发票标识符投影（P3.8 R2）：OCR 回写时同步落 invoice_record，供按票查重 */
+    private final InvoiceRecordService invoiceRecordService;
 
-    public AttachmentService(ExpenseAttachmentMapper attachmentMapper, FileServiceFeign fileServiceFeign) {
+    public AttachmentService(ExpenseAttachmentMapper attachmentMapper, FileServiceFeign fileServiceFeign,
+                             InvoiceRecordService invoiceRecordService) {
         this.attachmentMapper = attachmentMapper;
         this.fileServiceFeign = fileServiceFeign;
+        this.invoiceRecordService = invoiceRecordService;
     }
 
     /**
@@ -54,7 +58,7 @@ public class AttachmentService {
                 throw new BizException("文件已关联其他报销单: " + e.getFileRecordId());
             }
         }
-        // 缺失行补建（批量新增单条多行 INSERT，CLAUDE.md §5.9）
+        // 缺失行补建（批量新增单条多行 INSERT，docs/architecture/conventions.md §2.1）
         Set<Long> existingIds = existing.stream().map(ExpenseAttachment::getFileRecordId).collect(Collectors.toSet());
         List<ExpenseAttachment> toCreate = distinct.stream()
                 .filter(id -> !existingIds.contains(id))
@@ -83,12 +87,20 @@ public class AttachmentService {
      * 解绑报销单全部附件（P3b 工作流重设计）：reimb_id 置 NULL，释放文件占用。
      * <p>场景：报销单作废（撤回 / 撤销同意）释放占用，以及修改重跑时移除项的再绑定。
      * 解绑后同 file_record 可重新挂到新报销单（{@link #attachToReimb} 的重复绑定校验不拦截）。</p>
+     *
+     * <p><b>⚠️ 必须用 wrapper 的 {@code set(..., null)} 显式写 NULL（P3.8 R1 修复）</b>：
+     * 原实现写成 {@code update(ExpenseAttachment.forBindReimb(null), wrapper)}——把 null 值放进
+     * <b>实体</b>参数里，而 MyBatis-Plus 默认 NOT_NULL 更新策略会**跳过实体中的 null 字段**，
+     * 于是 SET 子句为空，生成出 {@code UPDATE expense_attachment  WHERE (...)} 这种非法 SQL，
+     * 多租户拦截器拿它喂 JSqlParser 直接抛
+     * {@code ParseException: Encountered unexpected token: "UPDATE"}。
+     * 该缺陷此前被「同意撤销」更早的一处 CAS 失败（400）掩盖，修掉那处后才暴露。</p>
      */
     @Transactional
     public void unbindByReimb(Long reimbId) {
-        attachmentMapper.update(ExpenseAttachment.forBindReimb(null),
-                new LambdaUpdateWrapper<ExpenseAttachment>()
-                        .eq(ExpenseAttachment::getReimbId, reimbId));
+        attachmentMapper.update(null, new LambdaUpdateWrapper<ExpenseAttachment>()
+                .eq(ExpenseAttachment::getReimbId, reimbId)
+                .set(ExpenseAttachment::getReimbId, null));
     }
 
     /**
@@ -106,10 +118,11 @@ public class AttachmentService {
                     .filter(id -> !newIds.contains(id))
                     .toList();
             if (!removed.isEmpty()) {
-                attachmentMapper.update(ExpenseAttachment.forBindReimb(null),
-                        new LambdaUpdateWrapper<ExpenseAttachment>()
-                                .eq(ExpenseAttachment::getReimbId, reimbId)
-                                .in(ExpenseAttachment::getFileRecordId, removed));
+                // 同 unbindByReimb：置 NULL 必须走 wrapper 的 set(...,null)，实体里的 null 会被 NOT_NULL 策略跳过
+                attachmentMapper.update(null, new LambdaUpdateWrapper<ExpenseAttachment>()
+                        .eq(ExpenseAttachment::getReimbId, reimbId)
+                        .in(ExpenseAttachment::getFileRecordId, removed)
+                        .set(ExpenseAttachment::getReimbId, null));
             }
         }
         attachToReimb(newFileRecordIds, reimbId, tenantId);
@@ -137,6 +150,11 @@ public class AttachmentService {
         attachment.applyOcrResult(ocrStatus, fileType, ocrResult);
         // 更新附件信息
         attachmentMapper.updateById(attachment);
+
+        // P3.8 R2：同步投影发票标识符，供按票查重使用（票号缺失时内部直接跳过）。
+        // reimbId 直接取自已加载的附件实体——不让 InvoiceRecordService 反向注入本类，
+        // 否则形成构造器循环依赖（Spring 默认禁止循环引用，会启动失败）。
+        invoiceRecordService.project(attachment.getId(), fileRecordId, attachment.getReimbId(), ocrResult);
     }
 
     /**

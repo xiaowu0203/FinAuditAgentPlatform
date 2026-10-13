@@ -2,6 +2,7 @@ package com.finaudit.agentcore.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.finaudit.agentcore.domain.ReviewFinding;
 import com.finaudit.agentcore.domain.TaskPlanStep;
 import com.finaudit.agentcore.enums.AuditAction;
 import com.finaudit.agentcore.enums.AuditTicketStatus;
@@ -60,11 +61,16 @@ public class AuditTicketService {
     private final ReimbursementService reimbursementService;
     private final DistributedLockTemplate lockTemplate;
     private final RuleBasedFlowEngine flowEngine;
+    /** 预算占用服务（P3.8 R1：审批通过时真实占用部门预算，各终态释放） */
+    private final BudgetOccupancyService budgetOccupancyService;
+    /** 业务通知门面（P3.8 R8-2：审批结局主动提醒申请人/审批人） */
+    private final NotifyFacade notifyFacade;
 
     public AuditTicketService(AuditTicketMapper ticketMapper, AuditRecordMapper recordMapper,
                               AgentTaskService taskService, AgentTaskStepService stepService,
                               ReimbursementService reimbursementService, DistributedLockTemplate lockTemplate,
-                              RuleBasedFlowEngine flowEngine) {
+                              RuleBasedFlowEngine flowEngine, BudgetOccupancyService budgetOccupancyService,
+                              NotifyFacade notifyFacade) {
         this.ticketMapper = ticketMapper;
         this.recordMapper = recordMapper;
         this.taskService = taskService;
@@ -72,9 +78,16 @@ public class AuditTicketService {
         this.reimbursementService = reimbursementService;
         this.lockTemplate = lockTemplate;
         this.flowEngine = flowEngine;
+        this.budgetOccupancyService = budgetOccupancyService;
+        this.notifyFacade = notifyFacade;
     }
 
     // ===================== 编排器回调入口（由AgentOrchestrator调用） =====================
+
+    /** 是否带结构化问题项（决定 triggerType 走结构化解析还是回落原因串前缀解析）。 */
+    private static boolean findingsPresent(List<ReviewFinding> findings) {
+        return findings != null && !findings.isEmpty();
+    }
 
     /**
      * 流水线判定 NEED_REVIEW 时进入审批态。
@@ -91,11 +104,13 @@ public class AuditTicketService {
      * </p>
      * @param task 当前Agent任务
      * @param result 任务执行结果map
-     * @param finishedSteps 已经完成的步骤计数
-     * @param reasons 触发人工复核的风险原因列表
+     * @param finishedSteps 已经完成的步骤数
+     * @param reasons 触发人工复核的风险原因列表（字符串摘要，由 findings 派生）
+     * @param findings 结构化审核问题项（P3.8 R4；为空时 triggerType 仍按 reasons 前缀解析）
      */
     @Transactional
-    public void enterApproval(AgentTask task, Map<String, Object> result, int finishedSteps, List<String> reasons) {
+    public void enterApproval(AgentTask task, Map<String, Object> result, int finishedSteps,
+                              List<String> reasons, List<ReviewFinding> findings) {
         // 1. CAS 任务置为待审批：竞争失败说明任务已被并发迁移（如已作废），放弃进入审批态
         if (!taskService.markApprovalPending(task, result, finishedSteps)) {
             log.warn("任务 {} 进入审批态竞争失败（状态已被并发迁移），跳过建单", task.getId());
@@ -116,11 +131,16 @@ public class AuditTicketService {
             // 3. 首次命中复核：创建工单 + SUBMIT审计快照
 
             // 根据【触发人工复核的风险原因列表】解析除命中的规则类型（取优先级最高）
-            String triggerType = TriggerTypeResolver.resolve(reasons);
+            // P3.8 R4：优先按结构化 findings 的 level 解析（无需解析文本前缀），无 findings 时回落原因串
+            String triggerType = TriggerTypeResolver.resolveByFindings(findings);
+            if (!findingsPresent(findings)) {
+                triggerType = TriggerTypeResolver.resolve(reasons);
+            }
             // 数据转换
             AuditTicket ticket = AuditTicket.from(task.getTenantId(), task.getId(),
                     "AT-" + task.getTaskNo(), task.getTitle(), triggerType,
-                    TriggerTypeResolver.buildRiskDesc(reasons), claimedTotal(task), reasons, task.getCreatedBy());
+                    TriggerTypeResolver.buildRiskDesc(reasons), claimedTotal(task), reasons, findings,
+                    task.getCreatedBy());
             // 创建工单
             ticketMapper.insert(ticket);
             // 创建审计留痕（快照）
@@ -128,6 +148,8 @@ public class AuditTicketService {
                     ticket.getOriginAmount(), ticket.getOriginAmount(), null, task.getCreatedBy(), null, null,
                     null, snapshotOf(task)));
             log.info("任务 {} 命中复核，创建审批工单 {}（trigger={}）", task.getTaskNo(), ticket.getTicketNo(), triggerType);
+            // P3.8 R8-2：主动通知——申请人（你的单子要人工看）+ 有审批权限的人（有新工单待处理）
+            notifyFacade.needReview(task, ticket, false);
             return;
         }
 
@@ -136,9 +158,11 @@ public class AuditTicketService {
             // 4. 修改重跑后，再次命中风险规则：工单复位PENDING，刷新风险描述，追加RERUN留痕
 
             // 根据【触发人工复核的风险原因列表】解析除命中的规则类型（取优先级最高）
-            String triggerType = TriggerTypeResolver.resolve(reasons);
-            // 复位PENDING，刷新风险描述
-            existing.applyRerunResetWith(reasons, triggerType, TriggerTypeResolver.buildRiskDesc(reasons));
+            String triggerType = findingsPresent(findings)
+                    ? TriggerTypeResolver.resolveByFindings(findings)
+                    : TriggerTypeResolver.resolve(reasons);
+            // 复位PENDING，刷新风险描述与结构化问题项
+            existing.applyRerunResetWith(reasons, triggerType, TriggerTypeResolver.buildRiskDesc(reasons), findings);
             // 更新工单
             ticketMapper.updateById(existing);
             // 获取当前金额
@@ -148,6 +172,8 @@ public class AuditTicketService {
             recordMapper.insert(AuditRecord.ofSnapshot(task.getTenantId(), existing.getId(), AuditAction.RERUN,
                     amt, amt, null, null, null, null, snap, snap));
             log.info("任务 {} 重跑再次命中复核，工单 {} 复位 PENDING（trigger={}）", task.getTaskNo(), existing.getTicketNo(), triggerType);
+            // P3.8 R8-2：重跑后再次命中 → 重新提醒（文案区分"改完还是没过"，避免提交人以为白改了）
+            notifyFacade.needReview(task, existing, true);
             return;
         }
         // 5. PENDING 已存在 / 终态防御（含 WITHDRAWN/WITHDRAW_PENDING/TERMINATED）：不重复建单
@@ -456,6 +482,8 @@ public class AuditTicketService {
             insertRecord(ticket, AuditAction.WITHDRAW_REQ, currentAmount(ticket), currentAmount(ticket),
                     null, userId, username, null, snap, snap);
             log.info("工单 {} 提交人发起撤销申请", ticket.getTicketNo());
+            // P3.8 R8-2：撤销申请需要财务动作 → 主动通知有审批权限的人（否则只能靠人工刷列表）
+            notifyFacade.withdrawRequested(ticket);
             return AuditTicketVO.from(ticket);
         });
     }
@@ -498,7 +526,7 @@ public class AuditTicketService {
                 throw new BizException("工单状态不允许该操作（当前 " + ticket.getStatus() + "）");
             }
             // 根据操作类型执行对应的逻辑
-            return switch (target) {
+            AuditTicketVO vo = switch (target) {
                 // 审批通过
                 case APPROVE -> approve(ticket, userId, username, roles, request);
                 // 审批驳回
@@ -511,6 +539,9 @@ public class AuditTicketService {
                 case WITHDRAW_REFUSE -> refuseWithdraw(ticket, userId, username, roles, request);
                 default -> throw new BizException("不支持的动作: " + target);
             };
+            // P3.8 R8-2：审批结局主动通知申请人（在动作成功之后、同一事务内；通知失败不影响审批）
+            notifyFacade.ticketAction(ticket, target, request == null ? null : request.comment());
+            return vo;
         });
     }
 
@@ -536,6 +567,12 @@ public class AuditTicketService {
                                   AuditActionRequest request) {
         // 获取任务信息
         AgentTask task = taskService.getRequired(ticket.getTaskId());
+        // ---- P3.8 R1：审批通过 = 真实占用部门预算 ----
+        // 必须在 markSuccess 之前占用：若先标记成功、占用又因额度不足抛错，
+        // 整个事务回滚会把「已通过的任务」一起回滚（用错误的方式失败）。
+        // 正常流程下额度充足（不足的单据已在流水线内被 budget_query 拦成 NEED_REVIEW），
+        // 此处若抛 BizException 则由上层事务回滚，审批人看到"预算不足"提示。
+        budgetOccupancyService.occupyByTask(task);
         // CAS 更新任务为成功状态（期望态含 APPROVAL_PENDING），写入相应结果
         // （markApprovalPending阶段已经落库result与finishedSteps，直接复用）；竞争失败则整个动作回滚
         if (!taskService.markSuccess(task, task.getResult(),
@@ -571,6 +608,8 @@ public class AuditTicketService {
         }
         // 将报销单设置为【审核失败】状态
         reimbursementService.updateStatusByTaskId(ticket.getTaskId(), ReimbursementStatus.FAILED);
+        // P3.8 R1：驳回即释放预算占用（防御式——正常流程此时尚未占用，幂等空操作）
+        releaseBudgetOf(task);
         // 工单状态填充为【已驳回】
         ticket.applyAudit(AuditTicketStatus.REJECTED, userId, commentOf(request));
         // 更新工单信息
@@ -598,6 +637,8 @@ public class AuditTicketService {
         }
         // 将报销单设置为【审核失败】状态
         reimbursementService.updateStatusByTaskId(ticket.getTaskId(), ReimbursementStatus.FAILED);
+        // P3.8 R1：终止即释放预算占用（同驳回，防御式幂等）
+        releaseBudgetOf(task);
         // 工单状态填充为【已终止】
         ticket.applyAudit(AuditTicketStatus.TERMINATED, userId, commentOf(request));
         // 更新工单信息
@@ -627,6 +668,10 @@ public class AuditTicketService {
         }
         // 将报销单设置为【已作废】状态
         reimbursementService.markCancelledByTaskId(ticket.getTaskId());
+        // P3.8 R1：同意撤销即释放预算占用。
+        // 这条路径是释放的关键场景——工单此前已 APPROVED（审批通过时占用了预算），
+        // 若此处不释放，预算会被作废单据永久吃掉（比不占用更糟）。
+        releaseBudgetOf(task);
         // 工单状态填充为【已撤销】
         ticket.applyWithdraw(userId, commentOf(request));
         // 更新工单信息
@@ -772,6 +817,37 @@ public class AuditTicketService {
     /**
      * 根据任务inputParams里面reimbId，构建报销业务快照。
      * 构建失败不阻断主流程，打印warn日志返回null。
+     * @param task agent任务
+     * @return 报销单快照map，失败返回null
+     */
+    /**
+     * 释放该任务对应报销单的预算占用（P3.8 R1）。
+     *
+     * <p>所有「非通过」终态（驳回/终止/同意撤销）都必须调用：驳回与终止时正常流程尚未占用
+     * （幂等空操作），而{@code 同意撤销}是**真正需要释放**的路径——工单此前已 APPROVED、
+     * 审批通过时占用了预算，若不释放，预算会被作废单据永久吃掉，比不占用更糟。</p>
+     *
+     * <p>非报销任务（无 reimbId）直接跳过；释放失败不抛错——状态机已推进，不能因预算回滚整条审批动作，
+     * 失败仅告警，由 {@code BudgetOccupancyService} 的占用-释放配平对账事后暴露。</p>
+     */
+    private void releaseBudgetOf(AgentTask task) {
+        if (task == null || task.getInputParams() == null) {
+            return;
+        }
+        Object raw = task.getInputParams().get("reimbId");
+        if (raw == null) {
+            return;
+        }
+        try {
+            budgetOccupancyService.release(Long.valueOf(raw.toString()));
+        } catch (Exception e) {
+            log.warn("预算释放失败（不影响审批动作）: taskId={}, reimbId={}: {}", task.getId(), raw, e.getMessage());
+        }
+    }
+
+    /**
+     * 根据任务 inputParams 里的 reimbId 构建报销业务快照。
+     * 构建失败不阻断主流程，打印 warn 日志返回 null。
      * @param task agent任务
      * @return 报销单快照map，失败返回null
      */

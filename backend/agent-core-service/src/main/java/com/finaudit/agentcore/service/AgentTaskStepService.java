@@ -7,6 +7,8 @@ import com.finaudit.agentcore.enums.StepStatus;
 import com.finaudit.agentcore.mapper.AgentTaskStepMapper;
 import com.finaudit.agentcore.pojo.entity.AgentTaskStep;
 import com.finaudit.agentcore.pojo.vo.StepVO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -20,10 +22,54 @@ import java.util.Map;
 @Service
 public class AgentTaskStepService {
 
+    private static final Logger log = LoggerFactory.getLogger(AgentTaskStepService.class);
+
     private final AgentTaskStepMapper stepMapper;
 
     public AgentTaskStepService(AgentTaskStepMapper stepMapper) {
         this.stepMapper = stepMapper;
+    }
+
+    /**
+     * 写入步骤耗时（P3.8 R9-2）。
+     *
+     * <p><b>为什么耗时单独一次更新而不是塞进 markSuccess</b>：{@code markSuccess} 是状态迁移 CAS，
+     * 语义上只负责状态与输出；耗时是观测列，且 LLM 步骤的耗时在调用结束后、写结果之前就已确定。
+     * 两者分开也让"状态迁移"这条关键路径不受观测字段影响（观测失败不该影响状态）。
+     * 更新失败只告警，不抛异常。</p>
+     *
+     * @param stepId     步骤 ID
+     * @param durationMs 耗时（毫秒）
+     */
+    public void updateDuration(Long stepId, long durationMs) {
+        if (stepId == null || durationMs < 0) {
+            return;
+        }
+        try {
+            stepMapper.update(null, new LambdaUpdateWrapper<AgentTaskStep>()
+                    .eq(AgentTaskStep::getId, stepId)
+                    .set(AgentTaskStep::getDurationMs, durationMs));
+        } catch (Exception e) {
+            log.warn("步骤耗时写入失败（不影响流程）: stepId={}, durationMs={}: {}", stepId, durationMs, e.getMessage());
+        }
+    }
+
+    /**
+     * 步骤耗时基线（P3.8 R8-3）：按「步骤类型 + 工具编码」统计窗口内的平均耗时，供进度接口估算剩余时间。
+     *
+     * <p>数据源是 R9-2 落库的 {@code duration_ms}。**异常不外抛**：基线只影响"预计还要多久"的展示，
+     * 统计查询失败时让调用方退化为缺省值即可，不该让进度接口跟着报错。</p>
+     *
+     * @param since 统计窗口起点
+     * @return 每行 {stepType, toolName, avgMs, samples}；查询失败返回空列表
+     */
+    public List<Map<String, Object>> avgDurationByStepKey(java.time.LocalDateTime since) {
+        try {
+            return stepMapper.avgDurationByStepKey(since);
+        } catch (Exception e) {
+            log.warn("步骤耗时基线查询失败（不影响进度展示，调用方将退化为缺省值）: {}", e.getMessage());
+            return List.of();
+        }
     }
 
     /**
@@ -128,6 +174,69 @@ public class AgentTaskStepService {
         return stepMapper.update(step, new LambdaUpdateWrapper<AgentTaskStep>()
                 .eq(AgentTaskStep::getId, step.getId())
                 .eq(AgentTaskStep::getStatus, StepStatus.RUNNING.name())) > 0;
+    }
+
+    /**
+     * 写入步骤入参（P3.8 R5）：自纠错重跑风控步骤时，把矛盾提示放进该步入参，
+     * 使 {@code executeLlmStep} 组装上下文时携带「自校验发现矛盾」的增强信息。
+     *
+     * <p><b>⚠️ 必须走实体补丁更新（R5-9）</b>：{@code input_params} 是 JSON 列，wrapper 的
+     * {@code set(col, value)} 不带 typeHandler，驱动会按 binary 字符集发送字符串，MySQL 5.7 报
+     * {@code Cannot create a JSON value from a string with CHARACTER SET 'binary'}。
+     * 实测该异常曾让「自校验矛盾提示」注入静默失败（被兜底 catch 吞掉），
+     * 见 {@link AgentTaskStep#inputParamsPatch}。</p>
+     *
+     * @param stepId      步骤 ID
+     * @param inputParams 步骤入参
+     * @return false = 未命中（步骤不存在）
+     */
+    public boolean updateInputParams(Long stepId, Map<String, Object> inputParams) {
+        return stepMapper.update(AgentTaskStep.inputParamsPatch(stepId, inputParams),
+                new LambdaUpdateWrapper<AgentTaskStep>()
+                        .eq(AgentTaskStep::getId, stepId)) > 0;
+    }
+
+    /**
+     * 自纠错重跑：将指定步骤重置为 PENDING 并清空输出/错误/重试计数（P3.8 R5）。
+     *
+     * <p>用于语义自校验命中矛盾后重跑风控语义步骤。因步骤编号靠后，其后的步骤（结论汇总等）
+     * 也要一并重置，故按 stepNo 升序传入待重置步骤。</p>
+     *
+     * <p><b>⚠️ 必须同步内存对象（R5-8 踩过）</b>：调用方（{@code AgentOrchestrator.finalizeSuccess}）
+     * 持有的 {@code steps} 列表与本方法入参是<b>同一批对象引用</b>。若只改数据库而不改内存，
+     * 重置后下游再用这批对象判断「还有没有待执行步骤」时，看到的仍是 SUCCESS，
+     * 于是判定「无可重置步骤」→ <b>重跑永远不会发生</b>（实测现象：自校验判定不一致、
+     * 但 correction_count 恒为 0、工单原因里没有自校验项）。
+     * 内存同步后，对象状态与 DB 一致，后续逻辑才能看到 PENDING。</p>
+     *
+     * <p><b>⚠️ 清空必须走 wrapper 的 {@code set(col, null)}</b>：把 null 放进实体再 update，
+     * MyBatis-Plus 默认 NOT_NULL 策略会跳过该字段，输出与错误信息根本清不掉
+     * （同 {@code AttachmentService.unbindByReimb} 踩过的坑）。</p>
+     *
+     * @param steps 待重置的步骤（调用方按 stepNo 升序传入）
+     * @return 实际重置的步骤数
+     */
+    public int resetForSelfCorrection(List<AgentTaskStep> steps) {
+        if (steps == null || steps.isEmpty()) {
+            return 0;
+        }
+        int reset = 0;
+        for (AgentTaskStep step : steps) {
+            reset += stepMapper.update(null, new LambdaUpdateWrapper<AgentTaskStep>()
+                    .eq(AgentTaskStep::getId, step.getId())
+                    // 仅重置已成功/失败的步骤；RUNNING 说明有在途执行，不动它
+                    .in(AgentTaskStep::getStatus, StepStatus.SUCCESS.name(), StepStatus.FAILED.name())
+                    .set(AgentTaskStep::getStatus, StepStatus.PENDING.name())
+                    .set(AgentTaskStep::getOutput, null)
+                    .set(AgentTaskStep::getErrorMsg, null)
+                    .set(AgentTaskStep::getRetryCount, 0));
+            // 同步内存对象：调用方持有同一批引用，不同步会让下游看到过期的 SUCCESS 状态
+            step.setStatus(StepStatus.PENDING.name());
+            step.setOutput(null);
+            step.setErrorMsg(null);
+            step.setRetryCount(0);
+        }
+        return reset;
     }
 
     /**

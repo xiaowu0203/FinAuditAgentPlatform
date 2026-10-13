@@ -3,6 +3,7 @@ package com.finaudit.agentcore.controller;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.finaudit.agentcore.pojo.vo.StepVO;
 import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
+import com.finaudit.agentcore.pojo.vo.TaskProgressVO;
 import com.finaudit.agentcore.pojo.vo.TaskVO;
 import com.finaudit.agentcore.service.AgentOrchestrator;
 import com.finaudit.agentcore.service.AgentTaskService;
@@ -60,6 +61,16 @@ public class AgentTaskController {
     public R<List<StepVO>> steps(@PathVariable Long id) {
         UserContext user = UserContextHolder.get();
         return R.success(taskService.listSteps(id,
+                user == null ? null : user.getUserId(),
+                UserContextHolder.hasPerm("task:viewAll")));
+    }
+
+    @Operation(summary = "任务进度与预计等待时间", description = "P3.8 R8-3：进度百分比 + 当前步骤 + 已耗时 + 预计剩余（依据近期同类步骤真实平均耗时；"
+            + "estimateSource=HISTORY 为有样本、DEFAULT 为缺省值估算）。供详情页轮询，字段轻量；无 task:viewAll 权限仅本人任务")
+    @GetMapping("/{id}/progress")
+    public R<TaskProgressVO> progress(@PathVariable Long id) {
+        UserContext user = UserContextHolder.get();
+        return R.success(taskService.progress(id,
                 user == null ? null : user.getUserId(),
                 UserContextHolder.hasPerm("task:viewAll")));
     }

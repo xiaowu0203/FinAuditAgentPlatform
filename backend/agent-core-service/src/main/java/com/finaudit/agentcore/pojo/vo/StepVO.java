@@ -45,6 +45,9 @@ public class StepVO {
     @Schema(description = "重试次数")
     private Integer retryCount;
 
+    @Schema(description = "步骤耗时（毫秒；P3.8 R9-2）")
+    private Long durationMs;
+
     public static StepVO from(AgentTaskStep step) {
         StepVO vo = new StepVO();
         vo.setId(step.getId());
@@ -58,6 +61,8 @@ public class StepVO {
         vo.setStatus(step.getStatus());
         vo.setErrorMsg(step.getErrorMsg());
         vo.setRetryCount(step.getRetryCount());
+        // P3.8 R9-2：步骤耗时可展示（前端流水线时间线可显示每步耗时）
+        vo.setDurationMs(step.getDurationMs());
         return vo;
     }
 }

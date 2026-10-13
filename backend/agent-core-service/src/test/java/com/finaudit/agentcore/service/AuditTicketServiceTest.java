@@ -1,5 +1,6 @@
 package com.finaudit.agentcore.service;
 
+import com.finaudit.agentcore.domain.ReviewFinding;
 import com.finaudit.agentcore.domain.TaskPlanStep;
 import com.finaudit.agentcore.enums.AuditAction;
 import com.finaudit.agentcore.enums.AuditTicketStatus;
@@ -72,6 +73,11 @@ class AuditTicketServiceTest {
     private DistributedLockTemplate lockTemplate;
     @Mock
     private RuleBasedFlowEngine flowEngine;
+    @Mock
+    private BudgetOccupancyService budgetOccupancyService;
+    /** P3.8 R8-2：审批结局会调通知门面；不注入 mock 会让 hook 直接 NPE */
+    @Mock
+    private NotifyFacade notifyFacade;
 
     @InjectMocks
     private AuditTicketService service;
@@ -115,8 +121,12 @@ class AuditTicketServiceTest {
         AgentTask task = task(100L, "T202401010000000001");
         when(ticketMapper.selectOne(any())).thenReturn(null);
 
+        // P3.8 R4：带结构化问题项（大额限额→OVER_LIMIT 级别，标准 500 / 实际 553）
+        List<ReviewFinding> findings = List.of(ReviewFinding.ofDocumentAmount("AMOUNT_LIMIT",
+                ReviewFinding.LEVEL_OVER_LIMIT, new BigDecimal("500.00"), new BigDecimal("553.00"),
+                "大额限额 超标"));
         service.enterApproval(task, Map.<String, Object>of("summary", "审核流程执行完成"), 6,
-                List.of("OVER_LIMIT:大额限额 超标"));
+                List.of("OVER_LIMIT:大额限额 超标"), findings);
 
         verify(taskService).markApprovalPending(eq(task), any(), eq(6));
         verify(reimbursementService).updateStatusByTaskId(100L, ReimbursementStatus.MANUAL_REVIEW);
@@ -125,9 +135,12 @@ class AuditTicketServiceTest {
         verify(ticketMapper).insert(ticketCaptor.capture());
         AuditTicket created = ticketCaptor.getValue();
         assertEquals("AT-T202401010000000001", created.getTicketNo());
+        // triggerType 由 findings 的 level 解析（不再是解析文本前缀）
         assertEquals("OVER_LIMIT", created.getTriggerType());
         assertEquals(AuditTicketStatus.PENDING.name(), created.getStatus());
         assertEquals(0, new BigDecimal("553.00").compareTo(created.getOriginAmount()));
+        // R4：结构化问题项必须落库，供前端「待修正项清单」定位到明细行
+        assertEquals(findings, created.getReviewFindings());
 
         ArgumentCaptor<AuditRecord> recordCaptor = ArgumentCaptor.forClass(AuditRecord.class);
         verify(recordMapper).insert(recordCaptor.capture());
@@ -139,7 +152,7 @@ class AuditTicketServiceTest {
         AgentTask task = task(100L, "T202401010000000001");
         when(ticketMapper.selectOne(any())).thenReturn(ticket(1L, AuditTicketStatus.PENDING, "553.00", 0));
 
-        service.enterApproval(task, Map.of(), 6, List.of("RISK_HIT:疑似重复报销"));
+        service.enterApproval(task, Map.of(), 6, List.of("RISK_HIT:疑似重复报销"), List.of());
 
         verify(ticketMapper, never()).insert(any(AuditTicket.class));
         verify(recordMapper, never()).insert(any(AuditRecord.class));
@@ -151,13 +164,16 @@ class AuditTicketServiceTest {
         AuditTicket amended = ticket(1L, AuditTicketStatus.AMENDED, "553.00", 1);
         when(ticketMapper.selectOne(any())).thenReturn(amended);
 
-        service.enterApproval(task, Map.of(), 6, List.of("RULE_FAIL:部门预算超支"));
+        List<ReviewFinding> findings = List.of(ReviewFinding.ofDocument("BUDGET_EXCEEDED",
+                ReviewFinding.LEVEL_RULE_FAIL, "部门预算超支"));
+        service.enterApproval(task, Map.of(), 6, List.of("RULE_FAIL:部门预算超支"), findings);
 
         assertEquals(AuditTicketStatus.PENDING.name(), amended.getStatus());
-        // 重跑再次命中：复核原因/触发类型/风险描述必须刷新为本次命中结果（上次与本次可能不同）
+        // 重跑再次命中：复核原因/触发类型/风险描述/结构化问题项必须刷新为本次命中结果
         assertEquals("RULE_FAIL", amended.getTriggerType());
         assertEquals(List.of("RULE_FAIL:部门预算超支"), amended.getReviewReasons());
         assertEquals("RULE_FAIL:部门预算超支", amended.getRiskDesc());
+        assertEquals(findings, amended.getReviewFindings());
         verify(ticketMapper).updateById(amended);
         ArgumentCaptor<AuditRecord> captor = ArgumentCaptor.forClass(AuditRecord.class);
         verify(recordMapper).insert(captor.capture());
@@ -169,7 +185,7 @@ class AuditTicketServiceTest {
         AgentTask task = task(100L, "T202401010000000001");
         when(ticketMapper.selectOne(any())).thenReturn(ticket(1L, AuditTicketStatus.WITHDRAWN, "553.00", 0));
 
-        service.enterApproval(task, Map.of(), 6, List.of("OVER_LIMIT:大额限额 超标"));
+        service.enterApproval(task, Map.of(), 6, List.of("OVER_LIMIT:大额限额 超标"), List.of());
 
         verify(ticketMapper, never()).updateById(any(AuditTicket.class));
         verify(recordMapper, never()).insert(any(AuditRecord.class));

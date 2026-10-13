@@ -5,7 +5,7 @@ import com.finaudit.agentcore.pojo.entity.AuditTicket;
 import org.apache.ibatis.annotations.Mapper;
 
 /**
- * 审批工单表 Mapper（数据访问仅经 {@code AuditTicketService}，见 CLAUDE.md §5.8）。
+ * 审批工单表 Mapper（数据访问仅经 {@code AuditTicketService}，见 docs/architecture/conventions.md §1）。
  */
 @Mapper
 public interface AuditTicketMapper extends BaseMapper<AuditTicket> {

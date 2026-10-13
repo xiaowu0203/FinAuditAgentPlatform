@@ -20,6 +20,9 @@ import org.springframework.web.client.RestClientException;
 
 import java.math.BigDecimal;
 import java.net.URI;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,6 +54,16 @@ public class OcrExtractTool implements ToolExecutor {
 
     /** 增值税发票类型标识，该类型需要做二次细节识别兜底 */
     private static final String TYPE_VAT_INVOICE = "vat_invoice";
+
+    /** 结构化日期格式（invoice_record.inv_date 落库形态） */
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+    /** OCR 返回的中文日期格式变体（财会版实际返回「2026年08月01日」） */
+    private static final List<DateTimeFormatter> CN_DATE_FORMATS = List.of(
+            DateTimeFormatter.ofPattern("yyyy年MM月dd日"),
+            DateTimeFormatter.ofPattern("yyyy年M月d日"),
+            DateTimeFormatter.ofPattern("yyyy/MM/dd"),
+            DateTimeFormatter.ofPattern("yyyyMMdd"));
 
     /** 归类为普通发票的票据类型集合 */
     private static final Set<String> INVOICE_TYPES = Set.of(
@@ -261,14 +274,20 @@ public class OcrExtractTool implements ToolExecutor {
      * OCR原始输出字段归一化处理
      * <p>
      * 兼容OCR接口中英文混合key，优先使用增值税专项识别结果；
-     * 提取金额、开票日期、商户名称、税号，金额统一转为BigDecimal类型
+     * 提取金额、开票日期、商户名称、税号、发票代码、发票号码，金额统一转为BigDecimal类型
      * </p>
+     * <p><b>发票代码/号码（P3.8 R2 补入）</b>：此前只归一化 amount/date/merchant/taxNo，
+     * 发票代码与号码在 {@link VatInvoiceOcr} 里早已解析出来却被**丢弃**，导致下游查重只能靠
+     * 「同申请人 + 金额完全相等 + 日期±30天」的启发式，产生大量误报。
+     * 现补入 {@code invoiceCode}/{@code invoiceNum}，作为后续按票查重的硬命中依据。</p>
+     * 包内可见，供单测直接验证字段归一化。
+     *
      * @param type 原始票据类型
      * @param fields OCR原始返回字段Map
      * @param vat 增值税发票专项识别结果，可以为null
      * @return 归一化之后结构化字段Map
      */
-    private Map<String, Object> normalize(String type, Map<String, String> fields, VatInvoiceOcr vat) {
+    Map<String, Object> normalize(String type, Map<String, String> fields, VatInvoiceOcr vat) {
         Map<String, Object> normalized = new LinkedHashMap<>();
         normalized.put("receiptType", type);
 
@@ -303,7 +322,59 @@ public class OcrExtractTool implements ToolExecutor {
                     "sellerRegisterNum", "sellerTaxID");
         }
         normalized.put("taxNo", taxNo);
+
+        // 发票代码：自 2018 年起电子发票代码并入号码、该字段可能为空；非增值税模板回退原始字段
+        String invoiceCode = vat != null ? vat.getInvoiceCode() : null;
+        if (isBlank(invoiceCode)) {
+            invoiceCode = firstField(fields, "InvoiceCode", "发票代码", "invoiceCode");
+        }
+        normalized.put("invoiceCode", trimToNull(invoiceCode));
+
+        // 发票号码：判重主键之一，与发票代码共同构成发票的自然键
+        String invoiceNum = vat != null ? vat.getInvoiceNum() : null;
+        if (isBlank(invoiceNum)) {
+            invoiceNum = firstField(fields, "InvoiceNum", "发票号码", "发票号", "invoiceNum");
+        }
+        normalized.put("invoiceNum", trimToNull(invoiceNum));
+
+        // 结构化开票日期：上面 date 为展示原样，这里额外给出 YYYY-MM-DD，
+        // 供 invoice_record.inv_date（DATE 列）落库——中文格式无法直接入库，必须显式解析
+        normalized.put("ocrDate", parseDate(vat, date));
+
         return normalized;
+    }
+
+    /**
+     * 开票日期解析为 {@code yyyy-MM-dd}，失败返回 null。
+     * <p>解析优先级：vat 二次识别的 {@link LocalDate} → 展示串的 ISO 形态 → 中文形态
+     * （{@code 2026年08月01日}，财会版 classifierId=10001 的实际返回格式）。
+     * 解析失败只返回 null，不影响主流程（日期缺失时 {@code inv_date} 留空）。</p>
+     */
+    private static String parseDate(VatInvoiceOcr vat, String displayDate) {
+        if (vat != null && vat.getInvoiceDate() != null) {
+            return vat.getInvoiceDate().format(DATE_FMT);
+        }
+        if (isBlank(displayDate)) {
+            return null;
+        }
+        String s = displayDate.trim();
+        // ISO 形态（datetime 截断到日，兼容带时间的输入）
+        if (s.length() >= 10 && s.charAt(4) == '-' && s.charAt(7) == '-') {
+            try {
+                return LocalDate.parse(s.substring(0, 10), DATE_FMT).format(DATE_FMT);
+            } catch (DateTimeParseException ignored) {
+                // 落到中文形态再试
+            }
+        }
+        // 中文形态：2026年08月01日
+        for (DateTimeFormatter f : CN_DATE_FORMATS) {
+            try {
+                return LocalDate.parse(s, f).format(DATE_FMT);
+            } catch (DateTimeParseException ignored) {
+                // 继续尝试下一个格式
+            }
+        }
+        return null;
     }
 
     /**
@@ -357,6 +428,24 @@ public class OcrExtractTool implements ToolExecutor {
             }
         }
         return null;
+    }
+
+    /** 空值判断（null 或全空白） */
+    private static boolean isBlank(String v) {
+        return v == null || v.isBlank();
+    }
+
+    /**
+     * 去除首尾空白；空白归一为 null。
+     * <p>OCR 结果会写入 {@code invoice_record} 并参与唯一约束，混入不可见空白
+     * 会让「同一张发票」因尾随空格被判为两张，故统一清洗（唯一键要求确定性取值）。</p>
+     */
+    private static String trimToNull(String v) {
+        if (v == null) {
+            return null;
+        }
+        String t = v.trim();
+        return t.isEmpty() ? null : t;
     }
 
     /**

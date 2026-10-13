@@ -1,12 +1,15 @@
 package com.finaudit.agentcore.service;
 
+import com.finaudit.agentcore.domain.ReviewFinding;
+
 import java.util.List;
 
 /**
  * 工单触发类型确定性映射（P3b 用户确认决策 3）。
- * <p>trigger_type 由复核原因前缀映射，纯代码判定不依赖 LLM：
+ * <p>trigger_type 由复核原因/结构化问题项映射，纯代码判定不依赖 LLM：
  * 优先级 OVER_LIMIT &gt; RULE_FAIL &gt; RISK_HIT；LLM_DECISION 归 RISK_HIT 兜底。
- * reason 格式为 "{PREFIX}:{描述}"（见 {@link ReviewFlowDecider} 输出）。</p>
+ * 两种入口：{@link #resolve(List)} 按 reason 前缀（兼容历史数据），
+ * {@link #resolveByFindings(List)} 按结构化 level（P3.8 R4 起推荐）。</p>
  */
 public final class TriggerTypeResolver {
 
@@ -55,5 +58,31 @@ public final class TriggerTypeResolver {
             return joined;
         }
         return joined.substring(0, RISK_DESC_MAX - 1) + "…";
+    }
+
+    /**
+     * 按结构化问题项解析触发类型（P3.8 R4）。
+     *
+     * <p>与 {@link #resolve(List)} 同一优先级口径，但直接读 {@code level} 而非解析字符串前缀——
+     * 结构化后无需再约定文本格式。优先级 OVER_LIMIT &gt; RULE_FAIL &gt; RISK_HIT。</p>
+     *
+     * @param findings 结构化问题项；空列表/仅 RISK_HIT 时归 RISK_HIT 兜底
+     * @return trigger_type
+     */
+    public static String resolveByFindings(List<ReviewFinding> findings) {
+        if (findings == null || findings.isEmpty()) {
+            return RISK_HIT;
+        }
+        for (ReviewFinding f : findings) {
+            if (f != null && OVER_LIMIT.equals(f.level())) {
+                return OVER_LIMIT;
+            }
+        }
+        for (ReviewFinding f : findings) {
+            if (f != null && RULE_FAIL.equals(f.level())) {
+                return RULE_FAIL;
+            }
+        }
+        return RISK_HIT;
     }
 }

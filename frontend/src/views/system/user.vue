@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Edit, Plus, Search } from '@element-plus/icons-vue'
-import { assignUserRoles, createUser, deleteUser, getDeptTree, getRoles, getUsers, updateUser } from '@/api/system'
+import { assignUserRoles, createUser, deleteUser, getDeptTree, getRoles, getUserDetail, getUsers, updateUser } from '@/api/system'
 import type { DeptVO, RoleVO, SystemUserVO } from '@/types'
 
 const loading = ref(false)
@@ -67,18 +67,33 @@ function openCreate() {
   dialogVisible.value = true
 }
 
-function openEdit(row: SystemUserVO) {
-  editingId.value = row.id
-  Object.assign(form, {
-    username: row.username,
-    password: '',
-    realName: row.realName ?? '',
-    phone: row.phone ?? '',
-    deptId: row.deptId,
-    status: row.status,
-    roleIds: [],
-  })
-  dialogVisible.value = true
+/**
+ * 打开编辑弹窗。
+ *
+ * <p><b>P3.8 修复（R0-4）</b>：此前直接把 roleIds 置为 `[]` 且从不回填，而保存时又无条件调用
+ * `assignUserRoles`（替换式语义）——导致「只改手机号」也会<b>清空该用户全部角色</b>。
+ * 现改为进入编辑前拉取用户详情（`getUserDetail`，此前全项目 0 调用）回填 roleIds。</p>
+ *
+ * <p>取详情失败时不打开弹窗，避免在 roleIds 为空的状态下保存造成同样的清空。</p>
+ */
+async function openEdit(row: SystemUserVO) {
+  try {
+    const detail = await getUserDetail(row.id)
+    editingId.value = row.id
+    Object.assign(form, {
+      username: detail.username,
+      password: '',
+      realName: detail.realName ?? '',
+      phone: detail.phone ?? '',
+      deptId: detail.deptId,
+      status: detail.status,
+      // 回填现有角色（替换式保存依赖此值，缺省会清空角色）
+      roleIds: (detail.roles || []).map((r) => r.id),
+    })
+    dialogVisible.value = true
+  } catch {
+    /* 拦截器已提示；不打开弹窗，防止误清空角色 */
+  }
 }
 
 async function handleSave() {

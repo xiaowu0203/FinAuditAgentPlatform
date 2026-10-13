@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.finaudit.agentcore.mapper.NotifyDeliveryMapper">
+
+    <!--
+      枚举有到期记录的租户（定时任务入口）。
+      ⚠️ 这是本模块唯一跨租户的语句，由 Mapper 方法上的 @InterceptorIgnore(tenantLine="true") 放行；
+        返回的只是租户 id（无业务数据），后续处理逐个租户在 TenantContextHolder.runWith 内进行。
+      加 next_retry_at 条件：只有"现在真正到期"的租户才需要被唤起处理。
+    -->
+    <select id="selectPendingTenantIds" resultType="java.lang.Long">
+        SELECT DISTINCT tenant_id
+        FROM notify_delivery
+        WHERE status = 'PENDING'
+          AND next_retry_at &lt;= NOW()
+          AND deleted = 0
+    </select>
+
+    <!--
+      批量登记投递（AGENTS.md §5.10：单条多行 INSERT，禁止 for 循环逐行插）。
+      payload 是 JSON 列 → 每个占位符显式指定 JacksonTypeHandler（缺了会被驱动按 binary 字符集发送，
+      MySQL 5.7 直接报 "Cannot create a JSON value from a string with CHARACTER SET 'binary'"）。
+    -->
+    <insert id="insertBatch">
+        INSERT INTO notify_delivery
+        (tenant_id, webhook_id, event_type, event_id, payload, status, attempt_count, next_retry_at, deleted)
+        VALUES
+        <foreach collection='list' item='d' separator=','>
+            (#{d.tenantId}, #{d.webhookId}, #{d.eventType}, #{d.eventId},
+             #{d.payload,typeHandler=com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler},
+             #{d.status}, #{d.attemptCount}, #{d.nextRetryAt}, 0)
+        </foreach>
+    </insert>
+
+    <!--
+      ⚠️ 必须用显式 resultMap 而不是 resultType：payload 是 JSON 列，而 resultType 的自动映射
+        对 Map 属性只会落到默认 ObjectTypeHandler（不是 JacksonTypeHandler）→ 取出来的负载是坏的。
+         这正是 R5-9「看起来对、真正执行才炸」那类坑的镜像：自定义 XML 的 select 不会继承
+         实体上 @TableField(typeHandler=...) 的声明（那是 MP 为 BaseMapper 生成的 resultMap 才用的）。
+    -->
+    <resultMap id="deliveryMap" type="com.finaudit.agentcore.pojo.entity.NotifyDelivery">
+        <id property="id" column="id"/>
+        <result property="tenantId" column="tenant_id"/>
+        <result property="webhookId" column="webhook_id"/>
+        <result property="eventType" column="event_type"/>
+        <result property="eventId" column="event_id"/>
+        <result property="payload" column="payload"
+                typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
+        <result property="status" column="status"/>
+        <result property="attemptCount" column="attempt_count"/>
+        <result property="nextRetryAt" column="next_retry_at"/>
+        <result property="lastHttpStatus" column="last_http_status"/>
+        <result property="lastError" column="last_error"/>
+        <result property="deliveredAt" column="delivered_at"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+        <result property="deleted" column="deleted"/>
+    </resultMap>
+
+    <!--
+      outbox 取件（P3.8 R8-2）：取到期待投递的记录。
+      - ORDER BY id 保证先来的先发（避免大 backlog 下新事件总插队）；
+      - 多租户条件由拦截器追加，调用方须在对应租户上下文内执行。
+    -->
+    <select id="selectDue" resultMap="deliveryMap">
+        SELECT id, tenant_id, webhook_id, event_type, event_id,
+               payload, status, attempt_count, next_retry_at,
+               last_http_status, last_error, delivered_at, created_at, updated_at, deleted
+        FROM notify_delivery
+        WHERE status = 'PENDING'
+          AND next_retry_at &lt;= #{now}
+          AND deleted = 0
+        ORDER BY id
+        LIMIT #{limit}
+    </select>
+
+    <!--
+      乐观认领：attempt_count 当版本号。0 行受影响 = 已被别的实例/轮次取走，直接跳过。
+      ⚠️ 只改 attempt_count/updated_at，不动 next_retry_at —— 投递失败后由 updateResult 重新排期；
+        若在此处清掉 next_retry_at，中途崩溃会让该行永远不再被 selectDue 取到（静默丢失投递）。
+    -->
+    <update id="claimAttempt">
+        UPDATE notify_delivery
+        SET attempt_count = attempt_count + 1,
+            updated_at = NOW()
+        WHERE id = #{id}
+          AND status = 'PENDING'
+          AND attempt_count = #{expectedAttempt}
+          AND deleted = 0
+    </update>
+
+    <!--
+      回写结果：status/next_retry_at/last_error/delivered_at 由实体方法（applySuccess/applyFailure）算好。
+      ⚠️ attempt_count **必须**在 SET 里：它由 claimAttempt 先自增，但「人工重投」（resetForRetry 置 0）
+        只能靠这条语句落库——不写它的话，重投只是把状态改回 PENDING、次数仍是旧值，
+        下一次投递立刻又被判 DEAD（运行时实测踩到：重投后 attempt_count 仍为 1）。
+        正常投递路径下写回的是 claim 后的同值，属幂等 no-op。
+      payload 刻意不在更新列里：重试必须原样重发同一 body（签名基于它），改一次就不是幂等重试了。
+    -->
+    <update id="updateResult">
+        UPDATE notify_delivery
+        SET status = #{status},
+            attempt_count = #{attemptCount},
+            next_retry_at = #{nextRetryAt},
+            last_http_status = #{lastHttpStatus},
+            last_error = #{lastError},
+            delivered_at = #{deliveredAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+          AND deleted = 0
+    </update>
+
+</mapper>

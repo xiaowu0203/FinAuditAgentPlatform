@@ -1,5 +1,6 @@
 package com.finaudit.agentcore.pojo.entity;
 
+import com.baomidou.mybatisplus.annotation.FieldFill;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -84,6 +85,9 @@ public class ExpenseReimbursement {
     private LocalDateTime createdAt;
 
     @Schema(description = "更新时间")
+    /** 更新时间（P3.8 R9-2 修复 R2-10 遗留）：标 fill=INSERT_UPDATE，使 updateById/实体更新能刷新该列，
+     * 否则实体里读出的旧值会被写回 SET、抑制 MySQL 的 ON UPDATE CURRENT_TIMESTAMP。 */
+    @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updatedAt;
 
     @TableLogic
@@ -137,9 +141,11 @@ public class ExpenseReimbursement {
     }
 
     /**
-     * 报销单号：R + yyyyMMddHHmmss + 4 位随机数（包私有，供单测）。
+     * 报销单号：R + yyyyMMddHHmmss + 4 位随机数。
+     * <p>随机段存在同秒碰撞概率，调用方须经
+     * {@link com.finaudit.agentcore.support.BizNoInserter#insertWithRetry} 落库以获得换号重试。</p>
      */
-    static String generateReimbNo() {
+    public static String generateReimbNo() {
         return "R" + LocalDateTime.now().format(REIMB_NO_FMT)
                 + String.format("%04d", ThreadLocalRandom.current().nextInt(10000));
     }

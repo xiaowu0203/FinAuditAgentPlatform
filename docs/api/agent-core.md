@@ -51,7 +51,57 @@
 } ] }
 ```
 
-`GET /api/v1/tasks/{id}/steps` 返回的 `agentRole` 标识 P3a 角色：`DOCUMENT_PARSER` 绑定 `ocr_extract`、`BUDGET_CALCULATOR` 绑定 `budget_query`、`RULE_VALIDATOR` 绑定 `rule_check/amount_verify`、`RISK_AUDITOR` 绑定 `duplicate_check`，`SCHEDULER` 负责汇总。当前仅 REIMBURSEMENT 使用固定流水线，GENERIC 仍使用 TaskPlanner。风控结果可包含 `riskLevel`、`confidence`、`uncertain`、`riskPoints`；存疑会进入 `NEED_REVIEW`。
+`GET /api/v1/tasks/{id}/steps` 返回的 `agentRole` 标识 P3a 角色：`DOCUMENT_PARSER` 绑定 `ocr_extract`、`BUDGET_CALCULATOR` 绑定 `budget_query`、`RULE_VALIDATOR` 绑定 `rule_check/amount_verify`、`RISK_AUDITOR` 绑定 `duplicate_check`，`SCHEDULER` 负责汇总。当前仅 REIMBURSEMENT 使用固定流水线，GENERIC 仍使用 TaskPlanner。风控结果可包含 `riskLevel`、`confidence`、`uncertain`、`riskPoints`；存疑会进入 `NEED_REVIEW`。`durationMs` 为步骤耗时（P3.8 R9-2：LLM = 模型调用耗时含故障切换；TOOL = 分发→回调含 MQ 往返）。
+
+## GET /api/v1/tasks/{id}/progress — 任务进度与预计等待时间（P3.8 R8-3）
+
+```json
+{ "code": 0, "message": "ok", "data": {
+  "id": 12, "taskNo": "T202609220217155001", "status": "RUNNING", "statusText": "审核中",
+  "totalSteps": 8, "finishedSteps": 5, "progressPct": 62.5,
+  "currentStepName": "重复报销检测",
+  "elapsedMs": 7420, "estimatedRemainingMs": 3250, "estimatedTotalMs": 10670,
+  "estimateSource": "HISTORY", "samples": 12, "correctionCount": 0,
+  "message": "第 6/8 步：重复报销检测"
+} }
+```
+
+**口径（前端必须按此展示，勿自行计算）**：
+
+| 字段 | 含义 |
+|---|---|
+| `progressPct` | `finishedSteps / totalSteps × 100`，保留一位小数；步骤尚未生成时为 `0`。⚠️ **可能回退**，见下文要点 5 |
+| `elapsedMs` | 运行中 = `started_at` → 现在；**已终态 = 落库的实际 `duration_ms`** |
+| `estimatedRemainingMs` | 未完成步骤逐项累加其**同类历史平均耗时** |
+| `estimateSource` | `HISTORY` 有历史样本（`samples` 为样本数）；`DEFAULT` 无样本、用缺省单步耗时（TOOL 1500ms / LLM 2500ms）**或已无待执行步骤**（见要点 2）；`FIXED` 已终态不再估算 |
+| `correctionCount` | 自主纠错重跑次数（`correction_count`，`NULL` 归 `0`）。**>0 是 `progressPct` 回退的唯一合法解释** |
+| `message` | 可直接展示的一句话，如「第 6/8 步：重复报销检测」；全部步骤执行完但尚未终态时为「步骤已全部执行，正在收尾判定」 |
+
+要点：
+1. **基线来自真实数据**：按「步骤类型 + 工具编码 + 执行角色」统计最近 **30 天**内 `SUCCESS` 且 `durationMs` 非空
+   的步骤平均耗时（数据源是 R9-2 的落库耗时，见 [`metrics.md`](../architecture/metrics.md) §2.2）。
+   同属 LLM 的风控判断与结论汇总实测差约 30%，故角色也参与分桶。
+2. **`estimateSource=DEFAULT` 有两种情形，提示语也不同**：① 无历史样本（用缺省单步耗时推算，只是量级参考）；
+   ② **已无待执行步骤**（收尾判定窗口，剩余是**确定的 0**，不是估算）。前端应仅在
+   `estimateSource === 'DEFAULT' && estimatedRemainingMs > 0` 时提示"粗略估算"。
+3. **终态语义**：进入 `APPROVAL_PENDING` 即视为「流水线本次执行结束」——**人工审批等待时间不计入**，
+   故此时 `estimatedRemainingMs = 0`，`estimatedTotalMs = 实际流水线耗时`。
+   ⚠️ **判断"是否结束"只看 `status`，不要用 `estimateSource`**：收尾判定窗口（见要点 6）时
+   `status` 仍是 `RUNNING`，而 `progressPct` 已 100%。
+4. 该端点字段刻意保持轻量（不含 `result`/`selfCheckResult` 等重字段），适合 2~3 秒轮询；
+   若基线统计查询失败，接口**不报错**，自动退化为 `DEFAULT`。
+5. ⚠️ **`progressPct` 会回退，这是真实状态而非缺陷（R8-3 运行时实测）**：R5 的自校验闸口判定不一致时，
+   Agent 会**重跑风险相关步骤**（`correction_count + 1`），这些步骤的状态由 `SUCCESS` 复位为 `PENDING`，
+   于是 `finishedSteps` 真的减少。实测一次运行出现 `87.5% → 62.5%` 后再爬回 `100%`（同一步骤行被重跑，
+   不是 replan 新增行）。端点**不得**为了让进度条好看而谎报单调递增。
+   **前端处置要求（登记于 R8-4）**：`correctionCount > 0` 且进度回退时显示「正在重新核验（第 N 次纠错）」
+   而非让进度条莫名倒退；若产品要求进度条只增不减，须由前端对**展示值**取历史最大值（`max(seen)`），
+   后端仍返回真实值。`estimatedRemainingMs` 的取值口径不受回退影响（回退后未完成步骤变多，ETA 相应变大）。
+6. **「全部步骤已执行完但任务仍未终态」是一个真实状态（收尾判定窗口）**：8 步全部 `SUCCESS`、`status` 仍为
+   `RUNNING`（终态迁移与自校验收尾之间，实测持续约 1~2 秒）。此时字段表现为
+   `progressPct=100`、`finishedSteps=totalSteps`、`currentStepName=null`、`estimatedRemainingMs=0`、
+   `estimateSource=DEFAULT`、`message="步骤已全部执行，正在收尾判定"`。**这不是卡死也不是缺陷**，
+   前端按 `message` 展示即可；`TaskProgressServiceTest` 已用单测钉住该状态，避免被误"修"。
 
 ## GET /api/v1/tasks — 分页查询`pageNum`（默认 1）、`pageSize`（默认 10）、`status`（可选，如 `SUCCESS`/`FAILED`）。可见性（P3b）：财务角色（`admin`/`auditor`）看本租户全部任务，普通用户仅见本人（`createdBy`）任务。
 
@@ -141,7 +191,7 @@
 
 ## 关联
 
-- 附件引用契约：`common-code` `FileServiceFeign`（`GET /api/v1/files` 批量 / `GET /api/v1/files/{id}/preview|download`）
+- 附件引用契约：`common-code` `FileServiceFeign` → **内部前缀 `/internal/files/**`**（`{id}` 单条 / `?ids=` 批量 / `{id}/preview|download`）。P3.8 起不再复用对外端点 `/api/v1/files/**`（对外端点带用户可见性校验，内部代读会被拒导致附件区静默空白）
 - 前端任务详情跳报销单：读 `task.inputParams.reimbId`
 - 网关路由：`/api/v1/reimbursements/**` → `lb://agent-core-service`
 
@@ -215,14 +265,25 @@ reimb:   MANUAL_REVIEW/FAILED/RUNNING + CANCELLED（撤回/撤销同意）
 
 `rerun_count` 全局统一（提交人 resubmit 用同一计数器，上限 3）。重跑失败（`failTask`）自动经 `onRerunFail` 复位 AMENDED 工单，不留孤儿。
 
-## 审核数据 API（P3c 工具防越权新增端点）
+## 审核数据内部契约（`/internal/audit/**`，工具链路专用）
 
-工具-facing 审核数据端点（P2b/P3a 已覆盖 `POST /attachments/{fileRecordId}/ocr-result`、`GET /budgets`、`POST /rules/check`、`GET /reimbursements/duplicates`），P3c 工具防越权新增两个只读归属校验端点，供 tool-service `ToolAccessGuard` 调用（`X-Tenant-Id` 头，按当前租户过滤）：
+> **P3.8 迁移**：本组端点原挂在对外前缀 `/api/v1/audit/**` 且被网关 `Path=/api/v1/audit/**` 路由暴露，
+> 守卫却只有「`X-Tenant-Id` 非空」——**任意登录用户即可调用**，其中 OCR 结果回写是**写操作**，
+> 可覆盖本租户任意附件的 OCR 结果，直接篡改审核结论依据；`/reimbursements/{id}/tenant` 还可跨租户探测单据存在性。
+> 现全部迁入 `/internal/audit/**`：**网关只路由 `/api/v1/**`，/internal/** 故意不配置路由，外部不可达**。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/audit/budgets/dept-exists?deptName=` | 校验 `deptName` 是否为当前租户已知部门（budget 表有过该部门即 true；租户无预算记录放行）。`budget_query` 越权校验用 |
-| GET | `/api/v1/audit/reimbursements/{reimbId}/tenant` | 返回该报销单归属 `tenantId`（不存在返回 `data=null`）。`duplicate_check`/`ocr_extract` 校验 reimbId 归属用 |
+| POST | `/internal/audit/attachments/{fileRecordId}/ocr-result` | OCR 结果回写（`ocr_status`/`file_type`/`ocr_result`）。tool-service `ocr_extract` 调用 |
+| GET | `/internal/audit/budgets?deptName=&deptId=&period=` | 部门预算查询（`deptId` 优先，P3.5b 权威键；未配置返回 `data=null`）。`budget_query` 工具调用 |
+| POST | `/internal/audit/rules/check` | 财务规则校验（`finance_rule` 评估，返回 `hits` + `overLimit`）。`rule_check` 工具调用 |
+| GET | `/internal/audit/reimbursements/duplicates?reimbId=` | 重复报销检测。`duplicate_check` 工具调用 |
+| GET | `/internal/audit/budgets/allowed?reimbId=&deptId=` | `budget_query` 越权校验：预算行 `dept_id == reimb.dept_id`（本人部门语义）；无 `reimbId` 仅查 `sys_dept` 存在性。**P3.5b 替换了早期 `/budgets/dept-exists`** |
+| GET | `/internal/audit/reimbursements/{reimbId}/tenant` | 报销单归属租户（不存在 `data=null`）。`duplicate_check`/`ocr_extract` 校验归属用 |
+
+- 守卫：`X-Tenant-Id` 非空（缺失 body `code=400`「缺少租户标识」）；**不挂 `@RequirePerm`**（内部调用无用户上下文，权限码不适用），越权由 `ToolAccessGuard` 在 tool-service 侧先行校验
+- 消费契约：`common-code` `AgentCoreServiceFeign`（**与 `InternalAuditDataController` 成对修改**）
+- 预算向用户开放的说明：早期对外端点要求 `budget:viewAll`，现已随迁移失效；若后续要向用户开放预算查询，应新建 `/api/v1/**` 端点并挂该权限码
 
 ## 脱敏（P3c 安全风控）
 
@@ -230,7 +291,7 @@ reimb:   MANUAL_REVIEW/FAILED/RUNNING + CANCELLED（撤回/撤销同意）
 
 ## 关联
 
-- 网关路由：`/api/v1/audit/**` → `lb://agent-core-service`（P2 已配，复用）
+- 网关路由：`/api/v1/audit/tickets/**` → `lb://agent-core-service`（**仅工单端点对外**；审核数据端点已迁 `/internal/audit/**`，不配路由）
 - 触发接入：`AgentOrchestrator.finalizeSuccess` 的 `NEED_REVIEW` 分支 → `AuditTicketService.enterApproval`（工单幂等创建/复位）；`AUTO_PASS` 分支 → `closeOnAutoPass`；`failTask` → `onRerunFail`
 - 快照语义：`ReimbursementService.buildSnapshot` 生成顶层字段 + 明细 + 附件结构化引用（fileRecordId/fileType/ocrStatus），**不含 OSS 路径/预签名 URL**，日期转字符串
 - 前端：`views/audit/list.vue` + `detail.vue`（**菜单/路由所有登录用户可见**；列表/详情/留痕按后端 owner-read 收窄——普通用户仅本人只读、无审批操作按钮；approve/reject/terminate/withdraw-agree|refuse 操作按钮仅财务角色展示，且后端 `AuditTicketService.action()` 强校验 `FinanceRoles.isFinance`）；提交人动作在 `views/reimbursement/detail.vue`（修改重跑/撤回/发起撤销）

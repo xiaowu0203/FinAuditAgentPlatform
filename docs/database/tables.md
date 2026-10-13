@@ -173,8 +173,11 @@
 | file_record_id | BIGINT | **`file_record.id`（文件元数据在 file-service），索引 `idx_file_record`** |
 | file_type | VARCHAR(32) | 附件类型：`INVOICE` / `ITINERARY` / `CONTRACT` / `OTHER`（P2a 默认 `OTHER`，分类归 P2b OCR 产生） |
 | ocr_status | VARCHAR(16) | OCR 状态：`PENDING` / `SUCCESS` / `FAILED`（P2b 使用） |
-| ocr_result | JSON | OCR 抽取结果（P2b 使用） |
+| ocr_result | JSON | OCR 抽取结果（P2b 使用）。P3.8 R2 起额外含 `invoiceCode`/`invoiceNum`/`ocrDate`（`ocrDate` 为可入库的 `yyyy-MM-dd`，`date` 仍为展示用原样串） |
 | created_at / updated_at / deleted | | 索引 `idx_reimb(reimb_id)`、`idx_file_record(file_record_id)`、`idx_tenant(tenant_id)`、`idx_ocr_status(ocr_status)` |
+
+> P3.8 R2：票号经 `InvoiceRecordService` 投影到 [`invoice_record`](#122-invoice_record-发票标识符投影表p38-r2-新增)，
+> `ocr_result` 仍是 JSON、不参与 WHERE（MySQL 5.7 无法对 JSON 内部字段建索引）。
 
 ## 11. file_record 文件元数据表（file-service：纯二进制资源）
 
@@ -193,7 +196,10 @@
 
 ## 12. budget 部门预算表（P2b）
 
-> 归属 agent-core；`total_budget`/`used_amount` 一律 DECIMAL（金额 Decimal 强制）。审核通过后 `used_amount` 累加。
+> 归属 agent-core；`total_budget`/`used_amount` 一律 DECIMAL（金额 Decimal 强制）。
+> **P3.8 R1 起 `used_amount` 才真正被写入**：此前注释写着"审核通过后累加"但全仓无写入点（只读预检），
+> 现由 `BudgetOccupancyService` 在「AUTO_PASS 收尾 / 审批通过」时原子累加，各终态（驳回/终止/同意撤销）释放。
+> 占用/释放 SQL 见 `BudgetMapper.xml`（超支条件写在 UPDATE 的 WHERE 里，由行锁串行化）。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -203,8 +209,67 @@
 | dept_id | BIGINT | 部门 ID（P3.5b 权威关联键，NOT NULL，FK→sys_dept.id 语义） |
 | period | VARCHAR(7) | 预算周期 `YYYY-MM` |
 | total_budget | DECIMAL(14,2) | 预算总额 |
-| used_amount | DECIMAL(14,2) | 已用额度（审核通过后累加） |
+| used_amount | DECIMAL(14,2) | 已用额度（**P3.8 R1 起真实累加**；释放用 `GREATEST(...,0)` 防负数） |
 | created_at / updated_at / deleted | | 唯一键 `uk_dept_period(tenant_id, dept_id, period)`（P3.5b 切换） |
+
+## 12.1 budget_occupancy 预算占用记账表（P3.8 R1 新增）
+
+> 归属 agent-core；`BudgetOccupancyService` 是**唯一写入口**（AGENTS.md §5.9）。
+> 一张报销单一条记录（`uk_reimb`），记录占用/释放的当前状态与发生次数；
+> 配平公式（对账）：`SUM(amount WHERE status='OCCUPIED') == budget.used_amount`
+> —— 只算**当前占用态**，RELEASED 行整条跳过（行转 RELEASED 时 `used_amount` 已扣回，
+> 若再按「占用 − 释放」计算会把释放额扣减两次）。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| reimb_id | BIGINT | 报销单 ID（业务幂等键，一单一记录） |
+| task_id | BIGINT | 关联审核任务 ID（追溯用） |
+| dept_id | BIGINT | 部门 ID（budget 权威关联键） |
+| period | VARCHAR(7) | 预算周期 `YYYY-MM`（按报销日期推导） |
+| amount | DECIMAL(12,2) | 占用金额 |
+| status | VARCHAR(16) | `OCCUPIED` 已占用 / `RELEASED` 已释放 |
+| occupy_count | INT | 累计占用次数（resubmit 重跑累加） |
+| release_count | INT | 累计释放次数 |
+| created_at / updated_at / deleted | | 唯一键 `uk_reimb(tenant_id, reimb_id)` |
+
+> 迁移：`docs/database/migration-P3.8.sql`；并发验证脚本：`docs/test/budget-occupancy-concurrency.ps1`。
+
+## 12.2 invoice_record 发票标识符投影表（P3.8 R2 新增）
+
+> 归属 agent-core；`InvoiceRecordService` 是**唯一写入口**（AGENTS.md §5.9）。
+> **存在意义（业务走查 B-3）**：发票代码/号码在 OCR 链路里早已解析出来（`VatInvoiceOcr.invoiceCode/invoiceNum`），
+> 却既没进 `OcrExtractTool.normalize` 的输出，也没有可索引落点；而 `ocr_result` 是 JSON、
+> MySQL 5.7 无法对 JSON 内部字段建索引，票号只能全表扫描 + 应用层解析。
+> 本表把票号投影为普通列，使「同一张票是否已报销」可用唯一索引直接判定（R3 查重的地基）。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| tenant_id | BIGINT | 租户 ID |
+| invoice_code | VARCHAR(32) | 发票代码；缺失统一归一为**空串**（见下） |
+| invoice_num | VARCHAR(64) | 发票号码；**判重主键** |
+| seller_tax_no | VARCHAR(64) | 销售方税号（`SellerRegisterNum`） |
+| reimb_id | BIGINT | 归属报销单 ID（OCR 可能先于绑定完成，此时为空） |
+| file_record_id | BIGINT | 来源附件 `file_record.id` |
+| attachment_id | BIGINT | 来源 `expense_attachment.id` |
+| amount | DECIMAL(12,2) | 票面金额（价税合计） |
+| inv_date | DATE | 开票日期（由 `ocrDate` 或中文 `date` 解析，解析失败留空） |
+| seen_count | INT | 同一张票被识别的次数（重复上传/任务重跑累加，**不新增行**） |
+| created_at / updated_at / deleted | | 唯一键/索引见下 |
+
+- **唯一键**：`uk_invoice(tenant_id, invoice_code, invoice_num, deleted)` —— 同一张票一租户一条。
+  含 `deleted` 是为了支持逻辑删除后重新插入（同 `agent_task_step.uk_task_step` 惯例）。
+- **查询索引**：`idx_invoice(tenant_id, invoice_code, invoice_num)` —— R3 按票硬命中查重。
+- **为什么缺失票号要归一为空串而不是 NULL**：MySQL 唯一索引**不约束 NULL**，
+  若落 NULL，同一张票可被无限次重复投影，唯一键形同虚设。
+- **无票号票据（火车票/打车票）整体跳过投影**，不用空串占位——否则同租户所有无票号票据
+  会挤在同一条唯一键上互相冲突。
+- 写入口径：`AttachmentService.updateOcrResult` 内收敛调用（OCR 回写事务内 UPSERT 语义），
+  并发插入撞唯一键时转为「读取既有行 + 累加 `seen_count`」，不让调用方失败。
+
+> 迁移：`docs/database/migration-P3.8.sql` 第 3 节建表、第 4 节历史回填（`INSERT IGNORE`，可重复执行）。
 
 ## 13. finance_rule 财务规则表（P2b 建表 / P2c 可视化配置 + Nacos 动态刷新）
 
@@ -312,6 +377,53 @@ PENDING → WITHDRAWN（提交人撤回，直接生效）
 | created_at | DATETIME | |
 | deleted | TINYINT | 逻辑删除 |
 
+## 18. notify_message 站内信表（P3.8 R8-2 新增）
+
+一行 = **一个收件人的一条消息**（群发按收件人展开，读状态各自独立）。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | BIGINT | 主键 |
+| `tenant_id` | BIGINT | 租户（多租户拦截器自动过滤） |
+| `user_id` | BIGINT | 收件人（`sys_user.id`）；所有读写都按登录用户的 `user_id` 限定，越权防线在此 |
+| `category` | VARCHAR(32) | `AUDIT` 审核流转 / `ALERT` 平台告警（前端按此分组、红点分色） |
+| `event_type` | VARCHAR(48) | 事件码，取值见 [`docs/api/notify.md`](../api/notify.md) §4 |
+| `title` / `content` | VARCHAR(128) / VARCHAR(1000) | 标题与正文（实体边界按列宽截断，避免超长导致整行写入失败） |
+| `biz_type` / `biz_id` | VARCHAR(32) / BIGINT | 业务类型（TASK/TICKET/REIMBURSEMENT/MQ）与业务 ID |
+| `link` | VARCHAR(255) | 前端跳转路径（如 `/audits/12`） |
+| `dedupe_key` | VARCHAR(160) | 幂等键；`uk_notify_dedupe (tenant_id, dedupe_key)`，NULL 表示不去重（多个 NULL 互不冲突） |
+| `read_at` | DATETIME | 已读时间（NULL = 未读），已读再标不改原时间 |
+
+索引：`uk_notify_dedupe(tenant_id, dedupe_key)`、`idx_notify_user_unread(tenant_id, user_id, read_at)`（未读数）、
+`idx_notify_user_created(tenant_id, user_id, created_at)`（分页）。
+
+## 19. notify_webhook Webhook 配置表（P3.8 R8-2 新增）
+
+| 列 | 说明 |
+|---|---|
+| `name` / `url` | 配置名称（租户内未删除行重名禁止）/ 回调地址（仅 http/https，默认拒绝内网/环回） |
+| `secret` | HMAC-SHA256 签名密钥。⚠️ 明文入库（签名需可还原），对外只回显掩码；生产应接 KMS |
+| `event_types` | JSON 数组，订阅的事件码；`[]` = 订阅全部。JSON 列：写入必须走实体更新（§5.13） |
+| `enabled` / `max_attempts` / `timeout_ms` | 启用状态 / 最大投递次数（默认 3、上限 10）/ 单次 HTTP 超时（默认 5000ms、上限 60000ms） |
+| `created_by` | 创建人（投递放弃时告警到此人） |
+
+⚠️ 刻意不在 `(tenant_id, name)` 上加唯一索引：本表有逻辑删除列，唯一索引会把"删掉后重建同名配置"永久挡住
+（`agent_task_step` 是用 `deleted=id` 的下标技巧绕开的，配置表不值得引入该复杂度），改为 Service 层校验。
+
+## 20. notify_delivery Webhook 投递台账（P3.8 R8-2 新增，outbox）
+
+| 列 | 说明 |
+|---|---|
+| `webhook_id` / `event_type` / `event_id` | 目标配置 / 事件码 / 事件 ID（投递头 `X-Finaudit-Delivery`，供接收方幂等） |
+| `payload` | JSON：**原始事件体**，重试原样重发（签名基于同一 body） |
+| `status` | `PENDING` 待投递/待重试 / `SUCCESS` 成功 / `DEAD` 超次数放弃（刻意无 FAILED 中间态） |
+| `attempt_count` / `next_retry_at` | 已尝试次数（同时作为乐观认领的版本号）/ 下次投递时间 |
+| `last_http_status` / `last_error` / `delivered_at` | 最近 HTTP 状态码 / 失败原因（500 字符截断）/ 成功时间 |
+
+索引：`idx_delivery_due(status, next_retry_at)`（取到期行）、`idx_delivery_webhook(tenant_id, webhook_id, id)`（台账查询）。
+
+> 投递行与业务数据**同事务**写入（outbox）：业务提交成功 ⇒ 投递记录必在，重启不丢、可用 SQL 排障。
+> 定时任务（默认 15s）按租户取件 → 乐观认领 → HTTP 投递 → 回写结果。详见 [`docs/api/notify.md`](../api/notify.md) §3.3。
 ## Seed 数据（脚本内置）
 
 | 表 | 数据 |
@@ -320,8 +432,8 @@ PENDING → WITHDRAWN（提交人撤回，直接生效）
 | sys_role | `admin`（管理员）、`auditor`（审核员） |
 | sys_user | `admin` / 密码 `admin123`（BCrypt） |
 | sys_user_role | admin 绑定 admin 角色 |
-| sys_permission | 权限目录 23 码种子（系统管理操作级 15 + 业务资源级 7 + 预留 1，P3.5a） |
-| sys_role_permission | admin 全量 22 码；auditor 财务业务 5 码（rule:manage + 三个 viewAll + audit:approve）；普通用户不授码 |
+| sys_permission | 权限目录 24 码种子（系统管理操作级 16 + 业务资源级 7 + 预留 1；P3.5a 建，P3.8 R8-2 增 `notify:manage`） |
+| sys_role_permission | admin 全量 23 码（R8-2 起含 `notify:manage`）；auditor 财务业务 5 码（rule:manage + 三个 viewAll + audit:approve）；普通用户不授码 |
 | tool_registry | 预置 `amount_verify`（金额核验工具，含 JSON Schema）+ P2b 四个审核工具（ocr_extract/budget_query/rule_check/duplicate_check，scenario=FINANCE） |
 | budget | 默认租户 2026-08 四个部门预算种子 |
 | finance_rule | 四类规则种子（amount_limit/reimburse_expire/travel_standard/subsidy_limit，P2c 起 `published=1` 生效集） |

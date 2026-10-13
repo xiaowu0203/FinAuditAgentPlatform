@@ -1,6 +1,7 @@
 package com.finaudit.tenant.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.finaudit.starter.web.exception.BizException;
 import com.finaudit.tenant.event.UserAuthChangedEvent;
@@ -20,6 +21,7 @@ import org.springframework.util.StringUtils;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 用户服务：用户实体（sys_user）的所有查询与更新均收敛于此。
@@ -84,6 +86,8 @@ public class SysUserService {
 
         // 若用户角色不为空，则直接进行绑定
         if (request.roleIds() != null) {
+            // 校验角色归属（P3.8 R7-2）：与 assignRoles 同一道闸，防创建时越权绑定
+            validateRoleOwnership(request.roleIds());
             // 绑定角色
             userRoleService.replaceRoles(user.getId(), tenantId, request.roleIds());
         }
@@ -116,6 +120,18 @@ public class SysUserService {
         // 应用最新数据并落库
         user.apply(request, encoded);
         userMapper.updateById(user);
+        // ⚠️ P3.8 修复（R0-8）：「deptId=0 解绑」此前实际不生效。
+        //   链路：SysUser.apply 把 0 转为 null → updateById 在 MyBatis-Plus 默认 NOT_NULL
+        //   更新策略下**跳过 null 字段** → dept_id 仍保留旧值，而 UserUpdateRequest 注释与
+        //   前端（`deptId: form.deptId ?? 0`）都承诺「0=解绑」。
+        //   此处用 LambdaUpdateWrapper 显式 SET NULL（不全局改 update-strategy：那会影响所有实体
+        //   的 null 字段语义，风险面过大）。租户条件由多租户拦截器自动附加，无需手写。
+        if (request.deptId() != null && request.deptId() == 0L) {
+            userMapper.update(null, new LambdaUpdateWrapper<SysUser>()
+                    .eq(SysUser::getId, id)
+                    .set(SysUser::getDeptId, null));
+            user.setDeptId(null);
+        }
         // 若是禁用用户 → 则升级会话版本号，踢掉该用户所有已签发 token
         if (request.status() != null && request.status() == 0) {
             authSessionService.revokeAll(id);
@@ -135,10 +151,36 @@ public class SysUserService {
     public void assignRoles(Long id, Long tenantId, List<Long> roleIds) {
         // 校验账户是否存在
         getRequired(id);
+        // 校验角色归属（P3.8 R7-2）：跨租户/不存在的 roleId 一律拒绝，防越权绑定
+        validateRoleOwnership(roleIds);
         // 更新用户角色
         userRoleService.replaceRoles(id, tenantId, roleIds);
         // 角色绑定变更 → 事务提交后刷新权限快照（在线用户无需重登即生效）
         eventPublisher.publishEvent(new UserAuthChangedEvent(id));
+    }
+
+    /**
+     * 校验待绑定角色均属于当前租户（P3.8 R7-2）。
+     *
+     * <p><b>为什么必须校验</b>：{@code sys_user_role} 只在 {@code tenant_id} 上随上下文过滤，
+     * 而 {@code role_id} 是调用方直接给的。此前不校验时，只要请求体里塞入他租户的 roleId，
+     * 就能建出「本租户用户 → 他租户角色」的映射行：该行在本租户查不到角色名（列表里显示异常），
+     * 但一旦后续有按 role_id 直接授权的逻辑，就会变成越权入口。</p>
+     *
+     * <p>实现上依赖多租户拦截器：{@link SysRoleService#getByIds} 自动加 {@code tenant_id} 条件，
+     * 故「查回数量 ≠ 去重后请求数量」即代表存在不属于当前租户或不存在的角色。</p>
+     */
+    private void validateRoleOwnership(List<Long> roleIds) {
+        if (roleIds == null || roleIds.isEmpty()) {
+            return;
+        }
+        List<Long> distinct = roleIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinct.isEmpty()) {
+            return;
+        }
+        if (roleService.getByIds(distinct).size() != distinct.size()) {
+            throw new BizException("存在无效或不属于当前租户的角色，请刷新后重试");
+        }
     }
 
     /**
@@ -268,5 +310,26 @@ public class SysUserService {
         return userMapper.selectOne(new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getTenantId, tenantId)
                 .eq(SysUser::getUsername, username));
+    }
+
+    /**
+     * 按权限码解析收件人（P3.8 R8-2）：本租户内「启用且未删除、且其角色持有该权限码」的用户 id。
+     *
+     * <p>用于通知收件人解析——「转人工 → 通知有审批权限的人」「DLQ 告警 → 通知管理员」这类场景，
+     * 触发方是后台线程（没有登录用户上下文），只能按权限码反查。</p>
+     *
+     * <p>租户来自 {@code X-Tenant-Id} 请求头写入的 {@link com.finaudit.starter.web.tenant.TenantContextHolder}，
+     * 由多租户拦截器落到 SQL；此处刻意**不接收 tenantId 参数**，避免调用方伪造（与
+     * {@code SysUserService} 其余方法一致：租户取上下文，不信任入参）。</p>
+     *
+     * @param permCode 权限码（空白则直接返回空列表，不查库）
+     * @return 用户 id 列表（可能为空，调用方须容忍空集）
+     */
+    public List<Long> listEnabledUserIdsByPermCode(String permCode) {
+        if (!StringUtils.hasText(permCode)) {
+            return List.of();
+        }
+        List<Long> ids = userMapper.listEnabledUserIdsByPermCode(permCode);
+        return ids == null ? List.of() : ids;
     }
 }

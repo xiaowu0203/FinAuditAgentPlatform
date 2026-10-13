@@ -6,16 +6,19 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.finaudit.agentcore.enums.TaskStatus;
 import com.finaudit.agentcore.pojo.dto.TaskSubmitRequest;
 import com.finaudit.agentcore.pojo.vo.StepVO;
+import com.finaudit.agentcore.pojo.vo.TaskProgressVO;
 import com.finaudit.agentcore.pojo.vo.TaskVO;
 import com.finaudit.agentcore.pojo.entity.AgentTask;
 import com.finaudit.agentcore.mapper.AgentTaskMapper;
 import com.finaudit.agentcore.mq.TaskEventPublisher;
+import com.finaudit.agentcore.support.BizNoInserter;
 import com.finaudit.starter.web.exception.BizException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -32,12 +35,15 @@ public class AgentTaskService {
     private final AgentTaskMapper taskMapper;
     private final TaskEventPublisher eventPublisher;
     private final AgentTaskStepService stepService;
+    /** 进度与预计等待时间计算（R8-3；只依赖步骤服务，与本类不成环） */
+    private final TaskProgressService progressService;
 
     public AgentTaskService(AgentTaskMapper taskMapper, TaskEventPublisher eventPublisher,
-                            AgentTaskStepService stepService) {
+                            AgentTaskStepService stepService, TaskProgressService progressService) {
         this.taskMapper = taskMapper;
         this.eventPublisher = eventPublisher;
         this.stepService = stepService;
+        this.progressService = progressService;
     }
 
     /**
@@ -49,8 +55,9 @@ public class AgentTaskService {
     public TaskVO createTask(TaskSubmitRequest request, Long tenantId, Long createdBy) {
         // 类型转换，初始化状态为已提交待执行
         AgentTask task = AgentTask.from(request, tenantId, createdBy);
-        // 落库
-        taskMapper.insert(task);
+        // 落库（任务号撞库自动换号重试，见 BizNoInserter）
+        BizNoInserter.insertWithRetry("任务", "任务号", AgentTask::generateTaskNo,
+                task::setTaskNo, () -> task.setId(null), () -> taskMapper.insert(task));
         // 发布任务提交事件：必须在事务提交【之后】发布，否则消费者可能在事务提交前
         // 抢先消费，读不到任务行报「任务不存在」（发布先于提交的竞态，已实测复现）。
         // 事务提交后触发 afterCommit，此时任务行（及外层报销单事务）对消费者可见；
@@ -75,39 +82,39 @@ public class AgentTaskService {
     }
 
     /**
-     * 任务详情（P3b 可见性统一）：非财务角色仅本人可查。
+     * 任务详情（P3b 可见性统一）：无 task:viewAll 权限者仅本人可查。
      */
-    public TaskVO getTask(Long taskId, Long userId, boolean finance) {
+    public TaskVO getTask(Long taskId, Long userId, boolean viewAll) {
         // 校验任务是否存在，不存在时抛出异常
         AgentTask task = getRequired(taskId);
-        // 校验任务读可见（非财务角色仅本人创建，createdBy 为空的旧任务仅财务可见）
-        requireVisible(task, userId, finance);
+        // 校验任务读可见（无全量权限者仅本人创建，createdBy 为空的旧任务仅全量可见者可见）
+        requireVisible(task, userId, viewAll);
         return TaskVO.from(task);
     }
 
     /**
-     * 任务步骤列表（P3b 可见性统一）：非财务角色仅本人任务可查。
+     * 任务步骤列表（P3b 可见性统一）：无 task:viewAll 权限者仅本人任务可查。
      * <p>可见性校验 + 步骤查询合并为一次委托，避免 Controller 串联两个 Service；
      * 步骤数据经 {@link AgentTaskStepService#listVoByTask} 查询，本类不直接触碰步骤 Mapper。</p>
      */
-    public List<StepVO> listSteps(Long taskId, Long userId, boolean finance) {
-        // 校验任务读可见（非财务角色仅本人创建，createdBy 为空的旧任务仅财务可见）
-        requireVisible(taskId, userId, finance);
+    public List<StepVO> listSteps(Long taskId, Long userId, boolean viewAll) {
+        // 校验任务读可见（无全量权限者仅本人创建，createdBy 为空的旧任务仅全量可见者可见）
+        requireVisible(taskId, userId, viewAll);
         // 根据任务ID查询步骤VO列表
         return stepService.listVoByTask(taskId);
     }
 
     /**
-     * 任务分页查询（P3b 可见性统一）：status 为空查全部；非财务角色仅本人创建，finance 看本租户全量。
+     * 任务分页查询（P3b 可见性统一）：status 为空查全部；无 task:viewAll 权限者仅本人创建，有权限者看本租户全量。
      */
-    public Page<TaskVO> pageTask(int pageNum, int pageSize, String status, Long userId, boolean finance) {
+    public Page<TaskVO> pageTask(int pageNum, int pageSize, String status, Long userId, boolean viewAll) {
         LambdaQueryWrapper<AgentTask> wrapper = new LambdaQueryWrapper<AgentTask>()
                 .orderByDesc(AgentTask::getId);
         if (status != null && !status.isBlank()) {
             wrapper.eq(AgentTask::getStatus, status);
         }
-        // 若非财务角色，则只能查看自己的数据
-        if (!finance) {
+        // 若无全量查看权限，则只能查看自己的数据
+        if (!viewAll) {
             wrapper.eq(AgentTask::getCreatedBy, userId);
         }
         Page<AgentTask> page = taskMapper.selectPage(new Page<>(pageNum, pageSize), wrapper);
@@ -117,21 +124,54 @@ public class AgentTaskService {
     }
 
     /**
-     * 校验任务读可见（P3b 可见性统一）：非财务角色仅本人创建，createdBy 为空的旧任务仅财务可见。
-     * 供详情/步骤等只读接口复用，避免先取 VO 再抛异常的重复查询。
+     * 任务进度与预计等待时间（P3.8 R8-3）。
+     *
+     * <p>可见性校验 + 进度计算合并为**一次委托**（Controller 只调本方法，不串联两个 Service，见 §5.12）。
+     * 进度计算委托给 {@link TaskProgressService}（它只依赖步骤服务，不与本类成环）。</p>
+     *
+     * @param taskId  任务 ID
+     * @param userId  当前用户 ID（可空）
+     * @param viewAll 是否有 task:viewAll 权限
+     * @return 进度 VO（进度百分比 / 当前步骤 / 已耗时 / 预计剩余）
      */
-    public void requireVisible(Long taskId, Long userId, boolean finance) {
-        requireVisible(getRequired(taskId), userId, finance);
+    public TaskProgressVO progress(Long taskId, Long userId, boolean viewAll) {
+        AgentTask task = getRequired(taskId);
+        requireVisible(task, userId, viewAll);
+        return progressService.progress(task);
     }
 
     /**
-     * 校验任务读可见（P3b 可见性统一）：非财务角色仅本人创建，createdBy 为空的旧任务仅财务可见。
-     * @param task Agent 任务
-     * @param userId 当前用户 ID
-     * @param finance 是否财务角色
+     * 校验任务读可见（P3b 可见性统一）。
+     * <p>参数名刻意用 {@code viewAll} 而非 {@code finance}：判定依据是<b>权限码 {@code task:viewAll}</b>
+     * （Controller 传 {@code UserContextHolder.hasPerm("task:viewAll")}），
+     * 而"是不是财务角色"只是它当前的一种来源——按角色命名会把权限语义与角色绑定焊死。</p>
+     *
+     * @param taskId  任务 ID
+     * @param userId  当前用户 ID（可空：无登录上下文时按"非本人"处理）
+     * @param viewAll 是否有 task:viewAll 权限
      */
-    private void requireVisible(AgentTask task, Long userId, boolean finance) {
-        if (!finance && (task.getCreatedBy() == null || !userId.equals(task.getCreatedBy()))) {
+    public void requireVisible(Long taskId, Long userId, boolean viewAll) {
+        requireVisible(getRequired(taskId), userId, viewAll);
+    }
+
+    /**
+     * 校验任务读可见（P3b 可见性统一）：无全量权限者仅本人创建，{@code createdBy} 为空的旧任务仅全量可见者可见。
+     *
+     * <p><b>userId 可空</b>（R7-4 修复）：原实现直接 {@code userId.equals(...)}，
+     * 无登录上下文（userId=null）且无全量权限时会抛 <b>NPE → 500</b>，
+     * 而正确语义是「无法证明是本人 → 拒绝」的 403 业务异常。
+     * 空值在此不是"参数传错"，而是「匿名/无上下文」这一合法输入，必须按无权处理。</p>
+     *
+     * @param task    Agent 任务
+     * @param userId  当前用户 ID（null = 无登录上下文）
+     * @param viewAll 是否有 task:viewAll 权限
+     */
+    private void requireVisible(AgentTask task, Long userId, boolean viewAll) {
+        if (viewAll) {
+            return;
+        }
+        boolean self = userId != null && userId.equals(task.getCreatedBy());
+        if (!self) {
             throw new BizException("无权查看他人任务");
         }
     }
@@ -145,6 +185,21 @@ public class AgentTaskService {
             throw new BizException("任务不存在: " + taskId);
         }
         return task;
+    }
+
+    /**
+     * 查询任务归属租户（P3.8 R6-2，工具防越权内部端点）。
+     *
+     * <p>查询经多租户拦截器过滤：调用方携带的 {@code X-Tenant-Id} 即当前租户上下文，
+     * 若 taskId 不属于该租户则查不到 → 返回 null（越权）。这正是它作为
+     * <b>独立事实来源</b>的价值——tool-service 用它校验 MQ 消息里声明的租户是否可信。</p>
+     *
+     * @param taskId 任务 ID
+     * @return 任务租户 ID；任务不存在或不属于当前租户返回 null
+     */
+    public Long findTenantIdByTask(Long taskId) {
+        AgentTask task = taskId == null ? null : taskMapper.selectById(taskId);
+        return task == null ? null : task.getTenantId();
     }
 
     // ---------- 状态迁移（编排器调用） ----------
@@ -185,9 +240,20 @@ public class AgentTaskService {
         task.setResult(result);
         task.setStatus(TaskStatus.SUCCESS.name());
         task.setFinishedSteps(finishedSteps);
+        // P3.8 R9-2：终态时落任务耗时（本次执行：started_at → 现在）
+        task.setDurationMs(elapsedMs(task));
         return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
                 .eq(AgentTask::getId, task.getId())
                 .in(AgentTask::getStatus, TaskStatus.RUNNING.name(), TaskStatus.APPROVAL_PENDING.name())) > 0;
+    }
+
+    /**
+     * 本次执行耗时（毫秒，P3.8 R9-2）：{@code started_at}（启动/续跑/重跑刷新）→ 现在。
+     * <p>缺 {@code started_at} 的存量任务回退 {@code created_at}；两者都缺返回 null（不写该列）。</p>
+     */
+    private static Long elapsedMs(AgentTask task) {
+        LocalDateTime start = task.getStartedAt() != null ? task.getStartedAt() : task.getCreatedAt();
+        return start == null ? null : Duration.between(start, LocalDateTime.now()).toMillis();
     }
 
     /**
@@ -201,9 +267,50 @@ public class AgentTaskService {
         task.setResult(result);
         task.setStatus(TaskStatus.APPROVAL_PENDING.name());
         task.setFinishedSteps(finishedSteps);
+        // P3.8 R9-2：进入人工复核也算"流水线本次执行结束"，耗时到此为止（人工等待时间不计入效率指标）
+        task.setDurationMs(elapsedMs(task));
         return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
                 .eq(AgentTask::getId, task.getId())
                 .eq(AgentTask::getStatus, TaskStatus.RUNNING.name())) > 0;
+    }
+
+    /**
+     * 落库自校验结果（P3.8 R5-4）。
+     *
+     * <p>只在字段非空时更新，避免把结果覆盖成 null。<b>必须走实体补丁更新（R5-9）</b>：
+     * 本列是 JSON 列，wrapper 的 {@code set(col, value)} 不带 typeHandler，MySQL 5.7 会拒绝
+     * （{@code Cannot create a JSON value from a string with CHARACTER SET 'binary'}）——
+     * 实测该异常曾被自校验的兜底 catch 吞掉，表现为「自校验结果落库了、但自纠错从未触发」，
+     * 排查见 {@link AgentTask#selfCheckResultPatch}。</p>
+     *
+     * @param task   任务（会同步内存字段，供同事务后续逻辑读取）
+     * @param result 自校验结果快照
+     * @return false = 更新未命中（任务不存在）
+     */
+    public boolean applySelfCheckResult(AgentTask task, Map<String, Object> result) {
+        if (result == null) {
+            return false;
+        }
+        task.setSelfCheckResult(result);
+        return taskMapper.update(AgentTask.selfCheckResultPatch(task.getId(), result),
+                new LambdaUpdateWrapper<AgentTask>()
+                        .eq(AgentTask::getId, task.getId())) > 0;
+    }
+
+    /**
+     * 自校验纠错计数 +1（P3.8 R5-4，命中矛盾重跑风控步骤时调用）。
+     * <p>用 SQL 自增而非「读-改-写」，避免并发重跑时计数丢失。</p>
+     *
+     * @return 自增后的纠错次数；-1 表示未命中（任务不存在）
+     */
+    public int incrementCorrectionCount(AgentTask task) {
+        taskMapper.update(null, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, task.getId())
+                .setSql("correction_count = IFNULL(correction_count, 0) + 1"));
+        AgentTask fresh = taskMapper.selectById(task.getId());
+        int count = fresh == null || fresh.getCorrectionCount() == null ? 0 : fresh.getCorrectionCount();
+        task.setCorrectionCount(count);
+        return count;
     }
 
     /**
@@ -214,6 +321,8 @@ public class AgentTaskService {
     public boolean markFailed(AgentTask task, String errorMsg) {
         task.setStatus(TaskStatus.FAILED.name());
         task.setErrorMsg(errorMsg);
+        // P3.8 R9-2：失败也要落耗时——"失败的慢单"恰恰是效率指标最需要暴露的部分
+        task.setDurationMs(elapsedMs(task));
         return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
                 .eq(AgentTask::getId, task.getId())
                 .eq(AgentTask::getStatus, TaskStatus.RUNNING.name())) > 0;
@@ -244,6 +353,15 @@ public class AgentTaskService {
      * 更新任务为作废终态，记录原因供展示，
      * resume/onToolResult 均以 CANCELLED 拒绝，防迟到回调写脏状态。
      *
+     * <p><b>期望态含 SUCCESS（P3.8 R1 修复）</b>：两条作废路径的源状态不同——
+     * <ul>
+     *   <li>提交人 PENDING 撤回：任务处于 {@code APPROVAL_PENDING}（待审批暂停态）</li>
+     *   <li>财务同意撤销：任务处于 {@code SUCCESS}（此前已审批通过）</li>
+     * </ul>
+     * 原实现漏了 SUCCESS，导致「同意撤销」在 CAS 处必然失败并抛「任务状态已变更」——
+     * 即 P3b 的 {@code withdraw-agree} 端点一直是**不可用**的（400），连带作废、附件解绑、
+     * 以及 R1 的预算释放全都执行不到。此为既存缺陷，联调实测发现。</p>
+     *
      * @return false = 状态已被并发迁移
      */
     public boolean markCancelled(AgentTask task, String reason) {
@@ -251,7 +369,7 @@ public class AgentTaskService {
         return taskMapper.update(task, new LambdaUpdateWrapper<AgentTask>()
                 .eq(AgentTask::getId, task.getId())
                 .in(AgentTask::getStatus, TaskStatus.PENDING.name(), TaskStatus.RUNNING.name(),
-                        TaskStatus.APPROVAL_PENDING.name())) > 0;
+                        TaskStatus.APPROVAL_PENDING.name(), TaskStatus.SUCCESS.name())) > 0;
     }
 
     /**
@@ -259,28 +377,32 @@ public class AgentTaskService {
      * 状态回 RUNNING、已完成步骤清零、刷新本次执行开始时间——单条条件 UPDATE 原子完成。
      * <p>期望态含 APPROVAL_PENDING（工单待审批时修改）与 REJECTED（工单已驳回后修改）。
      * 注意 result/errorMsg 置空必须用 wrapper 的 {@code set(..., null)} 显式写 NULL——
-     * entity 参数的 null 字段不会进 SET 子句，{@code updateById} 清不掉列值。</p>
+     * entity 参数的 null 字段不会进 SET 子句，{@code updateById} 清不掉列值。
+     * 而 {@code input_params} 是 JSON 列、值为非 null，<b>必须走实体补丁（R5-9）</b>：
+     * wrapper 的 {@code set} 不带 typeHandler，MySQL 5.7 会以 binary 字符集拒绝该写入
+     * （见 {@link AgentTask#inputParamsPatch}），此前 amend 重跑链路会因此直接失败。</p>
      *
      * @param inputParams 修正后的任务快照入参（含新 items 与重算 claimedTotal）
      * @return false = 状态已被并发迁移，调用方应放弃重跑
      */
     public boolean prepareRerun(AgentTask task, Map<String, Object> inputParams) {
-        boolean applied = taskMapper.update(null, new LambdaUpdateWrapper<AgentTask>()
-                .eq(AgentTask::getId, task.getId())
-                .in(AgentTask::getStatus, TaskStatus.APPROVAL_PENDING.name(), TaskStatus.REJECTED.name())
-                .set(AgentTask::getInputParams, inputParams)
-                .set(AgentTask::getResult, null)
-                .set(AgentTask::getErrorMsg, null)
-                .set(AgentTask::getStatus, TaskStatus.RUNNING.name())
-                .set(AgentTask::getStartedAt, LocalDateTime.now())
-                .set(AgentTask::getFinishedSteps, 0)) > 0;
+        LocalDateTime now = LocalDateTime.now();
+        boolean applied = taskMapper.update(AgentTask.inputParamsPatch(task.getId(), inputParams),
+                new LambdaUpdateWrapper<AgentTask>()
+                        .eq(AgentTask::getId, task.getId())
+                        .in(AgentTask::getStatus, TaskStatus.APPROVAL_PENDING.name(), TaskStatus.REJECTED.name())
+                        .set(AgentTask::getResult, null)
+                        .set(AgentTask::getErrorMsg, null)
+                        .set(AgentTask::getStatus, TaskStatus.RUNNING.name())
+                        .set(AgentTask::getStartedAt, now)
+                        .set(AgentTask::getFinishedSteps, 0)) > 0;
         if (applied) {
             // 内存实体同步（调用方随后 flowEngine.plan(task) 依赖新入参）
             task.setInputParams(inputParams);
             task.setResult(null);
             task.setErrorMsg(null);
             task.setStatus(TaskStatus.RUNNING.name());
-            task.setStartedAt(LocalDateTime.now());
+            task.setStartedAt(now);
             task.setFinishedSteps(0);
         }
         return applied;

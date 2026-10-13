@@ -68,6 +68,8 @@ public class RuleCheckTool implements ToolExecutor {
         }
 
         // 将命中规则VO转换为Map结构，适配Agent输出
+        // ⚠️ P3.8 R4 踩过的坑：此处是手工装配映射，新增字段必须同步，否则字段在 VO 里、
+        //    经过这一层就被丢掉，下游 ReviewFlowDecider 拿到 null，结构化 findings 定位失效。
         RuleCheckVO vo = resp.getData();
         List<Map<String, Object>> hits = vo == null || vo.hits() == null ? List.of()
                 : vo.hits().stream().map(h -> {
@@ -77,6 +79,11 @@ public class RuleCheckTool implements ToolExecutor {
                     m.put("ruleType", h.ruleType());
                     m.put("message", h.message());
                     m.put("overLimit", h.overLimit());
+                    // R4：结构化定位与数值（供「驳回重提引导」定位到明细行并给出标准/实际/差额）
+                    m.put("itemIndex", h.itemIndex());
+                    m.put("itemName", h.itemName());
+                    m.put("expected", h.expected());
+                    m.put("actual", h.actual());
                     return m;
                 }).toList();
         // 整体是否存在超标项标记

@@ -44,6 +44,12 @@ public class SysUserRoleService {
     /**
      * 替换式绑定角色：删除旧绑定（逻辑删）后批量新增，空列表即清空角色。
      * 多租户拦截器自动按上下文过滤，保证仅操作当前租户数据。
+     *
+     * <p><b>去重（P3.8 R7-2）</b>：入参去重后再批量插入。{@code sys_user_role} 上有
+     * {@code uk(user_id, role_id)}，重复的 roleId 会让整批插入撞唯一键报错——
+     * 而调用方（前端多选框/编排代码）给出重复 id 是常见输入，不应升级为 500。
+     * 用「服务端去重」而不是 {@code INSERT IGNORE}：语义更明确，且不掩盖真实冲突
+     * （真实的跨租户/脏数据仍应暴露）。</p>
      */
     @Transactional
     public void replaceRoles(Long userId, Long tenantId, List<Long> roleIds) {
@@ -54,6 +60,7 @@ public class SysUserRoleService {
         }
         List<SysUserRole> list = roleIds.stream()
                 .filter(Objects::nonNull)
+                .distinct()
                 .map(roleId -> SysUserRole.from(tenantId, userId, roleId))
                 .toList();
         if (!list.isEmpty()) {

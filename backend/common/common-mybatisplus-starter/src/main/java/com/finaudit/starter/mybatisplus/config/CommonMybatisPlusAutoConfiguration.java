@@ -1,6 +1,7 @@
 package com.finaudit.starter.mybatisplus.config;
 
 import com.baomidou.mybatisplus.annotation.DbType;
+import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
@@ -10,6 +11,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.finaudit.starter.mybatisplus.handler.AuditTimestampMetaObjectHandler;
 import com.finaudit.starter.web.tenant.TenantContextHolder;
 import jakarta.annotation.PostConstruct;
 import net.sf.jsqlparser.expression.Expression;
@@ -55,6 +57,19 @@ public class CommonMybatisPlusAutoConfiguration {
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
                 .build();
         JacksonTypeHandler.setObjectMapper(mapper);
+    }
+
+    /**
+     * 审计时间戳自动填充器（P3.8 R2 新增）。
+     * <p>修复「{@code updateById} 把旧 {@code updated_at} 写回，显式赋值抑制 MySQL
+     * {@code ON UPDATE CURRENT_TIMESTAMP}，导致 {@code updated_at} 永远等于 {@code created_at}」
+     * 的框架级缺陷，详见 {@link com.finaudit.starter.mybatisplus.handler.AuditTimestampMetaObjectHandler}。</p>
+     * <p>只影响显式标注 {@code @TableField(fill = ...)} 的字段，未标注的实体行为不变。</p>
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public MetaObjectHandler auditTimestampMetaObjectHandler() {
+        return new AuditTimestampMetaObjectHandler();
     }
 
     /**

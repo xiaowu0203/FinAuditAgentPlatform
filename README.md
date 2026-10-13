@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · 财务费用智能审核 Agent 平台
 
-> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 安全风控 ✅ ｜ P3.5 RBAC 权限体系与部门实体 ✅ ｜ 前端 UI 重构（账簿·印章·留痕）✅** · 详细文档见 `docs/`
+> **当前进度：P0 基建 ✅ ｜ P1 核心闭环 ✅（P1.5e 五服务联调验收通过）｜ P2 单据闭环与审核工具 ✅ ｜ P3a 多 Agent 角色化与规则流水线 ✅ ｜ P3b 审批工单闭环 ✅ ｜ P3c 安全风控 ✅ ｜ P3.5 RBAC 权限体系与部门实体 ✅ ｜ 前端 UI 重构（账簿·印章·留痕）✅ ｜ P3.8 业务闭环与 Agent 补强 ✅（**后端完成，前端对接待做**）** · 详细文档见 `docs/`
 
 ## 项目简介
 
@@ -103,6 +103,7 @@ JDK 21 · Spring Boot 3.5.0 · Spring Cloud 2025.0.0 · Spring Cloud Alibaba 202
 | P3c 安全风控 | ✅ 完成 | Prompt 注入拦截（命中→强制人工工单） / `@Mask` 输出脱敏（税号/手机号，金额明文） / 工具 execute 统一越权校验 |
 | P3.5 RBAC 与部门 | ✅ 完成 | 资源级权限码 + `@RequirePerm` 统一鉴权 + 权限快照实时生效 + `sys_dept` 部门实体贯穿用户/报销/预算 + 管理前端三页（权限码驱动渲染）+ P3.5c/d 安全加固（工具/文件权限码、actuator 收口、模型超时、任务 CAS 与超时、登录防爆破） |
 | 前端 UI 重构 | ✅ 完成 | 账簿·印章·留痕设计系统（深色模式/移动端抽屉）+ 审批印章/流水线时间线组件 + Element Plus 按需引入（主 chunk 1.2MB→190KB）+ 轮询静默刷新 |
+| P3.8 业务闭环与 Agent 补强 | ✅ 后端完成（前端对接待做） | ①预算**真实占用与释放**（含并发原子 SQL 与撤销链路修复）②发票标识符入链 + 按票查重 + 票据-明细交叉核验 ③结构化审核问题项（驳回引导定位到明细行）④**语义自校验与自主纠错**（命中矛盾重跑风险步骤，`correction_count` 留痕）⑤一致性与文档收口（环境变量 fail-fast、MQ 可靠性与 DLQ 告警）⑥**主动通知**（站内信 + Webhook：outbox 投递 / HMAC 签名 / SSRF 防线）⑦**任务进度与预计等待时间**（历史耗时基线估算，回退有机制解释）⑧P4 数据源（模型调用台账 `model_call_log` + 任务/步骤耗时 + 指标口径文档）。验收：19 模块构建通过、393 单测 0 失败、各阶段端到端脚本 PASS；详见 [`docs/planning/refactor-agent-autonomy.md`](docs/planning/refactor-agent-autonomy.md) |
 
 ## 快速启动
 
@@ -132,11 +133,19 @@ cd frontend && npm install && npm run dev   # http://localhost:5173
 
 种子账号：`admin / admin123`（租户 `default`，角色 `admin`）。
 
-> 详细环境说明见 `docs/deploy/`，接口文档见 `docs/api/`，架构见 `docs/architecture/`，分期规划见 `docs/planning/`。
+> 详细环境说明见 [`docs/deploy/`](docs/deploy/README.md)（含 `.env` 必填项、Nacos 初始化、数据库初始化与**增量迁移脚本执行顺序**、启动顺序、故障排查），
+> 接口文档见 [`docs/api/`](docs/api/README.md)（含统一 `R<T>` 与错误语义），架构见 [`docs/architecture/`](docs/architecture/README.md)，验收脚本见 [`docs/test/`](docs/test/README.md)，分期规划见 [`docs/planning/`](docs/planning/)。
+>
+> **贡献者先读**：工程约定入口是 **[`docs/architecture/conventions.md`](docs/architecture/conventions.md)**
+> ——对外公开的规范正文，逐条说明约定与其代价（分层与依赖、JSON 列写法、多租户权威租户来源、兜底必须落库、验收纪律、提交与分支、「多 Agent」表述口径）。
+> 仓库内另有一份更细的本地强制规范 `AGENTS.md` / `CLAUDE.md`，**按设计不入版本库**（`6502641` 的决策：本地工具文件不对外发布），
+> 其可公开部分已全部收敛进 `conventions.md`；克隆者只需读 `conventions.md` 即可对齐规范，无需这两个文件。
 
 ## 目录结构
 
-见 `CLAUDE.md` 第 4 节。
+完整目录树与各模块职责见 [`docs/architecture/README.md`](docs/architecture/README.md)；
+后端为多模块 Maven 工程：`agent-gateway`（网关）+ `tenant-service` / `agent-core-service` / `tool-service` /
+`rag-service` / `file-service` + `common/*` 自定义 Starter，前端在 `frontend/`，文档在 `docs/`。
 
 ## 开源协议
 

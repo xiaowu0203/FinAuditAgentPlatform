@@ -21,4 +21,26 @@
         WHERE tenant_id = #{tenantId} AND task_id = #{taskId} AND deleted = 0
     </update>
 
+    <!--
+      步骤耗时基线（P3.8 R8-3）：按「步骤类型 + 工具编码 + 执行角色」统计最近 N 天的平均耗时，
+      用于估算未执行步骤的剩余时间。数据源是 R9-2 落库的 duration_ms（真实墙钟）。
+      ⚠️ 只统计 SUCCESS 且 duration_ms 非空的行：失败/重试行会把基线拉偏（重试含等待间隔）。
+      ⚠️ 角色也参与分组：同属 LLM 的风控判断与结论汇总实测差约 30%（1600ms vs 2076ms），
+         只按 step_type 分组会给错误的基线；TOOL 步骤的 agent_role 也可能为空，用 IFNULL 归一到 ''。
+      多租户：不带 @InterceptorIgnore，由拦截器自动加 tenant_id 条件（基线按租户隔离，不跨租户借用）。
+    -->
+    <select id="avgDurationByStepKey" resultType="java.util.Map">
+        SELECT step_type AS stepType,
+               IFNULL(tool_name, '') AS toolName,
+               IFNULL(agent_role, '') AS agentRole,
+               AVG(duration_ms) AS avgMs,
+               COUNT(*) AS samples
+        FROM agent_task_step
+        WHERE deleted = 0
+          AND status = 'SUCCESS'
+          AND duration_ms IS NOT NULL
+          AND created_at &gt;= #{since}
+        GROUP BY step_type, IFNULL(tool_name, ''), IFNULL(agent_role, '')
+    </select>
+
 </mapper>

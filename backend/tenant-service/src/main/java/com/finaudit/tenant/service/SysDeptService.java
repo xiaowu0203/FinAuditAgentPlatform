@@ -9,6 +9,7 @@ import com.finaudit.tenant.pojo.entity.SysDept;
 import com.finaudit.tenant.pojo.vo.DeptVO;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
@@ -125,6 +126,7 @@ public class SysDeptService {
      * @param tenantId 当前操作租户ID
      * @return 保存后的部门实体
      */
+    @Transactional
     public SysDept create(DeptCreateRequest request, Long tenantId) {
         // parentId为空则默认设置为0，代表根部门
         Long parentId = request.parentId() == null ? 0L : request.parentId();
@@ -134,11 +136,8 @@ public class SysDeptService {
         }
         // 校验租户内部门名称不能重复
         checkNameUnique(request.deptName().trim(), null);
-        SysDept dept = new SysDept();
-        dept.setTenantId(tenantId);
-        dept.setParentId(parentId);
-        dept.setDeptName(request.deptName().trim());
-        dept.setStatus(1);
+        // 实体转换封装在实体类（P3.8 R7-5），业务层不再手写 set 组装
+        SysDept dept = SysDept.from(request, tenantId, parentId);
         deptMapper.insert(dept);
         return dept;
     }
@@ -154,29 +153,23 @@ public class SysDeptService {
      * @param request 更新请求参数
      * @return 更新后的部门实体
      */
+    @Transactional
     public SysDept update(Long id, DeptUpdateRequest request) {
         SysDept dept = getRequired(id);
 
-        // 处理部门名称修改逻辑
+        // 处理部门名称修改逻辑：仅名称真变化时才做唯一性校验
         String newName = request.deptName() == null ? null : request.deptName().trim();
         if (StringUtils.hasText(newName) && !newName.equals(dept.getDeptName())) {
             checkNameUnique(newName, id);
-            dept.setDeptName(newName);
         }
 
-        // 处理父节点变更，只有父ID发生变化才执行校验与赋值
-        if (request.parentId() != null) {
-            Long newParent = request.parentId();
-            if (!Objects.equals(newParent, dept.getParentId())) {
-                ensureNoCycle(id, newParent);
-                dept.setParentId(newParent);
-            }
+        // 处理父节点变更：仅父ID变化时才做防环校验（禁止挂到自身或子孙节点下）
+        if (request.parentId() != null && !Objects.equals(request.parentId(), dept.getParentId())) {
+            ensureNoCycle(id, request.parentId());
         }
 
-        // 更新部门状态
-        if (request.status() != null) {
-            dept.setStatus(request.status());
-        }
+        // 字段合并收敛在实体（P3.8 R7-5：apply），校验留在 Service（需要查库，不属于实体职责）
+        dept.apply(request);
         deptMapper.updateById(dept);
         return dept;
     }
@@ -188,6 +181,7 @@ public class SysDeptService {
      * @param id 部门ID
      * @throws BizException 存在子部门或绑定用户抛出异常
      */
+    @Transactional
     public void delete(Long id) {
         getRequired(id);
         // 判断是否存在子部门
