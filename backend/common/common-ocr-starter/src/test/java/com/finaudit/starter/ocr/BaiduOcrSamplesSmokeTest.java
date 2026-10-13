@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <p>与 {@code S3ObjectStorageServiceSmokeTest} / {@code DeepSeekAiClientTest} 同约定：
  * 未设置环境变量密钥时经 {@code Assumptions.assumeTrue} 跳过，不阻塞 CI。</p>
  * <p>密钥：{@code FINAUDIT_OCR_BAIDU_API_KEY} / {@code FINAUDIT_OCR_BAIDU_SECRET_KEY}
- * （CLAUDE.md §6，禁止硬编码）。读取顺序：系统环境变量 → 仓库根 {@code .env}（gitignored，
+ * （docs/architecture/conventions.md §6，禁止硬编码）。读取顺序：系统环境变量 → 仓库根 {@code .env}（gitignored，
  * 项目约定密钥存于此，测试兜底解析，无需在终端导出）。样例目录可用 {@code -Docr.samples.dir=...} 覆盖。</p>
  * <p>判定：只要 4 张样本中 ≥1 张被识别（items 非空）即通过；全部失败则红，提示换真实发票。
  * 单张识别失败（如百度 282002 识别错误）记入报告，不使整体失败——这正是「人工录入兜底」的触发面。</p>

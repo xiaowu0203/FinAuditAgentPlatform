@@ -29,7 +29,7 @@ import java.util.Set;
  * <p>登录流程：租户校验 → 用户密码校验 → 角色/权限组装 → 签发 JWT + 写 Redis 权限快照。
  * 快照为网关注入角色/权限头的<b>权威来源</b>；角色绑定、角色权限分配、用户/部门变更经
  * {@link UserAuthChangedEvent}/{@link RolePermsChangedEvent} 在事务提交后刷新快照——
- * 事件解耦避免 SysUserService/SysRoleService 反向依赖本类成环（CLAUDE.md 规范 12）。</p>
+ * 事件解耦避免 SysUserService/SysRoleService 反向依赖本类成环（docs/architecture/conventions.md §1）。</p>
  */
 @Service
 public class AuthService {

@@ -59,7 +59,7 @@ public class FileRecord {
     private Integer deleted;
 
     /**
-     * 由上传结果构造文件元数据（转换封装在实体类，业务层不手写 set 组装，见 CLAUDE.md §5.6）。
+     * 由上传结果构造文件元数据（转换封装在实体类，业务层不手写 set 组装，见 docs/architecture/conventions.md §1）。
      */
     public static FileRecord from(String fileName, String objectName, String contentType, Long size, Long tenantId, Long createdBy) {
         FileRecord record = new FileRecord();

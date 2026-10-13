@@ -8,13 +8,13 @@ import org.apache.ibatis.annotations.Param;
 import java.util.List;
 
 /**
- * 报销业务附件 Mapper（仅被 AttachmentService 持有，见 CLAUDE.md §5.8）。
+ * 报销业务附件 Mapper（仅被 AttachmentService 持有，见 docs/architecture/conventions.md §1）。
  */
 @Mapper
 public interface ExpenseAttachmentMapper extends BaseMapper<ExpenseAttachment> {
 
     /**
-     * 批量新增（单条多行 INSERT，CLAUDE.md §5.9；SQL 见 resources/mapper/ExpenseAttachmentMapper.xml）。
+     * 批量新增（单条多行 INSERT，docs/architecture/conventions.md §2.1；SQL 见 resources/mapper/ExpenseAttachmentMapper.xml）。
      */
     int insertBatch(@Param("list") List<ExpenseAttachment> list);
 }

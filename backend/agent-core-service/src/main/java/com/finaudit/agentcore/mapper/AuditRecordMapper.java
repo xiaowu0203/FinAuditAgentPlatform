@@ -5,7 +5,7 @@ import com.finaudit.agentcore.pojo.entity.AuditRecord;
 import org.apache.ibatis.annotations.Mapper;
 
 /**
- * 审批留痕表 Mapper（append-only，数据访问仅经 {@code AuditTicketService}，见 CLAUDE.md §5.8）。
+ * 审批留痕表 Mapper（append-only，数据访问仅经 {@code AuditTicketService}，见 docs/architecture/conventions.md §1）。
  */
 @Mapper
 public interface AuditRecordMapper extends BaseMapper<AuditRecord> {

@@ -7,7 +7,7 @@ OCR 识别统一抽象。当前实现 **百度智能云票据识别**（P2b D6 �
 - `OcrService.recognizeVat(byte[])` **增值税发票识别（细节兜底）**：补税号/金额细节（`SellerRegisterNum` / `SellerName` / `AmountInFiguers` / `InvoiceDate` 等）
 - access_token 内存缓存（过期前自动刷新），不引官方 SDK，`RestClient` 直连
 - 非 200 / 业务 `error_code` 非 0 → 抛 `OcrException`（unchecked，由工具层重试兜底）
-- 金额字段一律 **BigDecimal**（千分位逗号已清洗，CLAUDE.md §5.3）
+- 金额字段一律 **BigDecimal**（千分位逗号已清洗，docs/architecture/conventions.md §1）
 
 ## 使用
 ```xml
@@ -27,7 +27,7 @@ finaudit:
       # timeout-ms: 10000                           # 单次识别超时（连接/读取均取该值），缺省 10s；R0-1 已接线生效
 ```
 
-> 凭据一律经环境变量注入（CLAUDE.md §6），禁止硬编码。
+> 凭据一律经环境变量注入（docs/architecture/conventions.md §6），禁止硬编码。
 
 **超时语义（P3.8 修复 · R0-1）**：`baidu.timeout-ms` 同时作为 **connect 与 read 超时**（`SimpleClientHttpRequestFactory`），
 识别请求与 `access_token` 请求共用同一 `RestClient`，故 token 获取亦受该超时约束。

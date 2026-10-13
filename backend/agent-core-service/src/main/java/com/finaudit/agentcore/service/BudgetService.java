@@ -11,7 +11,7 @@ import org.springframework.stereotype.Service;
 import java.util.Objects;
 
 /**
- * 部门预算服务（budget 实体数据访问仅允许在本类，见 CLAUDE.md §5.8）。
+ * 部门预算服务（budget 实体数据访问仅允许在本类，见 docs/architecture/conventions.md §1）。
  * <p>剩余额度计算交给消费方（{@link BudgetVO#remaining()}），本类只做按 部门+周期 查询
  * 与 budget_query 越权校验（P3.5b：以 reimb.dept_id 为权威，替代原「租户已知部门」猜测）。</p>
  */

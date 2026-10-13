@@ -6,7 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
  * OCR 配置（前缀 {@code finaudit.ocr}）。
- * <p>凭据（apiKey/secretKey）禁止入库（CLAUDE.md §6），一律经环境变量注入：
+ * <p>凭据（apiKey/secretKey）禁止入库（docs/architecture/conventions.md §6），一律经环境变量注入：
  * {@code FINAUDIT_OCR_BAIDU_API_KEY} / {@code FINAUDIT_OCR_BAIDU_SECRET_KEY}。</p>
  */
 @ConfigurationProperties(prefix = "finaudit.ocr")

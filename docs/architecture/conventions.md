@@ -18,6 +18,8 @@
 | Controller 只做参数装配 + **单次** Service 委托；跨实体编排只允许出现在 `AgentOrchestrator` 或独立门面 | 端点里串联多个 Service 会让事务边界与权限校验点失控 |
 | 领域 Service 之间**禁止反向依赖成环** | 环会让「谁负责状态迁移」变得不可判定 |
 | 转换封装在实体类：新增 `from(...)`、更新 `apply(...)` | 业务层手写 `setXxx` 组装实体会漏字段且无法集中校验 |
+| 金额计算必须 `BigDecimal`，严禁 `float`/`double` | 浮点误差在财务场景不可接受（对账差一分钱就要人工介入） |
+| 带默认值的配置类禁用 `@Data`，用 `@Getter @Setter` | Lombok 生成的构造器**不复制字段初始化器**，`defaultBucket`、`timeoutSeconds` 这类默认值会静默丢失 |
 
 ## 2. 数据访问：三条必须记住的坑
 

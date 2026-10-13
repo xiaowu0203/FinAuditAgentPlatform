@@ -1,6 +1,6 @@
 # FinAuditAgentPlatform · Financial Expense Audit Agent Platform
 
-> **Progress: P0 Foundation ✅ ｜ P1 Core Loop ✅ (5-service integration acceptance passed) ｜ P2 Reimbursement and audit tools ✅ ｜ P3a Multi-agent roles and rule pipeline ✅ ｜ P3b Approval ticket workflow ✅ ｜ P3c Security controls ✅ ｜ P3.5 RBAC permission system and department entity ✅ ｜ Frontend UI redesign (ledger · seal · trail) ✅** · Details in `docs/`
+> **Progress: P0 Foundation ✅ ｜ P1 Core Loop ✅ (5-service integration acceptance passed) ｜ P2 Reimbursement and audit tools ✅ ｜ P3a Multi-agent roles and rule pipeline ✅ ｜ P3b Approval ticket workflow ✅ ｜ P3c Security controls ✅ ｜ P3.5 RBAC permission system and department entity ✅ ｜ Frontend UI redesign (ledger · seal · trail) ✅ ｜ P3.8 Business closure & agent hardening ✅ (**backend done; frontend integration pending**)** · Details in `docs/`
 
 ## Overview
 
@@ -124,7 +124,7 @@ Seed account: `admin / admin123` (tenant `default`, role `admin`).
 
 ## Directory Structure
 
-See `CLAUDE.md` section 4.
+See [`docs/architecture/README.md`](docs/architecture/README.md) for the full module tree and responsibilities.
 
 ## License
 

@@ -23,7 +23,7 @@ import java.util.List;
  * agent-core-service 审核数据契约（跨服务 Feign 客户端，统一放 common-code 供 tool-service 复用）。
  * <p>面向工具执行开放的四类只读/回写端点（P2b 审核工具做厚）：
  * OCR 结果回写、部门预算查询、财务规则校验、重复报销检测。
- * 规则评估逻辑归属 agent-core（报销域数据收敛，CLAUDE.md §5.8），tool 只做入参装配与结果聚合。
+ * 规则评估逻辑归属 agent-core（报销域数据收敛，docs/architecture/conventions.md §1），tool 只做入参装配与结果聚合。
  * 租户经 {@code X-Tenant-Id} 请求头传递，服务间经 Nacos 服务名直连（不经网关）。</p>
  *
  * <p><b>P3.8 / R0-6：本契约指向内部端点 {@code /internal/audit/**}，不再复用对外端点 {@code /api/v1/audit/**}</b>。

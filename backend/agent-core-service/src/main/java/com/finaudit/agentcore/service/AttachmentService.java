@@ -21,7 +21,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 报销业务附件服务（expense_attachment 实体数据访问仅允许在本类，见 CLAUDE.md §5.8）。
+ * 报销业务附件服务（expense_attachment 实体数据访问仅允许在本类，见 docs/architecture/conventions.md §1）。
  * <p>业务附件仅存 file_record 引用 + 业务字段；文件元数据/预签名 URL 一律经 FileServiceFeign 远程联取，
  * 禁止直连 OSS。</p>
  */
@@ -58,7 +58,7 @@ public class AttachmentService {
                 throw new BizException("文件已关联其他报销单: " + e.getFileRecordId());
             }
         }
-        // 缺失行补建（批量新增单条多行 INSERT，CLAUDE.md §5.9）
+        // 缺失行补建（批量新增单条多行 INSERT，docs/architecture/conventions.md §2.1）
         Set<Long> existingIds = existing.stream().map(ExpenseAttachment::getFileRecordId).collect(Collectors.toSet());
         List<ExpenseAttachment> toCreate = distinct.stream()
                 .filter(id -> !existingIds.contains(id))

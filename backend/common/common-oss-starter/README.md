@@ -44,7 +44,7 @@ finaudit:
     path-style: false                                 # COS 为虚拟主机风格，需关闭路径风格
 ```
 
-> 凭据一律经环境变量注入（CLAUDE.md §6），禁止硬编码。
+> 凭据一律经环境变量注入（docs/architecture/conventions.md §6），禁止硬编码。
 
 **启动自检**：`finaudit.oss.enabled=true` 时，`CommonOssAutoConfiguration` 启动即校验
 `access-key / secret-key` 是否配置（COS 还需 `endpoint`），缺失直接启动失败并给出明确提示——替代运行期首个请求才暴露的 403 报错。业务工程无需自行校验。
